@@ -1,6 +1,6 @@
 # NeuraGEM
 
-NeuraGEM (Neural Gradient-based Expectation-Maximization) is a computational framework for learning latent task structure with fast latent updates and slower synaptic weight updates. This repository contains the simulation, analysis, and figure-generation code for the NeuraGEM paper.
+NeuraGEM (Neural Gradient-based Expectation-Maximization) is a computational framework for learning latent task structure with fast latent updates and slower synaptic weight updates. This repository a bared down to the essential version with some code reorganization and a template to create a new task 'dataset'.
 
 ## System requirements
 
@@ -13,7 +13,7 @@ The fastest way to run the different models:
 
 Clone this repository:
 ```bash
-git clone https://github.com/hummosa/NeuraGEM_essential.git
+git clone https://github.com/hummosa/NeuraGEM.git
 cd NeuraGEM
 ```
 
@@ -41,12 +41,6 @@ In `run_example.py` you can:
 - Run NeuraGEM (default) or an RNN baseline by setting `config.LU_lr = 0`.
 - Run a long-horizon RNN baseline by setting `config.LU_lr = 0` and `config.seq_len = 50`.
 
-## Code Documentation
-
-General/shared components are in files such as `configs.py`, `models.py`, `datasets.py`, 
-`train_and_infer_functions.py`, and `functions_and_utils*.py`.
-
-Documentation for code organization are available in the docs folder. 
 
 ## Disclaimer
 
