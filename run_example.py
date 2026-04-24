@@ -45,7 +45,10 @@ config.default_std = 0.1   # observation noise (paper uses 0.3; 0.1 is clearer f
 config.log_weights = False
 config.save_model = False
 config.load_saved_model = False
-
+config.blocked_phase_length = 5000
+# config.no_of_steps_in_latent_space = 0
+# config.l2_loss *= 3
+# config.LU_lr *= 1.5
 # ── Train ─────────────────────────────────────────────────────────────────────
 
 print(f'Training with seed {config.env_seed}')
@@ -53,13 +56,22 @@ logger, model, config, figs = train_model(
     config, seed=config.env_seed, save_models=False, load_models=False,
 )
 
+#%%
 # ── Plot ──────────────────────────────────────────────────────────────────────
 
 if config.dataset_name == 'seq_learn':
     fig = plot_corrects_seq_learn(logger, config)
 else:
     # Full overview: task structure, raw behaviour, latent dynamics, gradient signal
-    panel_order = ['task_illustration_and_hierarchies', 'behavior', 'latent_2d', 'gradients']
+    panel_order = ['task_illustration_and_hierarchies', 'behavior', 'latent_2d', 'gradients', 'corrects']
     fig = plot_logger_panels(logger, config, panel_order, x2=None, annotate_phases='behavior')
 
+fig = plot_logger_panels(logger, config, panel_order, x1=3000, x2=4000, annotate_phases='behavior')
+
 print(f'Export path: {config.export_path}')
+#%%
+fig_analysis = plot_logger_analysis(logger, config,
+    subplot_width=2, subplot_height=2,
+    last_ts_in_a_block=15,
+    aggregate_blocks=10,  
+)

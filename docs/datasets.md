@@ -136,9 +136,13 @@ DATASET_REGISTRY = {
     'contextual_switching_task':    TaskDataset,
     'contextual_switching_task_2D': TaskDataset2D,
     'seq_learn':                    seq_learnDataset,
+    'rotating_targets':             RotatingTargetsDataset,
+    'rotating_targets_test':        RotatingTargetsTestDataset,
     # add your dataset here
 }
 ```
+
+When a config defines `test_dataset_name`, `create_datasets_and_loaders` will instantiate the test set from that key instead of `dataset_name`. This is how `RotatingTargetsConfig` separates train rotations from test rotations.
 
 ---
 

@@ -55,7 +55,7 @@ def stats(var, var_name=None):
 import matplotlib.pyplot as plt
 import numpy as np
 
-def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_height=1.4, width=3, annotate_phases=None, rasterize=False):
+def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subplot_height=1.4, width=3, annotate_phases=None, rasterize=False):
     # Panel layout, adjust based on panel_order length
     fig, axes = plt.subplot_mosaic(
         [[panel] for panel in panel_order], 
@@ -85,9 +85,9 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
     hh = np.concatenate(logger.hlcids, axis=0)
 
     if x2 is None:
-        x1, x2 = 0, ii.shape[0]
+        x1, x2 = x1, ii.shape[0]
     else:
-        x1, x2 = 0, x2
+        x1, x2 = x1, x2
 
     # Helper functions to plot specific panels
     def plot_behavior(ax):
@@ -102,7 +102,8 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
             if rasterize:
                 for line in line1 + line2:
                     line.set_rasterized(True)
-            legend = ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0))
+            # legend = ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0))
+            legend = ax.legend(loc='upper center',bbox_to_anchor=(.4, 1.16))
             for lh in legend.legend_handles:
                 lh.set_alpha(1.0)
         ax.set_ylabel('Observed value')
@@ -132,8 +133,9 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
         else:
             prediction_losses = np.concatenate(logger.training_losses, axis=0)
         prediction_losses = prediction_losses.reshape(-1, prediction_losses.shape[-1])
-        line1 = ax.plot(prediction_losses.mean(axis=-1), linewidth=0.5, alpha=0.9, color='grey')
-        line2 = ax.plot(np.convolve(prediction_losses.mean(axis=-1), np.ones(10)/10, mode='full'), linewidth=1, color='black')
+        pl = prediction_losses.mean(axis=-1)[x1:x2]
+        line1 = ax.plot(pl, linewidth=0.5, alpha=0.9, color='grey')
+        line2 = ax.plot(np.convolve(pl, np.ones(10)/10, mode='full'), linewidth=1, color='black')
         if rasterize:
             for line in line1 + line2:
                 line.set_rasterized(True)
@@ -144,7 +146,7 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
         gradients = np.stack(logger.gradients_corrections).squeeze()
         if gradients.shape[1] > 1: # stride is more than one
             gradients = gradients.reshape(-1, gradients.shape[-1])
-        line = ax.plot(gradients, label='Corrections', alpha=0.9, linewidth=1)
+        line = ax.plot(gradients[x1:x2], label='Corrections', alpha=0.9, linewidth=1)
         if rasterize:
             for l in line:
                 l.set_rasterized(True)
@@ -258,22 +260,32 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
             ax.set_xlabel('Time Step')
             ax.set_ylim(0, 1.1)
 
+        elif logger.predicted_outputs and config.dataset_name in ['contextual_switching_task', 'contextual_switching_task_2D']:
+            # abs distance of predictions from the underlying block mean (llcids store the true mean)
+            abs_dist = np.abs(oi[x1:x2] - ll[x1:x2])
+            smoothed = np.convolve(abs_dist[:, 0], np.ones(20) / 20, mode='same')
+            ax.plot(abs_dist[:, 0], '.', alpha=0.3, markersize=2, color='grey')
+            ax.plot(smoothed, linewidth=1, color='k', label='|pred − mean|')
+            ax.set_ylabel('|pred − mean|')
+
         else:
             print('No corrects to plot for this dataset')
 
     def label_phases(ax, subplot_height):
         for i, (phase_name, phase_start) in enumerate(logger.phases):
-            if phase_start + 10 > x2:
+            local_start = phase_start - x1
+            if local_start + 10 > x2 - x1:
                 break
             if i < len(logger.phases) - 1:
-                phase_end = logger.phases[i + 1][1]
+                local_end = logger.phases[i + 1][1] - x1
             else:
-                phase_end = x2
-            phase_midpoint = (phase_start + phase_end) / 2
-            # add newlines to the phase name based on the number of words, to avoid overlap
+                local_end = x2 - x1
+            local_end = min(local_end, x2 - x1)
+            phase_midpoint = (max(local_start, 0) + local_end) / 2
             phase_name = '\n'.join(phase_name.split())
 
-            ax.axvline(phase_start, color='tab:green', linestyle='-', linewidth=3, alpha=0.7)
+            if 0 <= local_start <= x2 - x1:
+                ax.axvline(local_start, color='tab:green', linestyle='-', linewidth=3, alpha=0.7)
             y_factor = 1.05 if subplot_height == 4 else 1.8
             ax.text(phase_midpoint, ax.get_ylim()[1] * y_factor, phase_name, rotation=0, verticalalignment='top', color='tab:green',
              fontsize=6, fontweight='bold', ha='center')
@@ -308,7 +320,7 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
 
     for panel in panel_order:
         ax = axes[panel]
-        ax.set_xlim(x1, x2)
+        ax.set_xlim(0, x2 - x1)
         if config.dataset_name == 'seq_learn':
             # plot_switches(ax, states, both_starts)
             plot_switches_from_logger(ax, logger, config, use_ll=False)
@@ -326,6 +338,108 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
         label_phases(ax, subplot_height)
 
     return fig
+
+
+def plot_logger_analysis(logger, config, subplot_width=1.5, subplot_height=1.5, dpi=100,
+                         last_ts_in_a_block=15, aggregate_blocks=None,
+                         phases_to_include='Learning and inference'):
+    """
+    2×2 summary analysis of a training run (not time-series).
+
+    phases_to_include : str or list of str, phase name(s) from logger.phases to include.
+                        Defaults to 'Learning and inference'. Pass None to use all data.
+    aggregate_blocks  : int, number of blocks to average into one data point.
+                        E.g. no_of_blocks // 3 gives early/mid/late.
+    """
+    fig, axes = plt.subplot_mosaic(
+        [['A', 'B'], ['C', 'D']],
+        sharex=False, sharey=False,
+        constrained_layout=True,
+        figsize=(subplot_width * 2, subplot_height * 2),
+        dpi=dpi,
+    )
+
+    for idx, (label, ax) in enumerate(axes.items(), start=65):
+        trans = mtransforms.ScaledTranslation(-27/72, 0/72, fig.dpi_scale_trans)
+        ax.text(-0.02, 1.0, chr(idx), transform=ax.transAxes + trans,
+                fontsize=12, va='bottom', fontfamily='sans-serif')
+
+    # ── Extract full data arrays ──────────────────────────────────────────────
+    ll_full = np.concatenate(logger.llcids, axis=0).reshape(-1, 1)
+    oi_full = None
+    if logger.predicted_outputs:
+        oi_full = np.concatenate(logger.predicted_outputs, axis=0)
+        oi_full = oi_full.reshape(-1, oi_full.shape[-1])
+
+    # ── Slice to requested phases ─────────────────────────────────────────────
+    if phases_to_include is None:
+        ll = ll_full
+        oi = oi_full
+    else:
+        include = [phases_to_include] if isinstance(phases_to_include, str) else phases_to_include
+        # Build (start, end) for each named phase
+        phase_windows = []
+        for i, (name, ts) in enumerate(logger.phases):
+            end = logger.phases[i + 1][1] if i + 1 < len(logger.phases) else len(ll_full)
+            if name in include:
+                phase_windows.append((ts, end))
+        if phase_windows:
+            ll = np.concatenate([ll_full[s:e] for s, e in phase_windows], axis=0)
+            oi = np.concatenate([oi_full[s:e] for s, e in phase_windows], axis=0) if oi_full is not None else None
+        else:
+            ll, oi = ll_full, oi_full
+
+    # ── Block boundaries from changes in ll ──────────────────────────────────
+    switches = [ts for ts in range(1, len(ll)) if ll[ts] != ll[ts - 1]]
+    block_boundaries = list(zip([0] + switches, switches + [len(ll)]))
+
+    # ── Panel A: |pred − mean| per block (tail only), optionally aggregated ──
+    def plot_block_corrects(ax):
+        if oi is None:
+            ax.set_axis_off()
+            return
+        abs_dist = np.abs(oi[:, 0] - ll[:, 0])
+
+        block_means, block_sems = [], []
+        for start, end in block_boundaries:
+            tail_start = max(start, end - last_ts_in_a_block)
+            tail = abs_dist[tail_start:end]
+            if len(tail) > 0:
+                block_means.append(tail.mean())
+                block_sems.append(tail.std() / np.sqrt(len(tail)))
+        block_means = np.array(block_means)
+        block_sems = np.array(block_sems)
+
+        n_agg = int(aggregate_blocks) if aggregate_blocks is not None else 1
+        if n_agg > 1:
+            n_groups = len(block_means) // n_agg
+            x_vals, grp_means, grp_sems = [], [], []
+            for g in range(n_groups):
+                grp = block_means[g * n_agg:(g + 1) * n_agg]
+                x_vals.append(g + 0.5)          # group index
+                grp_means.append(grp.mean())
+                grp_sems.append(grp.std() / np.sqrt(len(grp)))
+            ax.errorbar(x_vals, grp_means, yerr=grp_sems,
+                        fmt='-o', capsize=3, linewidth=1, markersize=4)
+            ax.set_xlabel(f'Block group (×{n_agg})')
+            ax.set_xticks(x_vals)
+            ax.set_xticklabels([f'{g*n_agg}–{(g+1)*n_agg}' for g in range(n_groups)], fontsize=6, rotation=30)
+        else:
+            ax.errorbar(range(len(block_means)), block_means, yerr=block_sems,
+                        fmt='-o', capsize=2, markersize=3, linewidth=1, alpha=0.8)
+            ax.set_xlabel('Block')
+
+        phase_label = phases_to_include if isinstance(phases_to_include, str) else ', '.join(phases_to_include or [])
+        ax.set_title(f'|pred − mean| tail={last_ts_in_a_block}\n{phase_label}', fontsize=7)
+        ax.set_ylabel('|pred − mean|')
+
+    plot_block_corrects(axes['A'])
+
+    for key in ['B', 'C', 'D']:
+        axes[key].set_axis_off()
+
+    return fig
+
 
 def plot_behavior_panel(ax, logger, config, x2=None):
     ii = np.concatenate(logger.inputs, axis=0)

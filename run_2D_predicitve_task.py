@@ -22,6 +22,11 @@ Training phases
   Phase 3a (test):   weights frozen; LU still runs → measures adaptation speed.
   Phase 3b (test):   both frozen → pure feedforward baseline.
 """
+if 'get_ipython' in globals():
+    from IPython import get_ipython
+    get_ipython().run_line_magic('load_ext', 'autoreload')
+    get_ipython().run_line_magic('autoreload', '2')
+    
 
 import plot_style
 plot_style.set_plot_style()
@@ -33,18 +38,12 @@ from train_and_infer_functions import *
 
 # ── Choose and configure the task ─────────────────────────────────────────────
 
-config = ContextualSwitchingTaskConfig(experiment_to_run='figure')
-# config = SeqLearnConfig(experiment_to_run='few_long_blocks')
-config.dataset_name = 'contextual_switching_task_2D'
-config.input_size = 2
-config.output_size = 2
-config.latent_dims = [2]
+from configs import RotatingTargetsConfig
 
-
-config.default_std = 0.1   # observation noise (paper uses 0.3; 0.1 is clearer for visualisation)
-config.log_weights = False
-config.save_model = False
-config.load_saved_model = False
+config = RotatingTargetsConfig()
+config.train_rotations = [0.0, 90.0]
+config.test_rotations  = [45.0, 135.0, 225.0, 315.0]
+logger, model, config, figs = train_model(config, seed=0)
 
 # ── Train ─────────────────────────────────────────────────────────────────────
 
@@ -59,7 +58,5 @@ if config.dataset_name == 'seq_learn':
     fig = plot_corrects_seq_learn(logger, config)
 else:
     # Full overview: task structure, raw behaviour, latent dynamics, gradient signal
-    panel_order = ['task_illustration_and_hierarchies', 'behavior', 'latent_2d', 'gradients']
+    panel_order = ['task_illustration_and_hierarchies', 'behavior', 'latent_2d', 'loss' ]
     fig = plot_logger_panels(logger, config, panel_order, x2=None, annotate_phases='behavior')
-
-print(f'Export path: {config.export_path}')

@@ -69,7 +69,9 @@ def create_datasets_and_loaders(config, pattern=None):
 
     if pattern is None:
         dataset = cls(config)
-        dataset_test = cls(config)
+        test_cls_name = getattr(config, 'test_dataset_name', config.dataset_name)
+        test_cls = DATASET_REGISTRY.get(test_cls_name, cls)
+        dataset_test = test_cls(config)
     else:
         dataset = cls(config)
         dataset_test = TaskDataset_tests(config.no_of_blocks, config, pattern)
@@ -389,9 +391,69 @@ class seq_learnDataset(Dataset):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Rotating Targets Task (Yu et al. 2025)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class RotatingTargetsDataset(BaseTaskDataset):
+    """
+    Predictive-inference task from Yu et al. (2025).
+
+    5 shield colors each have a target location on a circular arena. After several
+    mini-blocks (a state-block), all targets rotate by the same angle without warning.
+    Each paper-trial maps to two alternating timesteps:
+        cue     t:   [color_onehot (n_colors), 0.0, 0.0]
+        outcome t+1: [0.0, ..., 0.0, attack_x, attack_y]
+
+    With frame prediction (predict_first_frame=False), the model at the cue step
+    must predict the attack position — the key learning signal.
+    """
+
+    def generate_sequences(self):
+        n_colors  = self.config.n_colors
+        noise_std = self.config.noise_std
+        rotations = self._get_rotations()
+        angles_0  = np.linspace(0, 2 * np.pi, n_colors, endpoint=False)
+        base_targets = self.config.target_radius * np.stack(
+            [np.cos(angles_0), np.sin(angles_0)], axis=1)  # (n_colors, 2)
+
+        data_seq, llcid_seq, hlcid_seq = [], [], []
+        for block_idx, block_size in enumerate(self.block_sizes):
+            rotation_deg = rotations[block_idx % len(rotations)]
+            rotation_rad = np.deg2rad(rotation_deg)
+            c, s = np.cos(rotation_rad), np.sin(rotation_rad)
+            R = np.array([[c, -s], [s, c]])
+            rotated_targets = (R @ base_targets.T).T  # (n_colors, 2)
+            n_miniblocks = block_size // (n_colors * 2)
+            for _ in range(n_miniblocks):
+                color_order = self.rng.permutation(n_colors)
+                for color in color_order:
+                    attack = rotated_targets[color] + noise_std * self.rng.standard_normal(2)
+                    color_onehot = np.zeros(n_colors)
+                    color_onehot[color] = 1.0
+                    cue_obs     = np.concatenate([color_onehot, [0.0, 0.0]])
+                    outcome_obs = np.concatenate([np.zeros(n_colors), attack])
+                    data_seq.extend([cue_obs, outcome_obs])
+                    llcid_seq.extend([rotation_rad, rotation_rad])
+                    hlcid_seq.extend([float(block_idx), float(block_idx)])
+        return data_seq, llcid_seq, hlcid_seq
+
+    def _get_rotations(self):
+        return self.config.train_rotations
+
+
+class RotatingTargetsTestDataset(RotatingTargetsDataset):
+    """Test split: uses config.test_rotations instead of train_rotations."""
+
+    def _get_rotations(self):
+        return self.config.test_rotations or self.config.train_rotations
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Registry
 # ──────────────────────────────────────────────────────────────────────────────
 
 DATASET_REGISTRY['contextual_switching_task'] = TaskDataset
 DATASET_REGISTRY['contextual_switching_task_2D'] = TaskDataset2D
 DATASET_REGISTRY['seq_learn'] = seq_learnDataset
+DATASET_REGISTRY['rotating_targets'] = RotatingTargetsDataset
+DATASET_REGISTRY['rotating_targets_test'] = RotatingTargetsTestDataset

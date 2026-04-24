@@ -340,6 +340,72 @@ class SeqLearnConfig(Config):
         self.limited_testing_samples_no = int(500 / self.batch_size)
 
 
+class RotatingTargetsConfig(Config):
+    """
+    Configuration for the rotating-targets predictive-inference task (Yu et al. 2025).
+
+    5 shield colors each have a target on a circular arena. All targets rotate together
+    at unsignaled state-block boundaries. Each trial produces two timesteps:
+        cue     [color_onehot, 0, 0]  →  outcome  [0...0, attack_x, attack_y]
+    Frame prediction (predict_first_frame=False) means the model at the cue step must
+    predict where the attack lands — the primary learning signal.
+
+    Train on config.train_rotations; test generalization on config.test_rotations.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.experiment_to_run = 'default'
+
+        # ── Task structure ─────────────────────────────────────────────────
+        self.n_colors = 5
+        self.n_miniblocks_per_state_block = 8
+        self.noise_std = 0.04
+        self.target_radius = 0.5
+
+        # ── Rotation schedule ──────────────────────────────────────────────
+        self.train_rotations = [0.0, 90.0]  # degrees; cycling across state-blocks
+        self.test_rotations  = []           # novel angles for transfer test; empty = use train_rotations
+
+        # ── Dataset keys ──────────────────────────────────────────────────
+        self.dataset_name      = 'rotating_targets'
+        self.test_dataset_name = 'rotating_targets_test'
+
+        # ── Dimensions (derived) ──────────────────────────────────────────
+        self.input_size  = self.n_colors + 2  # 7
+        self.output_size = self.n_colors + 2  # 7
+        self.hidden_size = 32
+
+        # ── Sequence windowing ────────────────────────────────────────────
+        # self.seq_len = self.n_colors * 2  # 10: one full mini-block (cue+outcome per color)
+        self.seq_len = 5
+        self.stride  = 1
+
+        # ── Block structure ───────────────────────────────────────────────
+        self.block_size  = self.n_miniblocks_per_state_block * self.n_colors * 20  # 80
+        self.no_of_blocks = 20
+        self.block_duration_distribution = 'fixed_block_size'
+
+        # ── Latent variable ───────────────────────────────────────────────
+        self.latent_dims = [1]   # scalar Z = rotation angle in radians
+        self.latent_chunks = 1
+        self.exponential_increase_steepness = [2]
+        self.exponential_increase_multipliers = [1]
+
+        # ── Training ──────────────────────────────────────────────────────
+        self.predict_first_frame = False
+        self.pass_previous_latent = True
+        self.batch_size = 1
+        self.epochs = 1
+        self.LU_lr = 0.1
+        self.WU_lr = 0.001
+        self.loss_reduction_LU = 'mean'
+        self.loss_reduction_WU = 'mean'
+
+        self.update_export_path()
+        self._validate()
+
+
 # Backwards-compatibility aliases
 seq_learnConfig = SeqLearnConfig
 CSWConfig = SeqLearnConfig
