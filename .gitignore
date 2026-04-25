@@ -8,6 +8,7 @@ exports/
 .vscode/
 __pycache__/
 *.log
+.claude/
 
 # C extensions
 *.so

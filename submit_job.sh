@@ -1,0 +1,42 @@
+#!/bin/bash
+
+# Usage: ./submit_job.sh <MAX_TASK_ID> <EXPERIMENT_NAME>
+# Example: ./submit_job.sh 599 correlated_noise_sweep
+
+if [ -z "$1" ] || [ -z "$2" ]; then
+    echo "Usage: $0 <MAX_TASK_ID> <EXPERIMENT_NAME>"
+    echo "EXPERIMENT_NAME: correlated_noise_sweep | generalization_tests"
+    exit 1
+fi
+
+MAX_TASK_ID=$1
+EXPERIMENT_NAME=$2
+MAX_PARALLEL=100  # Max concurrent jobs
+
+if [ "$EXPERIMENT_NAME" = "correlated_noise_sweep" ]; then
+    PYTHON_FILE="cst_correlated_noise_sweep.py"
+elif [ "$EXPERIMENT_NAME" = "generalization_tests" ]; then
+    PYTHON_FILE="cst_run_generalization.py"
+else
+    echo "Invalid experiment name: $EXPERIMENT_NAME"
+    echo "Valid options: correlated_noise_sweep | generalization_tests"
+    exit 1
+fi
+
+mkdir -p ./slurm
+
+sbatch --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
+#!/bin/bash
+#SBATCH --job-name=neuragem
+#SBATCH -n 1
+#SBATCH --output=./slurm/slurm-%A_%a.out
+#SBATCH --error=./slurm/slurm-%A_%a.err
+#SBATCH --time=0-00:20:00
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=hummosa@live.com
+
+# conda activate neo
+python $PYTHON_FILE
+EOF
+
+echo "Submitted array jobs 0..$MAX_TASK_ID for '$EXPERIMENT_NAME' with max parallelism $MAX_PARALLEL."

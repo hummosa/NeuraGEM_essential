@@ -180,6 +180,8 @@ class ContextualSwitchingTaskConfig(Config):
         # ── Task data generation ───────────────────────────────────────────
         self.training_data_means = [0.2, 0.8]  # Gaussian means for context A and B
         self.default_std = 0.1                  # observation noise std
+        self.correlated_noise = False           # if True, use AR(1) temporally correlated noise
+        self.noise_correlation_tau = 10         # autocorrelation time in timesteps
         self.task_length = 1
         self.block_duration_distribution = 'fixed_block_size'  # or 'geometric'
         self.use_high_task_structure = False

@@ -177,6 +177,7 @@ class TaskDataset(BaseTaskDataset):
 
         llcid_seq, hlcid_seq, data_seq = [], [], []
         high_level_latent = self.rng.choice([1, 2])
+        noise_state = 0.0  # AR(1) state; carried across blocks for continuity
 
         for i, block_size in enumerate(self.block_sizes):
             # Switch context each block
@@ -193,8 +194,15 @@ class TaskDataset(BaseTaskDataset):
             if self.config.use_high_task_structure:
                 data_rng_for_block = np.random.default_rng(int(high_level_latent) + self.config.env_seed)
 
-            block_data = data_rng_for_block.normal(current_latent, self.config.default_std, block_size)
-            data_seq.extend(block_data)
+            if getattr(self.config, 'correlated_noise', False):
+                alpha = np.exp(-1.0 / self.config.noise_correlation_tau)
+                drive_std = self.config.default_std * np.sqrt(1 - alpha ** 2)
+                for _ in range(block_size):
+                    noise_state = alpha * noise_state + drive_std * data_rng_for_block.standard_normal()
+                    data_seq.append(current_latent + noise_state)
+            else:
+                block_data = data_rng_for_block.normal(current_latent, self.config.default_std, block_size)
+                data_seq.extend(block_data)
             llcid_seq.extend([current_latent] * block_size)
             hlcid_seq.extend([high_level_latent] * block_size)
 

@@ -264,7 +264,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             # abs distance of predictions from the underlying block mean (llcids store the true mean)
             abs_dist = np.abs(oi[x1:x2] - ll[x1:x2])
             smoothed = np.convolve(abs_dist[:, 0], np.ones(20) / 20, mode='same')
-            ax.plot(abs_dist[:, 0], '.', alpha=0.3, markersize=2, color='grey')
+            # ax.plot(abs_dist[:, 0], '.', alpha=0.3, markersize=2, color='grey')
             ax.plot(smoothed, linewidth=1, color='k', label='|pred − mean|')
             ax.set_ylabel('|pred − mean|')
 
@@ -340,6 +340,49 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
     return fig
 
 
+def extract_block_corrects(logger, last_ts_in_a_block=15,
+                           phases_to_include='Learning and inference'):
+    """Per-block mean |pred − ground-truth mean| using only the tail of each block.
+
+    Returns (block_means, block_sems) as np.ndarrays of shape (n_blocks,),
+    or (None, None) if no predicted_outputs are logged.
+    """
+    if not logger.predicted_outputs:
+        return None, None
+
+    ll_full = np.concatenate(logger.llcids, axis=0).reshape(-1, 1)
+    oi_full = np.concatenate(logger.predicted_outputs, axis=0)
+    oi_full = oi_full.reshape(-1, oi_full.shape[-1])
+
+    if phases_to_include is None:
+        ll, oi = ll_full, oi_full
+    else:
+        include = [phases_to_include] if isinstance(phases_to_include, str) else phases_to_include
+        phase_windows = []
+        for i, (name, ts) in enumerate(logger.phases):
+            end = logger.phases[i + 1][1] if i + 1 < len(logger.phases) else len(ll_full)
+            if name in include:
+                phase_windows.append((ts, end))
+        if phase_windows:
+            ll = np.concatenate([ll_full[s:e] for s, e in phase_windows], axis=0)
+            oi = np.concatenate([oi_full[s:e] for s, e in phase_windows], axis=0)
+        else:
+            ll, oi = ll_full, oi_full
+
+    abs_dist = np.abs(oi[:, 0] - ll[:, 0])
+    switches = [ts for ts in range(1, len(ll)) if ll[ts] != ll[ts - 1]]
+    block_boundaries = list(zip([0] + switches, switches + [len(ll)]))
+
+    block_means, block_sems = [], []
+    for start, end in block_boundaries:
+        tail_start = max(start, end - last_ts_in_a_block)
+        tail = abs_dist[tail_start:end]
+        if len(tail) > 0:
+            block_means.append(tail.mean())
+            block_sems.append(tail.std() / np.sqrt(len(tail)))
+    return np.array(block_means), np.array(block_sems)
+
+
 def plot_logger_analysis(logger, config, subplot_width=1.5, subplot_height=1.5, dpi=100,
                          last_ts_in_a_block=15, aggregate_blocks=None,
                          phases_to_include='Learning and inference'):
@@ -364,51 +407,15 @@ def plot_logger_analysis(logger, config, subplot_width=1.5, subplot_height=1.5, 
         ax.text(-0.02, 1.0, chr(idx), transform=ax.transAxes + trans,
                 fontsize=12, va='bottom', fontfamily='sans-serif')
 
-    # ── Extract full data arrays ──────────────────────────────────────────────
-    ll_full = np.concatenate(logger.llcids, axis=0).reshape(-1, 1)
-    oi_full = None
-    if logger.predicted_outputs:
-        oi_full = np.concatenate(logger.predicted_outputs, axis=0)
-        oi_full = oi_full.reshape(-1, oi_full.shape[-1])
-
-    # ── Slice to requested phases ─────────────────────────────────────────────
-    if phases_to_include is None:
-        ll = ll_full
-        oi = oi_full
-    else:
-        include = [phases_to_include] if isinstance(phases_to_include, str) else phases_to_include
-        # Build (start, end) for each named phase
-        phase_windows = []
-        for i, (name, ts) in enumerate(logger.phases):
-            end = logger.phases[i + 1][1] if i + 1 < len(logger.phases) else len(ll_full)
-            if name in include:
-                phase_windows.append((ts, end))
-        if phase_windows:
-            ll = np.concatenate([ll_full[s:e] for s, e in phase_windows], axis=0)
-            oi = np.concatenate([oi_full[s:e] for s, e in phase_windows], axis=0) if oi_full is not None else None
-        else:
-            ll, oi = ll_full, oi_full
-
-    # ── Block boundaries from changes in ll ──────────────────────────────────
-    switches = [ts for ts in range(1, len(ll)) if ll[ts] != ll[ts - 1]]
-    block_boundaries = list(zip([0] + switches, switches + [len(ll)]))
-
     # ── Panel A: |pred − mean| per block (tail only), optionally aggregated ──
     def plot_block_corrects(ax):
-        if oi is None:
+        block_means, block_sems = extract_block_corrects(
+            logger, last_ts_in_a_block=last_ts_in_a_block,
+            phases_to_include=phases_to_include,
+        )
+        if block_means is None:
             ax.set_axis_off()
             return
-        abs_dist = np.abs(oi[:, 0] - ll[:, 0])
-
-        block_means, block_sems = [], []
-        for start, end in block_boundaries:
-            tail_start = max(start, end - last_ts_in_a_block)
-            tail = abs_dist[tail_start:end]
-            if len(tail) > 0:
-                block_means.append(tail.mean())
-                block_sems.append(tail.std() / np.sqrt(len(tail)))
-        block_means = np.array(block_means)
-        block_sems = np.array(block_sems)
 
         n_agg = int(aggregate_blocks) if aggregate_blocks is not None else 1
         if n_agg > 1:
@@ -416,7 +423,7 @@ def plot_logger_analysis(logger, config, subplot_width=1.5, subplot_height=1.5, 
             x_vals, grp_means, grp_sems = [], [], []
             for g in range(n_groups):
                 grp = block_means[g * n_agg:(g + 1) * n_agg]
-                x_vals.append(g + 0.5)          # group index
+                x_vals.append(g + 0.5)
                 grp_means.append(grp.mean())
                 grp_sems.append(grp.std() / np.sqrt(len(grp)))
             ax.errorbar(x_vals, grp_means, yerr=grp_sems,
