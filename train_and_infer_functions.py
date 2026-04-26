@@ -156,7 +156,7 @@ def _latent_update_step(model, config, model_inputs, inputs, criterion, logger, 
 
         if logger is not None:
             if hasattr(logger, "log_updating_loss"):
-                logger.log_updating_loss(loss.detach().cpu().numpy())
+                 logger.log_updating_loss(loss.detach().cpu().numpy())
             if hasattr(logger, "log_updating_latent"):
                 logger.log_updating_latent(model.Z.detach().cpu().numpy())
             if hasattr(logger, "log_updating_output"):
@@ -240,6 +240,10 @@ def predictive_learning(logger, config, dataloader, model,
             model, config, inputs, batch_llcids
         )
 
+        if config.update_latent_before_weights:
+            first_full_loss = _latent_update_step(
+                model, config, core_inputs, inputs, criterion, logger, batch_hlcids
+            )
         # ── 2. Weight Update (WU) ─────────────────────────────────────
         outputs, full_loss, hidden_states = _weight_update_step(
             model, config, combined_input, core_inputs, inputs, batch_hlcids, criterion
@@ -259,10 +263,10 @@ def predictive_learning(logger, config, dataloader, model,
         logger.others['grad_norms'].append(np.mean(weight_grad_norms) if weight_grad_norms else 0.0)
 
         # ── 3. Latent Update (LU) ─────────────────────────────────────
-        first_full_loss = _latent_update_step(
-            model, config, core_inputs, inputs, criterion, logger, batch_hlcids
-        )
-
+        if not config.update_latent_before_weights:
+            first_full_loss = _latent_update_step(
+                model, config, core_inputs, inputs, criterion, logger, batch_hlcids
+            )
         # ── 4. Log ────────────────────────────────────────────────────
         _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
                     model, combined_input, llcids, batch_hlcids, hidden_states, bi)

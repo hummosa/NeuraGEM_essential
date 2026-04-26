@@ -28,33 +28,45 @@ from train_and_infer_functions import train_model
 
 # ── Experiment configuration ──────────────────────────────────────────────────
 
-DEFAULT_SEEDS = 20
+DEFAULT_SEEDS = 10
 
-PARAM_GRIDS: Dict[str, Dict[str, Sequence[Any]]] = {
+# Grid convention:
+#   string key  → one scalar parameter swept independently (full Cartesian product).
+#   tuple key   → multiple parameters swept together as atomic units (not crossed).
+#
+# Example of the tuple form used below:
+#   ("l2_loss", "LU_lr"): [(0.00005, 0.1), (0.0001, 0.3), ...]
+#   means run (l2_loss=0.00005, LU_lr=0.1) as one job, (l2_loss=0.0001, LU_lr=0.3)
+#   as another, etc. — never the cross-product of the two lists.
+#   The tuple still participates in the Cartesian product with all other keys
+#   (e.g. noise_correlation_tau and seed), so each paired combo is run for every
+#   tau and every seed.
+PARAM_GRIDS: Dict[str, Any] = {
+    "neuragem": {
+        "noise_correlation_tau":  [1, 2, 3, 4 ],
+        ("l2_loss", "LU_lr"):     [(0.00005, 0.1), (0.0001, 0.3), (0.0003, 0.5), (0.0008, 0.7)],
+        "seed":                   list(range(DEFAULT_SEEDS)),
+    },
     "rnn_short": {
-        "noise_correlation_tau": [1, 2, 4, 6, 10],
+        "noise_correlation_tau": [1, 2, 3, 4 ],
         "seed": list(range(DEFAULT_SEEDS)),
     },
     "rnn_long": {
-        "noise_correlation_tau": [1, 2, 4, 6, 10],
+        "noise_correlation_tau": [1, 2, 3, 4 ],
         "seed": list(range(DEFAULT_SEEDS)),
-    },
-    "neuragem": {
-        "noise_correlation_tau": [1, 2, 4, 6, 10],
-        "l2_loss": [0.0001, 0.0008],
-        "LU_lr":   [0.05, 0.1],
-        "seed":    list(range(DEFAULT_SEEDS)),
     },
 }
 
 TRAIN_OVERRIDES: Dict[str, Any] = {
-    "blocked_phase_length": 1000,
+    "blocked_phase_length": 5000,
     "correlated_noise": True,
-    "start_always_on_the_same_block": False,
+    "update_latent_before_weights": True,
+
 }
 
-EXPORT_ROOT = "./exports/correlated_noise"
-
+RUN_NAME   = "paired_lr_sweep_lu_first"
+EXPORT_ROOT = f"./exports/correlated_noise/{RUN_NAME}"
+SKIP_EXISTING = False  # Whether to skip jobs with existing results (based on filepath presence).
 
 # ── Job dataclass & helpers ───────────────────────────────────────────────────
 
@@ -68,11 +80,15 @@ def generate_jobs() -> List[ExperimentJob]:
     jobs = []
     for model_name, grid in PARAM_GRIDS.items():
         keys = list(grid.keys())
-        for values in product(*grid.values()):
-            jobs.append(ExperimentJob(
-                model_name=model_name,
-                param_combination=dict(zip(keys, values)),
-            ))
+        for combo in product(*grid.values()):
+            params: Dict[str, Any] = {}
+            for key, val in zip(keys, combo):
+                if isinstance(key, tuple):
+                    # Tuple key: expand each paired param individually into the flat dict.
+                    params.update(zip(key, val))
+                else:
+                    params[key] = val
+            jobs.append(ExperimentJob(model_name=model_name, param_combination=params))
     return jobs
 
 
@@ -95,7 +111,7 @@ def run_job(job: ExperimentJob, job_index: int | None = None, total: int | None 
 
     prefix = f"[{job_index+1}/{total}] " if job_index is not None else ""
 
-    if os.path.exists(filepath):
+    if SKIP_EXISTING and os.path.exists(filepath):
         print(f"{prefix}Skipping (exists): {filepath}")
         return
 
@@ -116,7 +132,6 @@ def run_job(job: ExperimentJob, job_index: int | None = None, total: int | None 
 
     # Model-specific architecture
     if job.model_name == "rnn_short":
-        config.seq_len = 5
         config.no_of_steps_in_latent_space = 0
     elif job.model_name == "rnn_long":
         config.seq_len = 50

@@ -15,6 +15,7 @@ class Config:
         self.no_of_steps_in_weight_space = 1  # WU gradient steps per batch
         self.no_of_steps_in_latent_space = 1  # LU gradient steps per batch
         self.predict_first_frame = True  # if True, predict input at t=0; else start from t=1 and predict next frame
+        self.update_latent_before_weights = False  # if True, run LU before WU each batch; else run WU first
         # ── Latent Variable (Z) ────────────────────────────────────────────────
         # Z has shape (batch, seq_len, Z_dim) where Z_dim = product(latent_dims).
         self.latent_dims = [2]    # e.g. [4] for Z_dim=4; [2, 2] for Z_dim=4 split into 2 chunks of 2

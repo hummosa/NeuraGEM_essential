@@ -35,7 +35,9 @@ sbatch --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=hummosa@live.com
 
-# conda activate neo
+# Activate env and run
+source $HOME/load_python_venv.sh
+
 python $PYTHON_FILE
 EOF
 
