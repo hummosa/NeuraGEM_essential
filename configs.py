@@ -20,18 +20,18 @@ class Config:
         # Z has shape (batch, seq_len, Z_dim) where Z_dim = product(latent_dims).
         self.latent_dims = [2]    # e.g. [4] for Z_dim=4; [2, 2] for Z_dim=4 split into 2 chunks of 2
         self.latent_chunks = 1    # number of independently-activated sub-vectors within Z
-        self.latent_activation = 'none'   # 'softmax', 'sigmoid', or 'none'; applied before Z is used
+        self.latent_activation = 'softmax'   # 'softmax', 'sigmoid', or 'none'; applied before Z is used
         self.softmax_temp = 1             # temperature for softmax (higher = more uniform)
         self.pass_previous_latent = True  # carry Z across batches so LU warm-starts from prior context
         self.what_latent_to_use = 'self'  # 'self' (learn Z), 'taskID' (oracle), 'uniform', or 'zeros'
 
         # ── Latent Optimizer (LU) ──────────────────────────────────────────────
-        self.LU_lr = 0.1
+        self.LU_lr = 0.4
         self.LU_optimizer = 'Adam'        # 'Adam', 'AdamW', or 'SGD'
-        self.LU_Adam_betas = (0.9, 0.999)
+        self.LU_Adam_betas = (0.6, 0.7)   # For faster dynamics (0.9, 0.999)
         self.LU_momentum = 0.0            # only used when LU_optimizer='SGD'
-        self.l2_loss = 0                  # L2 regularization weight on Z (weight decay)
-        self.loss_reduction_LU = 'sum'    # how to reduce per-element loss before backward: 'sum' or 'mean'
+        self.l2_loss = 0.0001                  # L2 regularization weight on Z (weight decay)
+        self.loss_reduction_LU = 'mean'    # how to reduce per-element loss before backward: 'sum' or 'mean'
         # Gradient aggregation across the time dimension of Z before each LU optimizer step.
         # Options: 'exponential_increase' (recent steps weighted more), 'average', 'last', 'none'.
         self.latent_aggregation_op = 'exponential_increase'
@@ -44,7 +44,7 @@ class Config:
         self.WU_lr = 0.001
         self.WU_optimizer = 'Adam'
         self.WU_momentum = 0.0
-        self.loss_reduction_WU = 'sum'
+        self.loss_reduction_WU = 'mean'
 
         # ── Architecture ───────────────────────────────────────────────────────
         self.rnn_type = 'lstm'    # 'lstm', 'gru', or 'rnn'. LSTM recommended (Hochreiter 1997).
@@ -69,6 +69,11 @@ class Config:
         self.shuffle_or_interleave = 'interleave' # ordering within interleaved phase
         self.random_transition_shuffle_or_interleave = 'shuffle'
         self.start_always_on_the_same_block = False  # if True, always start with context A
+
+        # ── Loss masking ───────────────────────────────────────────────────────
+        # List of 0/1 of length output_size, or None to use all dims.
+        # E.g. [0,0,0,0,0,1,1] predicts only xy and ignores the color one-hot.
+        self.output_loss_mask = None
 
         # ── Noise Injection ────────────────────────────────────────────────────
         self.add_noise_to_input = False
@@ -174,8 +179,8 @@ class ContextualSwitchingTaskConfig(Config):
         # ── Task dimensions ────────────────────────────────────────────────
         self.input_size = 1       # single scalar observation per timestep
         self.output_size = 1
-        self.hidden_size = 32
-        self.seq_len = 10
+        self.hidden_size = 64
+        self.seq_len = 4
         self.stride = 1
 
         # ── Task data generation ───────────────────────────────────────────
@@ -184,18 +189,35 @@ class ContextualSwitchingTaskConfig(Config):
         self.correlated_noise = False           # if True, use AR(1) temporally correlated noise
         self.noise_correlation_tau = 10         # autocorrelation time in timesteps
         self.task_length = 1
-        self.block_duration_distribution = 'fixed_block_size'  # or 'geometric'
+        self.block_duration_distribution = 'geometric'
         self.use_high_task_structure = False
         self.latent_change_interval = 1
         self.high_level_latent_change_interval_in_blocks = 3
         self.start_always_on_the_same_block = True  # always begin with context A
 
         # ── Training schedule ──────────────────────────────────────────────
-        self.epochs = 3
+        self.epochs = 1
         self.batch_size = 1
         self.no_of_blocks = 200
-        self.block_size = 50
+        self.block_size = 25 * self.task_length
         self.passive_epochs = 1
+        self.blocked_phase_length = 850
+
+        # ── Latent optimizer ──────────────────────────────────────────────
+        self.latent_activation = 'softmax'
+        self.latent_aggregation_op = 'exponential_increase'
+        self.pass_previous_latent = True
+        self.no_of_steps_in_latent_space = 1
+        self.LU_lr = 0.8
+        self.LU_Adam_betas = (0.6, 0.7)
+        self.l2_loss = 0.0001
+        self.LU_optimizer = 'Adam'
+        self.exponential_increase_steepness = [2] * self.latent_chunks
+
+        # ── Weight optimizer ──────────────────────────────────────────────
+        self.WU_lr = 0.001
+        self.loss_reduction_LU = 'mean'
+        self.loss_reduction_WU = 'mean'
 
         # ── OOD challenge block (optional) ─────────────────────────────────
         # One block presents observations from an unseen mean to test generalization.
@@ -217,45 +239,13 @@ class ContextualSwitchingTaskConfig(Config):
 
         self.update_export_path()
 
-        # Apply experiment-specific preset
+        # Tweaking-specific overrides (exploration preset differs in 3 values)
         if experiment_to_run in ('tweaking', 'weight_grads_comp'):
-            self._apply_tweaking_preset()
-        elif experiment_to_run == 'figure':
-            self._apply_figure_preset()
+            self.LU_lr = 0.5
+            self.WU_lr = 0.005
+            self.blocked_phase_length = 1200
 
         self._validate()
-
-    def _apply_tweaking_preset(self):
-        """Exploration preset: geometric blocks, softmax Z, moderate LU lr."""
-        self.seq_len = 4
-        self.latent_activation = 'softmax'
-        self.latent_aggregation_op = 'exponential_increase'
-        self.pass_previous_latent = True
-        self.no_of_steps_in_latent_space = 1
-        self.LU_lr = 0.5
-        self.LU_Adam_betas = (0.6, 0.7)
-        self.l2_loss = 0.0001
-        self.LU_optimizer = 'Adam'
-        self.WU_lr = 0.005
-        self.loss_reduction_LU = 'mean'
-        self.loss_reduction_WU = 'mean'
-        self.hidden_size = 64
-        self.epochs = 1
-        self.blocked_phase_length = 1200
-        self.block_size = 25 * self.task_length
-        self.block_duration_distribution = 'geometric'
-        self.exponential_increase_steepness = [2] * self.latent_chunks
-
-    def _apply_figure_preset(self):
-        """Paper figure 1 preset: the canonical NeuraGEM configuration."""
-        self._apply_tweaking_preset()   # starts from tweaking base
-        # Figure-specific overrides
-        self.LU_lr = 0.8
-        self.WU_lr = 0.001
-        self.l2_loss = 0.0001
-        self.LU_Adam_betas = (0.6, 0.7)
-        self.exponential_increase_steepness = [2] * self.latent_chunks
-        self.blocked_phase_length = 850
 
     def reconfigure_for_prediction(self, experiment_to_run):
         """Switch to inference mode for the test phase."""
@@ -377,22 +367,22 @@ class RotatingTargetsConfig(Config):
         # ── Dimensions (derived) ──────────────────────────────────────────
         self.input_size  = self.n_colors + 2  # 7
         self.output_size = self.n_colors + 2  # 7
-        self.hidden_size = 32
+        self.hidden_size = 64
 
         # ── Sequence windowing ────────────────────────────────────────────
         # self.seq_len = self.n_colors * 2  # 10: one full mini-block (cue+outcome per color)
-        self.seq_len = 10
+        self.seq_len = 5
         self.stride  = 1
 
         # ── Block structure ───────────────────────────────────────────────
         self.block_size  = self.n_miniblocks_per_state_block * self.n_colors  # 80
         # self.no_of_blocks = 40 # does not do anything 
-        self.block_duration_distribution = 'fixed_block_size'
+        self.block_duration_distribution = 'fixed'  # 'fixed' or 'geometric'; geometric adds variability to block lengths
 
         # ── Latent variable ───────────────────────────────────────────────
         self.latent_dims = [2]   # scalar Z = rotation angle in radians
         self.LU_lr = 0.2
-        self.l2_loss = 0.00001
+        self.l2_loss = 0.0001
         self.latent_chunks = 1
         self.latent_activation = 'softmax'
         self.no_of_steps_in_latent_space = 1

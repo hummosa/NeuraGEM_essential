@@ -36,6 +36,24 @@ from datasets import *
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Loss masking
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _mask_loss(loss, config):
+    """Zero out output dimensions excluded by config.output_loss_mask.
+
+    config.output_loss_mask : list of 0/1 of length output_size, or None (no masking).
+    E.g. [0,0,0,0,0,1,1] keeps only the last two (xy) dims for the rotating-targets task.
+    The returned tensor has the same shape as loss; only the backward signal is affected.
+    """
+    mask = getattr(config, 'output_loss_mask', None)
+    if mask is None:
+        return loss
+    t = torch.tensor(mask, dtype=loss.dtype, device=loss.device)
+    return loss * t
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Batch preparation
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -99,7 +117,8 @@ def _weight_update_step(model, config, combined_input, model_inputs, inputs, bat
     loss = criterion(outputs, inputs) if config.predict_first_frame else criterion(outputs, inputs[:, 1:, :])
     full_loss = loss.detach().cpu().numpy()
 
-    loss_scalar = loss.sum() if config.loss_reduction_WU == "sum" else loss.mean()
+    loss_scalar = _mask_loss(loss, config)
+    loss_scalar = loss_scalar.sum() if config.loss_reduction_WU == "sum" else loss_scalar.mean()
     loss_scalar.backward()
 
     if config.no_of_steps_in_weight_space > 0:
@@ -148,7 +167,8 @@ def _latent_update_step(model, config, model_inputs, inputs, criterion, logger, 
         if before_optim_loss is None:
             before_optim_loss = loss.detach().cpu().numpy()
 
-        loss_scalar = loss.sum() if config.loss_reduction_LU == "sum" else loss.mean()
+        loss_scalar = _mask_loss(loss, config)
+        loss_scalar = loss_scalar.sum() if config.loss_reduction_LU == "sum" else loss_scalar.mean()
         loss_scalar.backward()
 
         model.adjust_Z_grads(config.latent_aggregation_op)

@@ -9,6 +9,8 @@ exports/
 __pycache__/
 *.log
 .claude/
+slurm/
+exports/
 
 # C extensions
 *.so

@@ -44,18 +44,25 @@ config = RotatingTargetsConfig()
 config.train_rotations = [0.0, 90.0]
 # config.test_rotations  = [45.0, 135.0, 225.0, 315.0]
 config.test_rotations  = [0.0, 90.0]
-config.no_of_steps_in_latent_space = 0
+config.no_of_steps_in_latent_space = 1
 # block_size = n_miniblocks * n_colors * 20 = 800 timesteps per block
 # set blocked_phase_length to control number of training blocks (e.g. 10 blocks = 8000)
+config.add_passive_learning_phase = True
+config.passive_phase_length = 700
 config.blocked_phase_length = 2000   # ← ~10 training blocks (block_size=800)
+config.n_miniblocks_per_state_block = 20 
+config.block_size  = config.n_miniblocks_per_state_block * config.n_colors  # 80
 config.test_no_of_blocks   = 4       # ← blocks in Phase 3 test
-
+config.LU_lr = 0.2
+config.l2_loss = 0.000_01
+# config.seq_len = 4
+config.WU_lr = 0.001
 # ── Train ─────────────────────────────────────────────────────────────────────
 
 print(f'Training with seed {config.env_seed}')
 logger, model, config, figs = train_model(
     config, seed=0, save_models=False, load_models=False,
-    run_test_phase=False,
+    run_test_phase=True,
 )
 
 # ── Plot ──────────────────────────────────────────────────────────────────────
@@ -143,7 +150,7 @@ def plot_arena_trials(logger, config, t_start=0, t_end=None, same_block_only=Tru
     return fig
 
 fig, ax = plt.subplots(1,2, figsize=(7, 3.5))
-t_start = logger.phases[1][1] if len(logger.phases) > 1 else config.block_size 
+t_start = logger.phases[1][1] if len(logger.phases) > 1 else (len(logger.inputs) - 2*  config.block_size) 
 print(f'Plotting blocks at timesteps: {t_start} and {t_start + config.block_size}')
 _=plot_arena_trials(logger, config, t_start=t_start, ax=ax[0])
 plot_arena_trials(logger, config, t_start=t_start+config.block_size, ax=ax[1])
