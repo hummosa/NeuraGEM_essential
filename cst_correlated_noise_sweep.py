@@ -43,28 +43,28 @@ DEFAULT_SEEDS = 10
 #   tau and every seed.
 PARAM_GRIDS: Dict[str, Any] = {
     "neuragem": {
-        "noise_correlation_tau":  [1, 2, 3, 4 ],
+        "noise_correlation_tau":  [1, ],
         ("l2_loss", "LU_lr"):     [(0.00005, 0.1), (0.0001, 0.3), (0.0003, 0.5), (0.0008, 0.7)],
         "seed":                   list(range(DEFAULT_SEEDS)),
     },
     "rnn_short": {
-        "noise_correlation_tau": [1, 2, 3, 4 ],
+        "noise_correlation_tau": [1, ],
         "seed": list(range(DEFAULT_SEEDS)),
     },
     "rnn_long": {
-        "noise_correlation_tau": [1, 2, 3, 4 ],
+        "noise_correlation_tau": [1, ],
         "seed": list(range(DEFAULT_SEEDS)),
     },
 }
 
 TRAIN_OVERRIDES: Dict[str, Any] = {
     "blocked_phase_length": 5000,
-    "correlated_noise": True,
-    "update_latent_before_weights": True,
+    "correlated_noise": False,
+    "update_latent_before_weights": False,
 
 }
 
-RUN_NAME   = "paired_lr_sweep_lu_first"
+RUN_NAME   = "not_correlated"
 EXPORT_ROOT = f"./exports/correlated_noise/{RUN_NAME}"
 SKIP_EXISTING = False  # Whether to skip jobs with existing results (based on filepath presence).
 

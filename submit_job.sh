@@ -29,6 +29,7 @@ sbatch --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
 #!/bin/bash
 #SBATCH --job-name=neuragem
 #SBATCH -n 1
+#SBATCH --partition=batch
 #SBATCH --output=./slurm/slurm-%A_%a.out
 #SBATCH --error=./slurm/slurm-%A_%a.err
 #SBATCH --time=0-00:20:00

@@ -73,7 +73,7 @@ class ComparisonSpec:
     title: str
     # model_name → extra params beyond noise_correlation_tau (e.g. l2_loss, LU_lr)
     model_params: Mapping[str, Mapping[str, Any]]
-    tau_values: Sequence[int] = field(default_factory=lambda: [1, 2, 3, 4])
+    tau_values: Sequence[int] = field(default_factory=lambda: [1, ])
 
 
 @dataclass(frozen=True)
@@ -130,7 +130,8 @@ COMPARISON_SPECS: List[ComparisonSpec] = [
 ]
 
 
-RUN_NAME   = "paired_lr_sweep_lu_first"
+# RUN_NAME   = "paired_lr_sweep_lu_first"
+RUN_NAME   = "not_correlated"
 EXPORT_ROOT = Path(f"./exports/correlated_noise/{RUN_NAME}")
 
 # HyperparamSweepSpec figures are generated independently of COMPARISON_SPECS —

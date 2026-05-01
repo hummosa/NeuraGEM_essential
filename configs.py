@@ -362,7 +362,7 @@ class RotatingTargetsConfig(Config):
 
         # ── Task structure ─────────────────────────────────────────────────
         self.n_colors = 5
-        self.n_miniblocks_per_state_block = 8
+        self.n_miniblocks_per_state_block = 50
         self.noise_std = 0.04
         self.target_radius = 0.5
 
@@ -381,17 +381,21 @@ class RotatingTargetsConfig(Config):
 
         # ── Sequence windowing ────────────────────────────────────────────
         # self.seq_len = self.n_colors * 2  # 10: one full mini-block (cue+outcome per color)
-        self.seq_len = 5
+        self.seq_len = 10
         self.stride  = 1
 
         # ── Block structure ───────────────────────────────────────────────
-        self.block_size  = self.n_miniblocks_per_state_block * self.n_colors * 20  # 80
-        self.no_of_blocks = 20
+        self.block_size  = self.n_miniblocks_per_state_block * self.n_colors  # 80
+        # self.no_of_blocks = 40 # does not do anything 
         self.block_duration_distribution = 'fixed_block_size'
 
         # ── Latent variable ───────────────────────────────────────────────
-        self.latent_dims = [1]   # scalar Z = rotation angle in radians
+        self.latent_dims = [2]   # scalar Z = rotation angle in radians
+        self.LU_lr = 0.2
+        self.l2_loss = 0.00001
         self.latent_chunks = 1
+        self.latent_activation = 'softmax'
+        self.no_of_steps_in_latent_space = 1
         self.exponential_increase_steepness = [2]
         self.exponential_increase_multipliers = [1]
 
@@ -400,7 +404,6 @@ class RotatingTargetsConfig(Config):
         self.pass_previous_latent = True
         self.batch_size = 1
         self.epochs = 1
-        self.LU_lr = 0.1
         self.WU_lr = 0.001
         self.loss_reduction_LU = 'mean'
         self.loss_reduction_WU = 'mean'
@@ -408,6 +411,14 @@ class RotatingTargetsConfig(Config):
         self.update_export_path()
         self._validate()
 
+    def reconfigure_for_prediction(self, experiment_to_run):
+        """Switch to test/inference mode: freeze weights, adjust dataset size."""
+        self.what_latent_to_use = 'self'
+        self.no_of_steps_in_weight_space = 0
+        if hasattr(self, 'task_length'):
+            self.block_size = 20 * self.task_length
+        self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
+        self.update_export_path()
 
 # Backwards-compatibility aliases
 seq_learnConfig = SeqLearnConfig
