@@ -132,12 +132,16 @@ class Config:
         os.makedirs(self.export_path, exist_ok=True)
 
     def reconfigure_for_prediction(self, experiment_to_run):
-        """Switch to test/inference mode: freeze weights, adjust dataset size."""
+        """Switch to test/inference mode: freeze weights, adjust dataset size.
+
+        Defaults to 4 blocks × 200 timesteps. Override either dimension before calling:
+            config.test_no_of_blocks = 8   # more blocks, block_size stays 200
+            config.test_block_size   = 500  # longer blocks, no_of_blocks stays 4
+        """
         self.what_latent_to_use = 'self'
         self.no_of_steps_in_weight_space = 0
-        if hasattr(self, 'task_length'):
-            self.block_size = 20 * self.task_length
-        self.no_of_blocks = 4
+        self.block_size  = getattr(self, 'test_block_size',   200)
+        self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.update_export_path()
 
     def _validate(self):
@@ -252,9 +256,10 @@ class ContextualSwitchingTaskConfig(Config):
         self.what_latent_to_use = 'self'
         self.batch_size = 1
         self.epochs = 1
-        self.no_of_blocks = 12
         self.no_of_steps_in_weight_space = 0
         self.add_noise_to_input = False
+        self.block_size   = getattr(self, 'test_block_size',   200)
+        self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.limited_testing_samples_no = int(2000 / self.batch_size)
 
 
@@ -328,8 +333,8 @@ class SeqLearnConfig(Config):
         """Switch to inference mode for the test phase."""
         self.what_latent_to_use = 'self'
         self.no_of_steps_in_weight_space = 0
-        self.block_size = 20 * self.task_length
-        self.no_of_blocks = 4
+        self.block_size   = getattr(self, 'test_block_size',   200)
+        self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.limited_testing_samples_no = int(500 / self.batch_size)
 
 
@@ -368,7 +373,7 @@ class RotatingTargetsConfig(Config):
         self.input_size  = self.n_colors + 2  # 7
         self.output_size = self.n_colors + 2  # 7
         self.hidden_size = 64
-
+        self.output_loss_mask = [0,0,0,0,0,1,1] #predicts only xy and ignores the color one-hot.
         # ── Sequence windowing ────────────────────────────────────────────
         # self.seq_len = self.n_colors * 2  # 10: one full mini-block (cue+outcome per color)
         self.seq_len = 5
@@ -405,8 +410,7 @@ class RotatingTargetsConfig(Config):
         """Switch to test/inference mode: freeze weights, adjust dataset size."""
         self.what_latent_to_use = 'self'
         self.no_of_steps_in_weight_space = 0
-        if hasattr(self, 'task_length'):
-            self.block_size = 20 * self.task_length
+        self.block_size   = getattr(self, 'test_block_size',   50)
         self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.update_export_path()
 

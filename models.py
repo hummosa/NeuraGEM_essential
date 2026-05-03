@@ -249,7 +249,7 @@ class RNN_with_latent(nn.Module):
             ids = taskID.to(self.device)
             ids = ids.long() if ids.dim() == 1 else ids[:, seq_step].long()
             latent = torch.zeros(batch_size, self.Z_dim, device=self.device)
-            latent.scatter_(dim=1, index=ids.unsqueeze(-1), value=1.0)
+            latent.scatter_(dim=1, index=ids, value=1.0)
             return self.latent_activation_function(latent)
 
         raise ValueError(f"Unsupported what_latent '{what_latent}'.")
@@ -280,7 +280,7 @@ class RNN_with_latent(nn.Module):
             if ids.dim() == 1:
                 ids = ids.unsqueeze(1).expand(-1, seq_len)
             latent = torch.zeros(batch_size, seq_len, self.Z_dim, device=self.device)
-            latent.scatter_(dim=2, index=ids.long().unsqueeze(-1), value=1.0)
+            latent.scatter_(dim=2, index=ids.long(), value=1.0) # .unsqueeze(-1) this awas applied to ids for some reason..
             return self.latent_activation_function(latent)
 
         raise ValueError(f"Unsupported what_latent '{what_latent}'.")

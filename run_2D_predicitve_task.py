@@ -41,22 +41,23 @@ from train_and_infer_functions import *
 from configs import RotatingTargetsConfig
 
 config = RotatingTargetsConfig()
-config.train_rotations = [0.0, 90.0]
+config.train_rotations = [0.0,  90.0,]
 # config.test_rotations  = [45.0, 135.0, 225.0, 315.0]
 config.test_rotations  = [0.0, 90.0]
 config.no_of_steps_in_latent_space = 1
 # block_size = n_miniblocks * n_colors * 20 = 800 timesteps per block
 # set blocked_phase_length to control number of training blocks (e.g. 10 blocks = 8000)
 config.add_passive_learning_phase = True
-config.passive_phase_length = 700
-config.blocked_phase_length = 2000   # ← ~10 training blocks (block_size=800)
-config.n_miniblocks_per_state_block = 20 
+config.passive_phase_length = 1000
+config.blocked_phase_length = 3000   # ← ~10 training blocks (block_size=800)
+config.n_miniblocks_per_state_block = 150 // config.n_colors  # 10 
 config.block_size  = config.n_miniblocks_per_state_block * config.n_colors  # 80
 config.test_no_of_blocks   = 4       # ← blocks in Phase 3 test
-config.LU_lr = 0.2
-config.l2_loss = 0.000_01
+config.LU_lr = 0.1
+config.l2_loss = 0.000_0011
 # config.seq_len = 4
-config.WU_lr = 0.001
+config.WU_lr = 0.002
+config.what_latent_to_use = 'self'
 # ── Train ─────────────────────────────────────────────────────────────────────
 
 print(f'Training with seed {config.env_seed}')
@@ -73,6 +74,11 @@ else:
     # Full overview: task structure, raw behaviour, latent dynamics, gradient signal
     panel_order = ['task_illustration_and_hierarchies', 'behavior', 'latent_2d', 'loss' ]
     fig = plot_logger_panels(logger, config, panel_order, x2=None, annotate_phases='behavior')
+    x_start = config.passive_phase_length+config.blocked_phase_length//2
+    x_end   = x_start + config.passive_phase_length+config.blocked_phase_length
+    fig = plot_logger_panels(logger, config, panel_order[1:], x1=x_start, x2=x_end, annotate_phases=None)
+    for ax in fig.axes:
+        ax.set_xlim(0, 1600)
 
 
 # ── Arena plot ────────────────────────────────────────────────────────────────
@@ -110,9 +116,15 @@ def plot_arena_trials(logger, config, t_start=0, t_end=None, same_block_only=Tru
     t_end = min(t_end, len(ii) - 2)  # need t+1 for outcome AND t+1 for pred
 
     if same_block_only:
-        block_id = ll[t_start]
-        valid = np.where(ll == block_id)[0]
-        valid = valid[(valid >= t_start) & (valid < t_end)]
+        # llcid repeats the same value (rotation angle) across many blocks, so
+        # value-equality would match all blocks at that rotation.  Instead, find
+        # the single contiguous run of constant llcid that contains t_start.
+        changes = np.flatnonzero(np.diff(ll)) + 1  # indices where llcid changes
+        block_starts = np.concatenate([[0], changes])
+        block_ends   = np.concatenate([changes, [len(ll)]])
+        bi = int(np.searchsorted(block_starts, t_start, side='right')) - 1
+        valid = np.arange(int(block_starts[bi]), min(int(block_ends[bi]), t_end))
+        valid = valid[valid >= t_start]
     else:
         valid = np.arange(t_start, t_end)
 
@@ -136,10 +148,10 @@ def plot_arena_trials(logger, config, t_start=0, t_end=None, same_block_only=Tru
         color_idx = int(np.argmax(ii[t, :nc]))
         c = colors(color_idx)
         obs_xy  = ii[t + 1, -2:]   # outcome frame carries x, y
-        ax.scatter(*obs_xy, color=c, s=18, alpha=0.7, zorder=2)
+        ax.scatter(*obs_xy, color=c, s=12, alpha=0.35, marker='x', linewidths=1, zorder=1)
         if has_preds:
             pred_xy = oi[t + 1, -2:]   # oi[t+1] is the prediction FOR the outcome frame
-            ax.scatter(*pred_xy, color=c, s=8, alpha=0.35, marker='x', linewidths=1, zorder=1)
+            ax.scatter(*pred_xy, color=c, s=15, alpha=0.6, zorder=2)
 
     ax.set_aspect('equal')
     ax.set_xlabel('x'); ax.set_ylabel('y')

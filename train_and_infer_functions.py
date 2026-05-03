@@ -70,15 +70,17 @@ def _prepare_batch_inputs(model, config, raw_inputs, batch_llcids):
     if config.predict_first_frame:
         zero_frame = torch.zeros_like(model_inputs[:, :1, :])
         model_inputs = torch.cat((zero_frame, model_inputs[:, :-1, :]), dim=1)
+        latent_inputs = llcids[:, :]
     else:
         model_inputs = model_inputs[:, :-1, :]
+        latent_inputs = llcids[:, 1:]
 
     combined_input = model.combine_input_with_latent(
-        model_inputs, what_latent=config.what_latent_to_use, taskID=llcids.round(),
+        model_inputs, what_latent=config.what_latent_to_use, taskID=latent_inputs,
     )
 
 
-    return combined_input, model_inputs, inputs, llcids
+    return combined_input, model_inputs, inputs, latent_inputs, #llcids
 
 
 
@@ -262,11 +264,11 @@ def predictive_learning(logger, config, dataloader, model,
 
         if config.update_latent_before_weights:
             first_full_loss = _latent_update_step(
-                model, config, core_inputs, inputs, criterion, logger, batch_hlcids
+                model, config, core_inputs, inputs, criterion, logger, llcids
             )
         # ── 2. Weight Update (WU) ─────────────────────────────────────
         outputs, full_loss, hidden_states = _weight_update_step(
-            model, config, combined_input, core_inputs, inputs, batch_hlcids, criterion
+            model, config, combined_input, core_inputs, inputs, llcids, criterion
         )
 
         # Log weight gradient norms for diagnostic use
