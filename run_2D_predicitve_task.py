@@ -50,13 +50,13 @@ config.no_of_steps_in_latent_space = 1
 config.add_passive_learning_phase = True
 config.passive_phase_length = 1000
 config.blocked_phase_length = 3000   # ← ~10 training blocks (block_size=800)
-config.n_miniblocks_per_state_block = 150 // config.n_colors  # 10 
+config.n_miniblocks_per_state_block = 200 // config.n_colors  # 10 
 config.block_size  = config.n_miniblocks_per_state_block * config.n_colors  # 80
 config.test_no_of_blocks   = 4       # ← blocks in Phase 3 test
 config.LU_lr = 0.1
 config.l2_loss = 0.000_0011
 # config.seq_len = 4
-config.WU_lr = 0.002
+config.WU_lr = 0.00051
 config.what_latent_to_use = 'self'
 # ── Train ─────────────────────────────────────────────────────────────────────
 
@@ -162,7 +162,7 @@ def plot_arena_trials(logger, config, t_start=0, t_end=None, same_block_only=Tru
     return fig
 
 fig, ax = plt.subplots(1,2, figsize=(7, 3.5))
-t_start = logger.phases[1][1] if len(logger.phases) > 1 else (len(logger.inputs) - 2*  config.block_size) 
+t_start = logger.phases[2][1] if len(logger.phases) > 1 else (len(logger.inputs) - 2*  config.block_size) 
 print(f'Plotting blocks at timesteps: {t_start} and {t_start + config.block_size}')
 _=plot_arena_trials(logger, config, t_start=t_start, ax=ax[0])
 plot_arena_trials(logger, config, t_start=t_start+config.block_size, ax=ax[1])

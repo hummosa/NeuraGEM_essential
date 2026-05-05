@@ -1,9 +1,15 @@
-"""Sweep correlated noise effects on RNN (short), MRNN (long), and NeuraGEM.
+"""Sweep canonical RNN vs NeuraGEM conditions over multiple seeds.
 
-noise_correlation_tau is swept over [1, 2, 4, 6, 10] with 20 seeds per combination.
-NeuraGEM additionally sweeps l2_loss and LU_lr.
+Conditions mirror run_comparisons.py exactly:
+  rnn               : no_of_steps_in_latent_space=0
+  neuragem          : no_of_steps_in_latent_space=1
+  neuragem_lu_first : update_latent_before_weights=True
+  neuragem_slow     : LU_lr=0.2, l2_loss=5e-5
+  neuragem_fast     : LU_lr=0.7, l2_loss=8e-4
 
-Run locally (sequential over all combinations):
+Correlated noise is disabled. No tau sweep.
+
+Run locally (sequential):
     python cst_correlated_noise_sweep.py
 
 Run on SLURM (one job per array element):
@@ -17,7 +23,7 @@ import os
 import pickle
 from dataclasses import dataclass
 from itertools import product
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List
 
 import numpy as np
 import torch
@@ -26,47 +32,35 @@ from configs import ContextualSwitchingTaskConfig
 from train_and_infer_functions import train_model
 
 
-# ── Experiment configuration ──────────────────────────────────────────────────
+# ── Canonical conditions (mirrors run_comparisons.py) ────────────────────────
+
+CONDITIONS: Dict[str, Dict[str, Any]] = {
+    "rnn":               dict(no_of_steps_in_latent_space=0),
+    "neuragem":          dict(no_of_steps_in_latent_space=1),
+    "neuragem_lu_first": dict(no_of_steps_in_latent_space=1, update_latent_before_weights=True),
+    "neuragem_slow":     dict(no_of_steps_in_latent_space=1, LU_lr=0.2,  l2_loss=5e-5),
+    "neuragem_fast":     dict(no_of_steps_in_latent_space=1, LU_lr=0.7,  l2_loss=8e-4),
+}
 
 DEFAULT_SEEDS = 10
 
-# Grid convention:
-#   string key  → one scalar parameter swept independently (full Cartesian product).
-#   tuple key   → multiple parameters swept together as atomic units (not crossed).
-#
-# Example of the tuple form used below:
-#   ("l2_loss", "LU_lr"): [(0.00005, 0.1), (0.0001, 0.3), ...]
-#   means run (l2_loss=0.00005, LU_lr=0.1) as one job, (l2_loss=0.0001, LU_lr=0.3)
-#   as another, etc. — never the cross-product of the two lists.
-#   The tuple still participates in the Cartesian product with all other keys
-#   (e.g. noise_correlation_tau and seed), so each paired combo is run for every
-#   tau and every seed.
+# Each condition is swept only over seeds — no other grid axes.
 PARAM_GRIDS: Dict[str, Any] = {
-    "neuragem": {
-        "noise_correlation_tau":  [1, ],
-        ("l2_loss", "LU_lr"):     [(0.00005, 0.1), (0.0001, 0.3), (0.0003, 0.5), (0.0008, 0.7)],
-        "seed":                   list(range(DEFAULT_SEEDS)),
-    },
-    "rnn_short": {
-        "noise_correlation_tau": [1, ],
-        "seed": list(range(DEFAULT_SEEDS)),
-    },
-    "rnn_long": {
-        "noise_correlation_tau": [1, ],
-        "seed": list(range(DEFAULT_SEEDS)),
-    },
+    name: {"seed": list(range(DEFAULT_SEEDS))}
+    for name in CONDITIONS
 }
 
+# Shared overrides applied to every condition (correlated noise is off).
 TRAIN_OVERRIDES: Dict[str, Any] = {
     "blocked_phase_length": 5000,
-    "correlated_noise": False,
-    "update_latent_before_weights": False,
-
+    "correlated_noise":     False,
+    "default_std":          0.1,
 }
 
-RUN_NAME   = "not_correlated"
-EXPORT_ROOT = f"./exports/correlated_noise/{RUN_NAME}"
-SKIP_EXISTING = False  # Whether to skip jobs with existing results (based on filepath presence).
+RUN_NAME    = "canonical_conditions"
+EXPORT_ROOT = f"./exports/canonical/{RUN_NAME}"
+SKIP_EXISTING = False
+
 
 # ── Job dataclass & helpers ───────────────────────────────────────────────────
 
@@ -84,7 +78,6 @@ def generate_jobs() -> List[ExperimentJob]:
             params: Dict[str, Any] = {}
             for key, val in zip(keys, combo):
                 if isinstance(key, tuple):
-                    # Tuple key: expand each paired param individually into the flat dict.
                     params.update(zip(key, val))
                 else:
                     params[key] = val
@@ -93,17 +86,16 @@ def generate_jobs() -> List[ExperimentJob]:
 
 
 def combo_key(params: Dict[str, Any]) -> str:
-    """Stable string key from non-seed params, used for folder naming."""
     filtered = {k: v for k, v in params.items() if k != "seed"}
-    return "_".join(f"{k}-{v}" for k, v in sorted(filtered.items()))
+    return "_".join(f"{k}-{v}" for k, v in sorted(filtered.items())) or "default"
 
 
 # ── Single job execution ──────────────────────────────────────────────────────
 
 def run_job(job: ExperimentJob, job_index: int | None = None, total: int | None = None) -> None:
     params = job.param_combination
-    seed = params.get("seed", 0)
-    key = combo_key(params)
+    seed   = params.get("seed", 0)
+    key    = combo_key(params)
 
     export_path = os.path.join(EXPORT_ROOT, job.model_name, key)
     os.makedirs(export_path, exist_ok=True)
@@ -119,25 +111,15 @@ def run_job(job: ExperimentJob, job_index: int | None = None, total: int | None 
 
     config = ContextualSwitchingTaskConfig(experiment_to_run="figure")
 
-    # Apply sweep params (except seed)
-    for k, v in params.items():
-        if k == "seed":
-            continue
-        setattr(config, k, v)
-    config.env_seed = seed
-
-    # Apply shared training overrides
+    # Apply shared training overrides first.
     for k, v in TRAIN_OVERRIDES.items():
         setattr(config, k, v)
 
-    # Model-specific architecture
-    if job.model_name == "rnn_short":
-        config.no_of_steps_in_latent_space = 0
-    elif job.model_name == "rnn_long":
-        config.seq_len = 50
-        config.no_of_steps_in_latent_space = 0
-    # neuragem: default seq_len and latent updates
+    # Apply condition-specific overrides (may override shared defaults).
+    for k, v in CONDITIONS[job.model_name].items():
+        setattr(config, k, v)
 
+    config.env_seed = seed
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -154,7 +136,7 @@ def run_job(job: ExperimentJob, job_index: int | None = None, total: int | None 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    jobs = generate_jobs()
+    jobs  = generate_jobs()
     total = len(jobs)
     print(f"Total jobs: {total}")
 
