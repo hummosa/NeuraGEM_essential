@@ -24,34 +24,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
+import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
 import plot_style
 from functions_and_utils import extract_block_corrects
+from cst_correlated_noise_config import ConditionInfo, CONDITION_INFO, RUN_NAME, EXPORT_ROOT
 
 plot_style.set_plot_style()
-COLOR_SCHEME = plot_style.Color_scheme()
-
-
-# ---------------------------------------------------------------------------
-# Condition metadata — mirrors cst_correlated_noise_sweep.CONDITIONS
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class ConditionInfo:
-    label: str
-    color: Any
-
-
-CONDITION_INFO: Dict[str, ConditionInfo] = {
-    "rnn":               ConditionInfo("RNN",                         COLOR_SCHEME.short_horizon_rnn),
-    "neuragem":          ConditionInfo("NeuraGEM",                    COLOR_SCHEME.neuragem),
-    "neuragem_lu_first": ConditionInfo("NeuraGEM LU-first",           plt.cm.tab10(2)),   # green
-    "neuragem_slow":     ConditionInfo(r"NeuraGEM slow (LU_lr=0.2)",  plt.cm.tab10(1)),   # orange
-    "neuragem_fast":     ConditionInfo(r"NeuraGEM fast (LU_lr=0.7)",  plt.cm.tab10(3)),   # red
-}
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +52,12 @@ class AnalysisParams:
     show_plots: bool = True
     save_plots: bool = True
     skip_first_blocks: int = 0          # drop warm-up blocks from display
+    block_group_max: int | None = 50    # cap x-axis of block-level plots (None = all)
+    asymptotic_n_last_groups: int = 1   # how many trailing block-groups define "asymptote"
+    adaptation_threshold: float = 0.5  # learning speed: fraction of (initial−asymptote) late-error reduction
+    adaptation_switch_threshold: float = 0.85  # adaptation speed: fraction of (peak−floor) reduction post-switch
+    switch_pre_window:  int = 4         # timesteps before switch to include
+    switch_post_window: int = 8        # timesteps after switch to include
 
 
 # ---------------------------------------------------------------------------
@@ -90,9 +78,6 @@ CANONICAL_SPECS: List[CanonicalSpec] = [
         conditions=list(CONDITION_INFO.keys()),
     ),
 ]
-
-RUN_NAME    = "canonical_conditions"
-EXPORT_ROOT = Path(f"./exports/canonical/{RUN_NAME}")
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +262,61 @@ def compute_block_end_lr(
 
 
 # ---------------------------------------------------------------------------
+# Switch-aligned analysis
+# ---------------------------------------------------------------------------
+
+def extract_switch_aligned_windows(
+    loggers: Sequence[Any],
+    pre_window: int,
+    post_window: int,
+    condition_name: str,
+) -> np.ndarray | None:
+    """Per-timestep |input - pred| windows aligned to block switches.
+
+    Uses only switches in the last third of blocks. Discards any switch where
+    the new block has fewer than post_window timesteps or there are fewer than
+    pre_window timesteps available before the switch.
+
+    Returns array of shape (n_windows, pre_window + post_window), or None.
+    """
+    all_windows: List[np.ndarray] = []
+
+    for logger in loggers:
+        ll  = np.concatenate(logger.llcids,           axis=0).reshape(-1)
+        oi  = np.concatenate(logger.predicted_outputs, axis=0).reshape(-1)
+        inp = np.concatenate(logger.inputs,            axis=0).reshape(-1)
+
+        metric = np.abs(inp - oi)
+        T      = len(ll)
+
+        block_starts = [0] + [t for t in range(1, T) if ll[t] != ll[t - 1]]
+        block_ends   = block_starts[1:] + [T]
+        n_blocks     = len(block_starts)
+
+        first_third_end = max(2, n_blocks // 3)
+
+        for b in range(1, first_third_end):
+            switch_t  = block_starts[b]
+            block_end = block_ends[b]
+
+            if switch_t - pre_window < 0:
+                continue
+            if block_end - switch_t < post_window:
+                continue
+
+            all_windows.append(metric[switch_t - pre_window : switch_t + post_window])
+
+    n = len(all_windows)
+    if n == 0:
+        print(f"  WARNING [{condition_name}]: no valid switch windows found.")
+        return None
+    if n < 10:
+        print(f"  WARNING [{condition_name}]: only {n} switch windows available (< 10), treat with caution.")
+
+    return np.stack(all_windows)  # (n_windows, pre_window + post_window)
+
+
+# ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
 
@@ -284,21 +324,31 @@ def plot_canonical(
     spec: CanonicalSpec,
     params: AnalysisParams,
     export_dir: Path,
+    loggers_cache: Dict[str, List],
 ) -> plt.Figure:
-    """Two stacked subplots (|pred−mean|, behavioral LR), one line per condition."""
-    fig, (ax_top, ax_bot) = plt.subplots(
-        2, 1,
-        figsize=(params.subplot_width, params.subplot_height * 2),
+    """Training curves (|pred−mean|, behavioral LR) + asymptotic + adaptation-speed panels."""
+    summary_w = params.subplot_height  # square-ish panels
+    fig = plt.figure(
+        figsize=(params.subplot_width + summary_w, params.subplot_height * 2),
         dpi=params.dpi,
-        constrained_layout=True,
+        layout='constrained',
     )
+    gs = gridspec.GridSpec(
+        2, 2,
+        width_ratios=[params.subplot_width, summary_w],
+        figure=fig,
+    )
+    ax_top = fig.add_subplot(gs[0, 0])
+    ax_bot = fig.add_subplot(gs[1, 0])
+    ax_asy = fig.add_subplot(gs[0, 1])
+    ax_spd = fig.add_subplot(gs[1, 1])
 
-    loggers_cache: Dict[str, List] = {}
+    asymptotic_pts: List[Tuple[str, float, float]] = []  # (cond_name, mean, sem)
+    adaptation_pts: List[Tuple[str, float | None]] = []  # (cond_name, x_at_crossing | None)
 
     for cond_name in spec.conditions:
         info = CONDITION_INFO.get(cond_name, ConditionInfo(label=cond_name, color="grey"))
-        loggers = load_loggers(cond_name, params.n_seeds)
-        loggers_cache[cond_name] = loggers
+        loggers = loggers_cache.get(cond_name, [])
         if not loggers:
             continue
 
@@ -316,10 +366,34 @@ def plot_canonical(
             if len(x) <= skip:
                 continue
             x, mean_curve, sem_curve = x[skip:], mean_curve[skip:], sem_curve[skip:]
+        if params.block_group_max is not None:
+            x, mean_curve, sem_curve = x[:params.block_group_max], mean_curve[:params.block_group_max], sem_curve[:params.block_group_max]
 
-        ax_top.plot(x, mean_curve, color=info.color, linewidth=1.5, label=info.label)
+        ax_top.plot(x, mean_curve, color=info.color, linewidth=1.75, label=info.label)
         ax_top.fill_between(x, mean_curve - sem_curve, mean_curve + sem_curve,
                             color=info.color, alpha=0.2, linewidth=0)
+
+        n_last = min(params.asymptotic_n_last_groups, len(mean_curve))
+        asym_mean = float(mean_curve[-n_last:].mean())
+        asym_sem  = float(sem_curve[-n_last:].mean())
+        asymptotic_pts.append((cond_name, asym_mean, asym_sem))
+
+        # Adaptation speed: first block-group where error drops by adaptation_threshold
+        # fraction of its own (initial − asymptote) range.
+        initial = float(mean_curve[0])
+        if initial > asym_mean:
+            thresh = asym_mean + (initial - asym_mean) * (1.0 - params.adaptation_threshold)
+            crossings = np.where(mean_curve <= thresh)[0]
+            if len(crossings) > 0:
+                cross_x = float(x[crossings[0]])
+                adaptation_pts.append((cond_name, cross_x))
+                ax_top.axvline(cross_x, color=info.color, linewidth=0.8,
+                               linestyle=':', alpha=0.55, zorder=0)
+            else:
+                adaptation_pts.append((cond_name, None))
+                print(f"  [{cond_name}] adaptation threshold not reached in window")
+        else:
+            adaptation_pts.append((cond_name, None))
 
     x_label = (
         f'Block group (×{params.aggregate_blocks})'
@@ -339,14 +413,73 @@ def plot_canonical(
         x_lr, mean_lr, sem_lr = compute_block_end_lr(loggers, params)
         if x_lr is None:
             continue
+        if params.block_group_max is not None:
+            x_lr, mean_lr, sem_lr = x_lr[:params.block_group_max], mean_lr[:params.block_group_max], sem_lr[:params.block_group_max]
 
-        ax_bot.plot(x_lr, mean_lr, color=info.color, linewidth=1.5, label=info.label)
+        ax_bot.plot(x_lr, mean_lr, color=info.color, linewidth=1.75, label=info.label)
         ax_bot.fill_between(x_lr, mean_lr - sem_lr, mean_lr + sem_lr,
                             color=info.color, alpha=0.2, linewidth=0)
 
     ax_bot.set_xlabel(x_label)
     ax_bot.set_ylabel('Behavioral LR')
     ax_bot.legend(fontsize=7, loc='upper right')
+
+    # --- Asymptotic summary panel (top-right) ---
+    if asymptotic_pts:
+        a_conds, a_means, a_sems = zip(*asymptotic_pts)
+        xs = np.arange(len(a_conds))
+        ax_asy.plot(xs, a_means, color='0.65', linewidth=1.0, zorder=1)
+        for i, (cond_name, mean_val, sem_val) in enumerate(asymptotic_pts):
+            info = CONDITION_INFO.get(cond_name, ConditionInfo(label=cond_name, color='grey'))
+            ax_asy.errorbar(
+                xs[i], mean_val, yerr=sem_val,
+                fmt='o', color=info.color,
+                capsize=3, linewidth=1.5, markersize=6, zorder=2,
+            )
+        ax_asy.set_xticks(xs)
+        ax_asy.set_xticklabels(
+            [CONDITION_INFO.get(c, ConditionInfo(label=c, color='grey')).label
+             for c in a_conds],
+            rotation=45, ha='right', fontsize=7,
+        )
+        n_last = params.asymptotic_n_last_groups
+        group_word = 'group' if n_last == 1 else 'groups'
+        ax_asy.set_ylabel(f'Asymptotic error\n(last {n_last} {group_word})', fontsize=8)
+        ax_asy.set_title('Asymptote', fontsize=9)
+
+    # --- Adaptation speed panel (bottom-right) ---
+    # Shows the block-group index at which each condition's mean curve first drops
+    # by adaptation_threshold fraction of its (initial − asymptote) range.
+    # Dotted vertical lines on ax_top mark the same crossing points.
+    valid_spd = [(c, v) for c, v in adaptation_pts if v is not None]
+    if valid_spd:
+        spd_x = np.arange(len(adaptation_pts))
+        spd_y = [v for _, v in adaptation_pts]
+        # connecting line skips None gaps
+        valid_mask = np.array([v is not None for _, v in adaptation_pts])
+        spd_y_arr = np.array([v if v is not None else np.nan for v in spd_y], dtype=float)
+        if valid_mask.sum() > 1:
+            ax_spd.plot(
+                spd_x[valid_mask],
+                spd_y_arr[valid_mask],
+                color='0.65', linewidth=1.0, zorder=1,
+            )
+        for i, (cond_name, speed) in enumerate(adaptation_pts):
+            info = CONDITION_INFO.get(cond_name, ConditionInfo(label=cond_name, color='grey'))
+            if speed is not None:
+                ax_spd.plot(spd_x[i], speed, 'o', color=info.color, markersize=6, zorder=2)
+            else:
+                ax_spd.plot(spd_x[i], ax_spd.get_ylim()[1] if ax_spd.get_ylim()[1] != 1.0 else 0,
+                            '^', color=info.color, markersize=6, alpha=0.4, zorder=2)
+        ax_spd.set_xticks(np.arange(len(adaptation_pts)))
+        ax_spd.set_xticklabels(
+            [CONDITION_INFO.get(c, ConditionInfo(label=c, color='grey')).label
+             for c, _ in adaptation_pts],
+            rotation=45, ha='right', fontsize=7,
+        )
+        frac_pct = int(params.adaptation_threshold * 100)
+        ax_spd.set_ylabel(x_label, fontsize=8)
+        ax_spd.set_title(f'Learning speed\n({frac_pct}% late-error reduction)', fontsize=9)
 
     fig.suptitle(spec.title, fontsize=10)
 
@@ -364,18 +497,149 @@ def plot_canonical(
     return fig
 
 
+def plot_switch_aligned(
+    params: AnalysisParams,
+    export_dir: Path,
+    loggers_cache: Dict[str, List],
+) -> plt.Figure:
+    """Switch-aligned |pred − input| curves + adaptation-speed summary panel.
+
+    Floor  = mean error over the pre-switch window (t < 0).
+    Peak   = error at t = 0 (the switch).
+    Threshold = floor + (peak − floor) × (1 − adaptation_switch_threshold).
+    Adaptation speed = timesteps post-switch to first reach threshold.
+    """
+    pre  = params.switch_pre_window
+    post = params.switch_post_window
+    x    = np.arange(-pre, post)
+
+    summary_w = params.subplot_height * 0.9
+    fig = plt.figure(
+        figsize=(params.subplot_width + summary_w, params.subplot_height),
+        dpi=params.dpi,
+        layout='constrained',
+    )
+    gs = gridspec.GridSpec(
+        1, 2,
+        width_ratios=[params.subplot_width, summary_w],
+        figure=fig,
+    )
+    ax     = fig.add_subplot(gs[0, 0])
+    ax_spd = fig.add_subplot(gs[0, 1])
+
+    adaptation_pts: List[Tuple[str, float | None]] = []
+
+    for cond_name, info in CONDITION_INFO.items():
+        loggers = loggers_cache.get(cond_name, [])
+        if not loggers:
+            continue
+
+        windows = extract_switch_aligned_windows(loggers, pre, post, cond_name)
+        if windows is None:
+            continue
+
+        mean = windows.mean(axis=0)
+        sem  = windows.std(axis=0, ddof=1) / np.sqrt(len(windows))
+
+        ax.plot(x, mean, color=info.color, linewidth=1.75, label=info.label)
+        ax.fill_between(x, mean - sem, mean + sem,
+                        color=info.color, alpha=0.2, linewidth=0)
+
+        # Adaptation speed: how many post-switch timesteps to drop
+        # adaptation_switch_threshold of the (peak − floor) range.
+        floor = float(mean[:pre].mean())   # pre-switch steady state
+        peak  = float(mean[pre])           # error at the switch (t=0)
+        if peak > floor:
+            thresh = floor + (peak - floor) * (1.0 - params.adaptation_switch_threshold)
+            crossings = np.where(mean[pre:] <= thresh)[0]
+            if len(crossings) > 0:
+                speed = float(crossings[0])
+                adaptation_pts.append((cond_name, speed))
+                ax.axvline(speed, color=info.color, linewidth=0.8,
+                           linestyle=':', alpha=0.55, zorder=0)
+            else:
+                adaptation_pts.append((cond_name, None))
+                print(f"  [{cond_name}] switch adaptation threshold not reached in post-window")
+        else:
+            adaptation_pts.append((cond_name, None))
+
+    ax.axvline(0, color='k', linewidth=0.8, linestyle='--', alpha=0.6)
+    ax.set_xlabel('Timestep relative to block switch')
+    ax.set_ylabel('|pred − input|')
+    ax.set_title('Adaptation around block switch  (first ⅓ of training)', fontsize=9)
+    ax.legend(fontsize=7, loc='upper right')
+
+    # --- Adaptation speed summary ---
+    valid_spd = [(c, v) for c, v in adaptation_pts if v is not None]
+    if valid_spd:
+        spd_x     = np.arange(len(adaptation_pts))
+        valid_mask = np.array([v is not None for _, v in adaptation_pts])
+        spd_y_arr  = np.array([v if v is not None else np.nan for _, v in adaptation_pts],
+                               dtype=float)
+        if valid_mask.sum() > 1:
+            ax_spd.plot(spd_x[valid_mask], spd_y_arr[valid_mask],
+                        color='0.65', linewidth=1.0, zorder=1)
+        for i, (cond_name, speed) in enumerate(adaptation_pts):
+            info = CONDITION_INFO.get(cond_name, ConditionInfo(label=cond_name, color='grey'))
+            if speed is not None:
+                ax_spd.plot(spd_x[i], speed, 'o', color=info.color, markersize=6, zorder=2)
+            else:
+                ax_spd.plot(spd_x[i], post, '^', color=info.color,
+                            markersize=6, alpha=0.4, zorder=2)
+        ax_spd.set_xticks(spd_x)
+        ax_spd.set_xticklabels(
+            [CONDITION_INFO.get(c, ConditionInfo(label=c, color='grey')).label
+             for c, _ in adaptation_pts],
+            rotation=45, ha='right', fontsize=7,
+        )
+        frac_pct = int(params.adaptation_switch_threshold * 100)
+        ax_spd.set_ylabel('Timesteps post-switch', fontsize=8)
+        ax_spd.set_title(f'Adaptation speed\n({frac_pct}% reduction)', fontsize=9)
+
+    if params.save_plots:
+        export_dir.mkdir(parents=True, exist_ok=True)
+        out = export_dir / "switch_aligned.pdf"
+        fig.savefig(out, bbox_inches="tight")
+        print(f"  Saved → {out}")
+
+    if params.show_plots:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def load_all_loggers(params: AnalysisParams) -> Dict[str, List]:
+    """Load loggers for every condition once and return a shared cache."""
+    print("Loading loggers...")
+    cache = {}
+    for cond_name in CONDITION_INFO:
+        cache[cond_name] = load_loggers(cond_name, params.n_seeds)
+    return cache
+
+
+def main() -> dict:
+    global loggers_cache
     analysis_params = AnalysisParams()
-    export_dir = EXPORT_ROOT / "figures"
+    export_dir      = EXPORT_ROOT / "figures"
+
+    if 'loggers_cache' not in globals() or loggers_cache is None:
+        loggers_cache = load_all_loggers(analysis_params)
 
     for spec in CANONICAL_SPECS:
         print(f"\n=== {spec.key} ===")
-        plot_canonical(spec, analysis_params, export_dir)
+        plot_canonical(spec, analysis_params, export_dir, loggers_cache)
+
+    print("\n=== switch_aligned ===")
+    plot_switch_aligned(analysis_params, export_dir, loggers_cache)
+
+    return loggers_cache
 
 
 if __name__ == "__main__":
-    main()
+    loggers_cache = main()

@@ -323,9 +323,9 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
         ax.set_xlim(0, x2 - x1)
         if config.dataset_name == 'seq_learn':
             # plot_switches(ax, states, both_starts)
-            plot_switches_from_logger(ax, logger, config, use_ll=False)
+            plot_switches_from_logger(ax, logger, config, use_ll=False, x1=x1, x2=x2)
         elif panel not in  ['task_illustration_and_hierarchies', 'latent', 'latent_chunk_1', 'latent_chunk_2']:
-            plot_switches_from_logger(ax, logger, config)
+            plot_switches_from_logger(ax, logger, config, x1=x1, x2=x2)
         
         # annotate_training_phases(ax, config, logger=logger, add_text=True if ax==axes['A'] else False)
         # remove xtick labels except for bottom panel
@@ -749,7 +749,7 @@ def plot_switches(ax, states, both_starts):
         # if isw % 2 == 0 and len(switches) > isw:
         #     ax.axvspan(switch, switches[isw+1], color='b', alpha=0.1)
 
-def plot_switches_from_logger(ax, logger, config, use_ll=True, alpha =0.1, alpha_interleaved=0.03):
+def plot_switches_from_logger(ax, logger, config, use_ll=True, alpha =0.1, alpha_interleaved=0.03, x1=0, x2=None):
     import plot_style
     cs = plot_style.Color_scheme()
     ll = np.concatenate(logger.llcids, axis=0)
@@ -759,8 +759,10 @@ def plot_switches_from_logger(ax, logger, config, use_ll=True, alpha =0.1, alpha
         hh = hh.reshape(-1, hh.shape[-1])
         ll = hh # use high level instead
 
+    if x2 is None:
+        x2 = len(ll)
+
     unique_ll = np.unique(ll)
-    # ll_cmap = plt.get_cmap('Pastel', len(unique_ll))
     ll_cmap = plt.get_cmap('Paired', 1+len(np.unique(ll)))
 
     # check at which time steps the task ll changes
@@ -769,14 +771,17 @@ def plot_switches_from_logger(ax, logger, config, use_ll=True, alpha =0.1, alpha
     for isw, switch in enumerate(switches):
         c = cs.contextA if isw%2==0 else cs.contextB
 
-        # cmap = plt.get_cmap('Paired')    
-        # c = cmap(1) if isw % 2 == 0 else cmap(5)
-         
         if isw < len(switches) -1 :
-            # c = ll_cmap(ll[switch][0])
-            # print(switch, switches[isw+1])
-            alpha = alpha if (switches[isw+1] - switch) > 7 else alpha_interleaved # make it much lighter for shuffled or interleaved
-            ax.axvspan(switch, switches[isw+1], color=c, alpha=alpha)
+            span_start = switch
+            span_end = switches[isw+1]
+            # skip spans entirely outside the visible window
+            if span_end <= x1 or span_start >= x2:
+                continue
+            # clip to [x1, x2] and convert to relative (plot) coordinates
+            rel_start = max(span_start, x1) - x1
+            rel_end = min(span_end, x2) - x1
+            span_alpha = alpha if (span_end - span_start) > 7 else alpha_interleaved
+            ax.axvspan(rel_start, rel_end, color=c, alpha=span_alpha)
 
 def plot_corrects_by_transition(logger, get_corrects_and_trial_starts):
     

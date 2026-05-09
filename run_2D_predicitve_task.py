@@ -49,15 +49,25 @@ config.no_of_steps_in_latent_space = 1
 # set blocked_phase_length to control number of training blocks (e.g. 10 blocks = 8000)
 config.add_passive_learning_phase = True
 config.passive_phase_length = 1000
-config.blocked_phase_length = 3000   # ← ~10 training blocks (block_size=800)
+config.blocked_phase_length = 1000   # ← 
 config.n_miniblocks_per_state_block = 200 // config.n_colors  # 10 
 config.block_size  = config.n_miniblocks_per_state_block * config.n_colors  # 80
 config.test_no_of_blocks   = 4       # ← blocks in Phase 3 test
-config.LU_lr = 0.1
-config.l2_loss = 0.000_0011
+config.pass_previous_latent = True
+if config.pass_previous_latent:
+    config.LU_lr = 0.3
+    config.l2_loss = 0.000_0011
+else:
+    config.LU_lr = 0.3
+    config.l2_loss = 0.
+    config.no_of_steps_in_latent_space = 3
+    config.seq_len = 3
 # config.seq_len = 4
 config.WU_lr = 0.00051
 config.what_latent_to_use = 'self'
+# config.what_latent_to_use = 'taskID'
+config.pre_gating = False
+config.post_gating = True
 # ── Train ─────────────────────────────────────────────────────────────────────
 
 print(f'Training with seed {config.env_seed}')

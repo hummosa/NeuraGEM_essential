@@ -1,13 +1,7 @@
 """Sweep canonical RNN vs NeuraGEM conditions over multiple seeds.
 
-Conditions mirror run_comparisons.py exactly:
-  rnn               : no_of_steps_in_latent_space=0
-  neuragem          : no_of_steps_in_latent_space=1
-  neuragem_lu_first : update_latent_before_weights=True
-  neuragem_slow     : LU_lr=0.2, l2_loss=5e-5
-  neuragem_fast     : LU_lr=0.7, l2_loss=8e-4
-
-Correlated noise is disabled. No tau sweep.
+All configurable state (conditions, seeds, overrides, export paths) lives in
+cst_correlated_noise_config.py — edit that file to change what is run.
 
 Run locally (sequential):
     python cst_correlated_noise_sweep.py
@@ -30,36 +24,16 @@ import torch
 
 from configs import ContextualSwitchingTaskConfig
 from train_and_infer_functions import train_model
+from cst_correlated_noise_config import (
+    CONDITIONS, DEFAULT_SEEDS, TRAIN_OVERRIDES, SKIP_EXISTING, RUN_NAME, EXPORT_ROOT,
+)
 
-
-# ── Canonical conditions (mirrors run_comparisons.py) ────────────────────────
-
-CONDITIONS: Dict[str, Dict[str, Any]] = {
-    "rnn":               dict(no_of_steps_in_latent_space=0),
-    "neuragem":          dict(no_of_steps_in_latent_space=1),
-    "neuragem_lu_first": dict(no_of_steps_in_latent_space=1, update_latent_before_weights=True),
-    "neuragem_slow":     dict(no_of_steps_in_latent_space=1, LU_lr=0.2,  l2_loss=5e-5),
-    "neuragem_fast":     dict(no_of_steps_in_latent_space=1, LU_lr=0.7,  l2_loss=8e-4),
-}
-
-DEFAULT_SEEDS = 10
 
 # Each condition is swept only over seeds — no other grid axes.
 PARAM_GRIDS: Dict[str, Any] = {
     name: {"seed": list(range(DEFAULT_SEEDS))}
     for name in CONDITIONS
 }
-
-# Shared overrides applied to every condition (correlated noise is off).
-TRAIN_OVERRIDES: Dict[str, Any] = {
-    "blocked_phase_length": 5000,
-    "correlated_noise":     False,
-    "default_std":          0.1,
-}
-
-RUN_NAME    = "canonical_conditions"
-EXPORT_ROOT = f"./exports/canonical/{RUN_NAME}"
-SKIP_EXISTING = False
 
 
 # ── Job dataclass & helpers ───────────────────────────────────────────────────
