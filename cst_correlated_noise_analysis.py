@@ -51,7 +51,8 @@ class AnalysisParams:
     dpi: int = 100
     show_plots: bool = True
     save_plots: bool = True
-    skip_first_blocks: int = 0          # drop warm-up blocks from display
+    skip_first_blocks: int = 0      
+        # drop warm-up blocks from display
     block_group_max: int | None = 50    # cap x-axis of block-level plots (None = all)
     asymptotic_n_last_groups: int = 1   # how many trailing block-groups define "asymptote"
     adaptation_threshold: float = 0.5  # learning speed: fraction of (initial−asymptote) late-error reduction

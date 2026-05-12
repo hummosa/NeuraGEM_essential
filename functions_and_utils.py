@@ -296,9 +296,42 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
     def plot_latent_chunk_2(ax):
         plot_latent(ax, chunk_no=1)
 
+    def plot_rotating_targets_behavior(ax, color_idx=0):
+        """Compact single-panel view for rotating-targets task.
+
+        Plots observed and predicted x/y positions for one shield color at
+        each timestep it appeared, on the same x-axis as loss/latent panels.
+        Context-switch shading is added automatically by the outer loop.
+        """
+        nc = config.n_colors
+        cue_ts = np.array([
+            t for t in range(x1, min(x2, len(ii) - 1))
+            if ii[t, color_idx] > 0.5 and ii[t, :nc].sum() > 0.5
+        ])
+        if len(cue_ts) == 0:
+            ax.set_ylabel(f'C{color_idx} pos')
+            return
+
+        rel_ts = cue_ts - x1          # relative to window start
+        obs_x  = ii[cue_ts + 1, -2]   # outcome frame carries (x, y)
+        obs_y  = ii[cue_ts + 1, -1]
+        ax.plot(rel_ts, obs_x, '.', color='tab:grey',   alpha=0.5, ms=2, label='obs x')
+        ax.plot(rel_ts, obs_y, '.', color='tab:orange', alpha=0.5, ms=2, label='obs y')
+
+        if logger.predicted_outputs:
+            pred_x = oi[cue_ts + 1, -2]
+            pred_y = oi[cue_ts + 1, -1]
+            ax.plot(rel_ts, pred_x, '.', color='tab:blue', alpha=0.7, ms=2, label='pred x')
+            ax.plot(rel_ts, pred_y, '.', color='tab:red',  alpha=0.7, ms=2, label='pred y')
+
+        ax.set_ylabel(f'C{color_idx} pos')
+        ax.legend(fontsize=5, ncol=2, loc='upper right', markerscale=2,
+                  handletextpad=0.2, borderpad=0.3, labelspacing=0.2)
+
     # Dictionary mapping panel names to functions
     panel_functions = {
         'behavior': plot_behavior,
+        'rotating_targets_behavior': plot_rotating_targets_behavior,
         'latent': plot_latent,
         'latent_effective_lr': plot_effective_lr,
         'latent_2d': plot_latent_2d,

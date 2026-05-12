@@ -403,14 +403,20 @@ class RotatingTargetsConfig(Config):
         self.loss_reduction_LU = 'mean'
         self.loss_reduction_WU = 'mean'
 
+        # ── Test-phase overrides (used by reconfigure_for_prediction) ──────
+        # Set test_no_of_steps_in_weight_space=1 to keep WU active during Phase 3.
+        self.test_no_of_steps_in_weight_space = 0   # 0 = freeze weights (standard test)
+        self.test_no_of_blocks = 6                 # blocks to run in Phase 3
+
         self.update_export_path()
         self._validate()
 
     def reconfigure_for_prediction(self, experiment_to_run):
         """Switch to test/inference mode: freeze weights, adjust dataset size."""
         self.what_latent_to_use = 'self'
-        self.no_of_steps_in_weight_space = 0
-        self.block_size   = getattr(self, 'test_block_size',   50)
+        self.no_of_steps_in_weight_space = getattr(self, 'test_no_of_steps_in_weight_space', 0)
+        # fall back to the training block_size so mini-block structure is consistent
+        self.block_size   = getattr(self, 'test_block_size',   self.block_size)
         self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.update_export_path()
 

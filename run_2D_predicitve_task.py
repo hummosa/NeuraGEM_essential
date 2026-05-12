@@ -48,48 +48,30 @@ config.no_of_steps_in_latent_space = 1
 # block_size = n_miniblocks * n_colors * 20 = 800 timesteps per block
 # set blocked_phase_length to control number of training blocks (e.g. 10 blocks = 8000)
 config.add_passive_learning_phase = True
-config.passive_phase_length = 1000
+config.passive_phase_length = 500
 config.blocked_phase_length = 1000   # ← 
-config.n_miniblocks_per_state_block = 200 // config.n_colors  # 10 
+config.n_miniblocks_per_state_block = 50 // config.n_colors  # 10 
 config.block_size  = config.n_miniblocks_per_state_block * config.n_colors  # 80
 config.test_no_of_blocks   = 4       # ← blocks in Phase 3 test
-config.pass_previous_latent = True
-if config.pass_previous_latent:
-    config.LU_lr = 0.3
+# config.what_latent_to_use = 'taskID'
+config.pre_gating = False # the rotating targets task worked not with pre_gating! Such bad interference. 
+config.post_gating = not config.pre_gating
+
+if config.pre_gating:
+    config.LU_lr = 0.1
     config.l2_loss = 0.000_0011
 else:
-    config.LU_lr = 0.3
-    config.l2_loss = 0.
-    config.no_of_steps_in_latent_space = 3
-    config.seq_len = 3
+    config.LU_lr = 0.5
+    config.l2_loss = 0.000_1
 # config.seq_len = 4
-config.WU_lr = 0.00051
+config.WU_lr = 0.001
 config.what_latent_to_use = 'self'
-# config.what_latent_to_use = 'taskID'
-config.pre_gating = False
-config.post_gating = True
-# ── Train ─────────────────────────────────────────────────────────────────────
 
-print(f'Training with seed {config.env_seed}')
-logger, model, config, figs = train_model(
-    config, seed=0, save_models=False, load_models=False,
-    run_test_phase=True,
-)
-
-# ── Plot ──────────────────────────────────────────────────────────────────────
-#%%
-if config.dataset_name == 'seq_learn':
-    fig = plot_corrects_seq_learn(logger, config)
-else:
-    # Full overview: task structure, raw behaviour, latent dynamics, gradient signal
-    panel_order = ['task_illustration_and_hierarchies', 'behavior', 'latent_2d', 'loss' ]
-    fig = plot_logger_panels(logger, config, panel_order, x2=None, annotate_phases='behavior')
-    x_start = config.passive_phase_length+config.blocked_phase_length//2
-    x_end   = x_start + config.passive_phase_length+config.blocked_phase_length
-    fig = plot_logger_panels(logger, config, panel_order[1:], x1=x_start, x2=x_end, annotate_phases=None)
-    for ax in fig.axes:
-        ax.set_xlim(0, 1600)
-
+run_rnn = False
+if run_rnn:
+    config.no_of_steps_in_latent_space = 0
+    # config.block_size = 100 # because RNN struggles to adapt within the reported blocksize of 6-8 miniblocks. 
+    config.WU_lr = 0.01 # to give the RNN a more realistic adaptation curve. Otherwise not fast enough.
 
 # ── Arena plot ────────────────────────────────────────────────────────────────
 #
@@ -99,7 +81,8 @@ else:
 #       oi[t]  is the model's prediction FOR ii[t]  (made when seeing ii[t-1])
 #   Therefore at cue t, the prediction for the upcoming attack is oi[t+1].
 
-def plot_arena_trials(logger, config, t_start=0, t_end=None, same_block_only=True, ax=None):
+def plot_arena_trials(logger, config, t_start=0, t_end=None, same_block_only=True, ax=None,
+                      title=None, phase='train'):
     """Plot observations and predictions on the 2-D circular arena.
 
     Cue timesteps (color one-hot active) are paired with the following outcome
@@ -113,6 +96,11 @@ def plot_arena_trials(logger, config, t_start=0, t_end=None, same_block_only=Tru
     same_block_only : bool
         If True, restrict to the context block that contains t_start
         (i.e. all timesteps where llcid == llcid[t_start]).
+    title : str, optional
+        Override the auto-generated title. If None, shows 'rotation ≈ X°'.
+    phase : str
+        Label shown in the auto-title prefix when title is None.
+        Use 'novel' for Phase 3a test blocks so the annotation is clear.
     """
     ii = np.concatenate(logger.inputs, axis=0).reshape(-1, config.input_size)
     ll = np.concatenate(logger.llcids, axis=0).reshape(-1)
@@ -165,17 +153,15 @@ def plot_arena_trials(logger, config, t_start=0, t_end=None, same_block_only=Tru
 
     ax.set_aspect('equal')
     ax.set_xlabel('x'); ax.set_ylabel('y')
-    rotation_deg = np.degrees(ll[t_start]) if cue_ts else '?'
-    ax.set_title(f'rotation ≈ {rotation_deg:.0f}°', fontsize=8)
+    if title is not None:
+        ax.set_title(title, fontsize=8)
+    else:
+        rotation_deg = f'{np.degrees(ll[t_start]):.0f}' if cue_ts else '?'
+        prefix = 'novel ' if phase == 'novel' else ''
+        ax.set_title(f'{prefix}rotation ≈ {rotation_deg}°', fontsize=8)
     ax.axhline(0, color='lightgrey', linewidth=0.5, zorder=0)
     ax.axvline(0, color='lightgrey', linewidth=0.5, zorder=0)
     return fig
-
-fig, ax = plt.subplots(1,2, figsize=(7, 3.5))
-t_start = logger.phases[2][1] if len(logger.phases) > 1 else (len(logger.inputs) - 2*  config.block_size) 
-print(f'Plotting blocks at timesteps: {t_start} and {t_start + config.block_size}')
-_=plot_arena_trials(logger, config, t_start=t_start, ax=ax[0])
-plot_arena_trials(logger, config, t_start=t_start+config.block_size, ax=ax[1])
 
 
 # ── Debug: responses to one color over time ────────────────────────────────
@@ -248,4 +234,36 @@ def plot_color_response_over_time(logger, config, color_idx=0):
     return fig, d
 
 
-fig_debug, d = plot_color_response_over_time(logger, config, color_idx=0)
+def __main__(config):
+    # ── Train ─────────────────────────────────────────────────────────────────────
+
+    print(f'Training with seed {config.env_seed}')
+    logger, model, config, figs = train_model(
+        config, seed=0, save_models=False, load_models=False,
+        run_test_phase=True,
+    )
+
+    # ── Plot ──────────────────────────────────────────────────────────────────────
+    #%%
+    if config.dataset_name == 'seq_learn':
+        fig = plot_corrects_seq_learn(logger, config)
+    else:
+        # Full overview: task structure, raw behaviour, latent dynamics, gradient signal
+        panel_order = ['latent_2d', 'loss' ]
+        fig = plot_logger_panels(logger, config, panel_order, x2=None, annotate_phases='latent_2d', width= 5)
+        x_start = config.passive_phase_length+config.blocked_phase_length//2
+        x_end   = x_start + config.passive_phase_length+config.blocked_phase_length
+        fig = plot_logger_panels(logger, config, panel_order[1:], x1=x_start, x2=x_end, annotate_phases=None)
+
+    fig, ax = plt.subplots(1,2, figsize=(7, 3.5))
+    t_start = logger.phases[2][1] if len(logger.phases) > 1 else (len(logger.inputs) - 2*  config.block_size) 
+    print(f'Plotting blocks at timesteps: {t_start} and {t_start + config.block_size}')
+    _=plot_arena_trials(logger, config, t_start=t_start, ax=ax[0])
+    plot_arena_trials(logger, config, t_start=t_start+config.block_size, ax=ax[1])
+
+    fig_debug, d = plot_color_response_over_time(logger, config, color_idx=0)
+
+    return logger, model, config, figs, fig_debug, d
+
+if __name__ == '__main__':
+    logger, model, config, figs, fig_debug, d = __main__(config)

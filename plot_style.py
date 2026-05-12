@@ -2,6 +2,39 @@
 # import seaborn as sns
 import matplotlib as mpl
 
+
+# ── Figure / subplot size presets ─────────────────────────────────────────────
+# All sizes are in inches.  These are single-panel dimensions; multiply the
+# relevant axis by the number of panels when calling plt.subplots().
+# See docs/figure_style.md for guidance.
+
+class FigSize:
+    """Standard single-panel figure sizes (width × height, inches)."""
+    small  = (1.5, 1.5)   # compact square: summary stats, small insets
+    large  = (3.0, 3.0)   # full square: main result panels
+    wide   = (3.0, 1.5)   # landscape: time-series, learning curves
+    narrow = (1.5, 3.0)   # portrait: distributions, bar charts
+    tall   = (2.0, 3.0)   # alias for narrow-ish portrait
+    # add 0.5 inch to height to make room for titles:
+    small = (small[0], small[1] + 1)
+    large = (large[0], large[1] + 1)
+    wide  = (wide[0], wide[1] + 1)
+    narrow = (narrow[0], narrow[1] + 1)
+    tall   = (tall[0], tall[1] + 1)
+
+    @staticmethod
+    def row(n, panel=None):
+        """Return figsize for a 1×n row of panels (default panel = wide)."""
+        pw, ph = panel or FigSize.wide
+        return (pw * n, ph)
+
+    @staticmethod
+    def grid(rows, cols, panel=None):
+        """Return figsize for a rows×cols grid (default panel = large)."""
+        pw, ph = panel or FigSize.large
+        return (pw * cols, ph * rows)
+
+
 class Color_scheme:
     def __init__(self):
         self.short_horizon_rnn = 'tab:green'
@@ -9,28 +42,20 @@ class Color_scheme:
         self.long_horizon_rnn = 'tab:red'
         self.mrnn = 'tab:red'
         self.neuragem = 'tab:blue'
-        self.neuragem_additive = 'tab:cyan'  # For additive NeuraGem
+        self.neuragem_additive = 'tab:cyan'
         self.ood_data = 'tab:orange'
         self.iid_data = 'tab:purple'
         self.bayesian = 'tab:brown'
         self.naive = 'tab:purple'
 
-        # self.contextA = '#4424D6' # purple
-        # self.contextB = '#FCCB1A' # yellow gold. # picked from https://www.w3schools.com/colors/colors_complementary.asp
-        self.contextA = '#d9a528' # 
-        self.contextB = '#a62b2a' # 
+        self.contextA = '#d9a528'
+        self.contextB = '#a62b2a'
 
         self.violin_plot_width = 0.5
-
         self.linewidth = 0.7
         self.marker_size = 2
         self.marker = 'o'
         self.alpha_shaded_regions = 0.3
-
-        self.panel_small_size = [1.2, 1.2]
-        self.panel_large_size = [1.9, 1.9]
-        self.panel_wide_size = [1.9, 1.2]
-        self.panel_tall_size = [1.2, 1.9]
 
     def get_model_color(self, model_name):
         if model_name in ['short_horizon_rnn', 'long_horizon_rnn', 'neuragem']:
@@ -39,7 +64,7 @@ class Color_scheme:
             converted_name = 'short_horizon_rnn' if 'rnn' in model_name else 'long_horizon_rnn'
             return getattr(self, converted_name)
         else:
-            print(f'ERROR: Model name {model_name} not found in color scheme. Valid options are: short_horizon_rnn or rnn, long_horizon_rnn or mrnn, and neuragem.')
+            print(f'ERROR: Model name {model_name} not found in color scheme.')
             return 'tab:gray'
 def set_plot_style():
     # sns.set(font_scale=0.8)  # Adjust font scale
