@@ -65,6 +65,10 @@ def _prepare_batch_inputs(model, config, raw_inputs, batch_llcids):
     gated_inputs = inputs
     if config.add_noise_to_input:
         gated_inputs = inputs + torch.randn_like(inputs) * config.noise_std
+    input_feed_mask = getattr(config, 'input_feed_mask', None)
+    if input_feed_mask is not None:
+        m = torch.tensor(input_feed_mask, dtype=inputs.dtype, device=inputs.device)
+        gated_inputs = gated_inputs * m
     model_inputs = gated_inputs
 
     if config.predict_first_frame:
@@ -369,12 +373,14 @@ def train_model(config, seed=0, save_models=True, load_models=False, run_test_ph
 
             # 3a. Latent updates allowed, weights frozen
             logger_train.log_phase('Inference only')
-            print('Phase 3a: Inference with latent adaptation (weights frozen)')
+            weight_state = 'weights frozen' if config.no_of_steps_in_weight_space == 0 else 'weights plastic'
+            print(f'Phase 3a: Inference with latent adaptation ({weight_state})')
             predictive_learning(logger_train, config, dataloader_test, model, criterion)
 
             # 3b. No updates at all — pure feedforward baseline
             logger_train.log_phase('No inference nor learning')
             config.no_of_steps_in_latent_space = 0
+            config.no_of_steps_in_weight_space = 0
             print('Phase 3b: Feedforward baseline (no weight or latent updates)')
             predictive_learning(logger_train, config, dataloader_test, model, criterion)
 

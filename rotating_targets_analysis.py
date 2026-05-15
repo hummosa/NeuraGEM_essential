@@ -98,7 +98,8 @@ def get_phase3a_range(logger):
 # ── Core adaptation analysis ───────────────────────────────────────────────────
 
 def _analyze_adaptation(ii, oi, ll, config, rotation_set,
-                         t_start, t_end, n_miniblocks_to_track=6):
+                         t_start, t_end, n_miniblocks_to_track=6,
+                         reference_rotation_deg=None):
     """
     Core block-switch adaptation analysis over an arbitrary time range and rotation set.
 
@@ -109,6 +110,11 @@ def _analyze_adaptation(ii, oi, ll, config, rotation_set,
     rotation_set : list of rotation angles (degrees) to use for target geometry
     t_start, t_end : time range (flat logged-timestep indices)
     n_miniblocks_to_track : mini-blocks after each switch to analyse
+    reference_rotation_deg : if given, always use this angle as the "alternate"
+        for normalized state error instead of picking the first non-current angle.
+        Recommended for novel-rotation tests with many angles — pass the original
+        (trained) reference rotation (e.g. 0°) so the metric is well-defined.
+        When None, falls back to the first non-current angle (works for 2-rotation case).
 
     Returns a dict:
       trial_errors      (n_switches, n_colors)            Euclidean ‖pred−obs‖
@@ -120,7 +126,12 @@ def _analyze_adaptation(ii, oi, ll, config, rotation_set,
     """
     switches = get_block_switches(ll, t_start, t_end)
     nc = config.n_colors
-    all_targets = {deg: get_target_positions(config, deg) for deg in rotation_set}
+
+    # Pre-compute targets for all rotation_set angles plus the reference (if any)
+    target_degs = list(rotation_set)
+    if reference_rotation_deg is not None and reference_rotation_deg not in target_degs:
+        target_degs.append(reference_rotation_deg)
+    all_targets = {deg: get_target_positions(config, deg) for deg in target_degs}
 
     n_sw = len(switches)
     trial_errors      = np.full((n_sw, nc), np.nan)
@@ -133,10 +144,14 @@ def _analyze_adaptation(ii, oi, ll, config, rotation_set,
         curr_rot_deg = _nearest_rotation_deg(curr_rot_rad, rotation_set)
         if curr_rot_deg is None:
             continue
-        alt_degs = [d for d in rotation_set if d != curr_rot_deg]
-        if not alt_degs:
-            continue
-        alt_rot_deg = alt_degs[0]
+
+        if reference_rotation_deg is not None:
+            alt_rot_deg = reference_rotation_deg
+        else:
+            alt_degs = [d for d in rotation_set if d != curr_rot_deg]
+            if not alt_degs:
+                continue
+            alt_rot_deg = alt_degs[0]
 
         curr_targets = all_targets[curr_rot_deg]
         alt_targets  = all_targets[alt_rot_deg]
@@ -223,6 +238,9 @@ def analyze_novel_rotation_test(logger, config, n_miniblocks_to_track=6):
     Phase 3a runs immediately after Phase 2 with novel rotation angles.
     When config.test_no_of_steps_in_weight_space=1, weights remain plastic here.
 
+    Normalized state error uses config.train_rotations[0] (typically 0°) as the fixed
+    reference "alternate", matching the paper's Session 3 convention.
+
     Returns the same dict as analyze_block_switch_adaptation, or None if Phase 3
     was not run or test_rotations is empty.
     """
@@ -231,16 +249,18 @@ def analyze_novel_rotation_test(logger, config, n_miniblocks_to_track=6):
         return None
 
     test_rots = config.test_rotations if config.test_rotations else config.train_rotations
-    if len(test_rots) < 2:
+    if not test_rots:
         return None
 
     ii, oi, ll, _ = flatten_logger(logger, config)
+    reference_deg = config.train_rotations[0] if config.train_rotations else None
     return _analyze_adaptation(
         ii, oi, ll, config,
         rotation_set=test_rots,
         t_start=phase3a_start,
         t_end=phase3a_end,
         n_miniblocks_to_track=n_miniblocks_to_track,
+        reference_rotation_deg=reference_deg,
     )
 
 
@@ -301,6 +321,79 @@ def analyze_z_trajectory(logger, config, window=80):
             trajectories[si, i] = np.dot(li[t] - z_old, axis) / (total_dist ** 2)
 
     return trajectories, switches
+
+
+# ── A6: Rotation sweep (per-angle error across all test angles) ────────────────
+
+def analyze_rotation_sweep(logger, config, block_range=None):
+    """
+    For each angle in Phase 3a, compute mean Euclidean error on trials 2-5
+    (0-indexed positions 1-4) of the first mini-block after that angle appears.
+
+    Error metric: ‖pred_xy − analytical_target_mean(θ, color)‖ using
+    get_target_positions(config, θ) — NOT the noisy sampled observation on that trial.
+    This measures how well the model's prediction aligns with the true task structure,
+    independent of observation noise.
+
+    Parameters
+    ----------
+    block_range : (start_idx, end_idx) into the ordered list of state-block switches
+                  in Phase 3a (0-indexed). None = use all blocks.
+                  Use this to compare early Phase-3a performance (still learning,
+                  e.g. block_range=(0, 15)) versus late (stabilised, e.g. (35, 50)).
+
+    Returns
+    -------
+    dict mapping rotation_deg (int) -> mean error (float) or np.nan if that angle
+    never appeared in the selected block range.  Keyed over config.test_rotations.
+    """
+    phase3a_start, phase3a_end = get_phase3a_range(logger)
+    if phase3a_start is None:
+        return {deg: np.nan for deg in (config.test_rotations or config.train_rotations)}
+
+    ii, oi, ll, _ = flatten_logger(logger, config)
+    nc        = config.n_colors
+    test_rots = config.test_rotations if config.test_rotations else config.train_rotations
+    all_targets = {deg: get_target_positions(config, deg) for deg in test_rots}
+
+    switches = get_block_switches(ll, phase3a_start, phase3a_end)
+    switch_list = []
+    for t_sw in switches:
+        deg = _nearest_rotation_deg(ll[t_sw], test_rots)
+        if deg is not None:
+            switch_list.append((t_sw, deg))
+
+    if block_range is not None:
+        bstart, bend = block_range
+        switch_list = switch_list[bstart:bend]
+
+    angle_errors = {deg: [] for deg in test_rots}
+
+    for t_sw, curr_rot_deg in switch_list:
+        curr_rot_rad = np.radians(curr_rot_deg)
+        curr_targets = all_targets[curr_rot_deg]
+
+        # Collect cue frames in the first mini-block (one full permutation = nc colors)
+        scan_end = min(t_sw + 2 * nc * 2, phase3a_end, len(ll) - 2)
+        cue_ts = [
+            t for t in range(t_sw, scan_end)
+            if ii[t, :nc].sum() > 0.5 and abs(ll[t] - curr_rot_rad) < 1e-5
+        ]
+        first_mb = cue_ts[:nc]  # first mini-block only
+
+        for trial_pos, t in enumerate(first_mb):
+            if trial_pos == 0:
+                continue  # trial 1 = identification; can't be "correct"
+            color_idx = int(np.argmax(ii[t, :nc]))
+            pred_xy   = oi[t + 1, -2:]
+            # Error vs analytical ground truth mean — not the noisy sampled observation
+            target_xy = curr_targets[color_idx]
+            angle_errors[curr_rot_deg].append(np.linalg.norm(pred_xy - target_xy))
+
+    return {
+        deg: float(np.mean(errs)) if errs else np.nan
+        for deg, errs in angle_errors.items()
+    }
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
@@ -624,3 +717,220 @@ def plot_z_by_rotation(logger, config, time_window=None):
 
     # plt.tight_layout()
     return fig
+
+
+def plot_rotation_angle_sweep(sweep_results, config, block_range_label=None):
+    """
+    P9: Mean Euclidean error (trials 2-5, first mini-block) vs rotation angle.
+
+    Error is vs the analytical target mean (get_target_positions), not a sampled
+    observation — see analyze_rotation_sweep for details.
+
+    sweep_results : dict mapping model label -> output of analyze_rotation_sweep()
+    block_range_label : optional string appended to y-label to identify which
+        block range was used (e.g. 'early blocks 0-15' or 'late blocks 35-50').
+    """
+    labels  = list(sweep_results.keys())
+    palette = _make_palette(labels)
+
+    train_rots = set(config.train_rotations)
+
+    fig, ax = plt.subplots(figsize=FigSize.wide)
+
+    for label, sweep in sweep_results.items():
+        angles = sorted(sweep.keys())
+        errors = [sweep[a] for a in angles]
+        c = palette.get(label, 'grey')
+        ax.plot(angles, errors, '-o', ms=3, label=label, color=c)
+
+    # Mark trained rotations with vertical dashed lines
+    for tr in sorted(train_rots):
+        ax.axvline(tr, color='grey', lw=0.8, ls='--', alpha=0.5)
+
+    ax.set_xlabel('Rotation angle (°)')
+    ylabel = '‖pred − target mean‖ (trials 2–5)'
+    if block_range_label:
+        ylabel += f'\n{block_range_label}'
+    ax.set_ylabel(ylabel)
+    ax.set_xticks([a for a in sorted(set(sweep_results[labels[0]].keys()))
+                   if a % 45 == 0])
+    ax.legend(fontsize=7)
+    plt.tight_layout()
+    return fig
+
+
+# ── Z color-modulation analysis ───────────────────────────────────────────────
+
+def analyze_z_color_modulation(logger, config, phase='phase2'):
+    """
+    Quantify whether Z encodes cue color identity in addition to (or instead of)
+    the ground-truth rotation context.
+
+    Alignment
+    ---------
+    `li[t]` is Z *after* the LU step that processed the batch containing timestep t.
+    With `pass_previous_latent=True` and seq_len=2 (one cue frame + one outcome frame
+    per batch), the LU gradient at the cue position comes from ∂(attack-xy loss)/∂Z,
+    meaning the logged Z at a cue frame is specifically informed by predicting *that*
+    color's attack position.  We therefore sample Z at cue frames only.
+
+    Two R² measures per Z dimension
+    ---------------------------------
+    rotation_r2      : OLS R² from Z ~ rotation one-hot  (global rotation encoding)
+    within_color_r2  : OLS R² from rotation-residual Z ~ color one-hot
+                       (color variance *within* each rotation block)
+
+    A rotation-only encoder yields within_color_r2 ≈ 0.
+    A color-leaking encoder yields within_color_r2 > 0.
+
+    Parameters
+    ----------
+    phase : 'phase2' | 'phase3a' | 'all'
+        Time range to analyse.  'phase2' uses the last 1/3 of the blocked phase.
+
+    Returns
+    -------
+    results : dict
+        rotation_r2      (Z_dim,) — rotation variance explained
+        within_color_r2  (Z_dim,) — within-rotation color variance explained
+        z_by_color_rot   (n_rots, n_colors, Z_dim) — mean Z per (rotation, color)
+        unique_rots      list of rotation angles used
+        n_cue_samples    int
+    fig : matplotlib Figure
+        Left panels: mean Z per color, one line per rotation (up to 4 Z dims shown).
+        Right panel: bar chart comparing rotation_r2 vs within_color_r2 per Z dim.
+    """
+    ii, oi, ll, li = flatten_logger(logger, config)
+    if li is None:
+        raise ValueError('No latent values logged.')
+
+    nc    = config.n_colors
+    Z_dim = sum(config.latent_dims)
+
+    if phase == 'phase2':
+        t_start, t_end = get_phase2_last_third(logger)
+        rotation_set   = config.train_rotations
+    elif phase == 'phase3a':
+        t_start, t_end = get_phase3a_range(logger)
+        if t_start is None:
+            raise ValueError('Phase 3a not found in logger.')
+        rotation_set   = config.test_rotations or config.train_rotations
+    else:  # 'all'
+        t_start      = 0
+        t_end        = len(ii)
+        rotation_set = sorted(set(
+            list(config.train_rotations) + list(config.test_rotations or [])
+        ))
+
+    # ── Collect (color_idx, Z, rotation_deg) at every cue timestep ───────────
+    colors, z_at_cue, rot_degs = [], [], []
+    for t in range(int(t_start), min(int(t_end), len(ii) - 1)):
+        if ii[t, :nc].sum() < 0.5:
+            continue
+        rot_deg = _nearest_rotation_deg(ll[t], rotation_set)
+        if rot_deg is None:
+            continue
+        colors.append(int(np.argmax(ii[t, :nc])))
+        z_at_cue.append(li[t])
+        rot_degs.append(rot_deg)
+
+    if len(colors) == 0:
+        raise ValueError('No cue timesteps found in the selected phase/rotation set.')
+
+    colors   = np.array(colors)
+    z_at_cue = np.array(z_at_cue)   # (N, Z_dim)
+    rot_degs = np.array(rot_degs)
+
+    unique_rots = sorted(set(rot_degs.tolist()))
+    n_rots      = len(unique_rots)
+    rot_idx     = np.array([unique_rots.index(r) for r in rot_degs])
+
+    # ── OLS helper ────────────────────────────────────────────────────────────
+    def _r2_ols(X, y):
+        beta   = np.linalg.lstsq(X, y, rcond=None)[0]
+        ss_res = np.sum((y - X @ beta) ** 2)
+        ss_tot = np.sum((y - y.mean()) ** 2)
+        return float(np.clip(1.0 - ss_res / (ss_tot + 1e-12), 0.0, 1.0))
+
+    rot_onehot   = np.eye(n_rots)[rot_idx]
+    color_onehot = np.eye(nc)[colors]
+
+    rotation_r2 = np.array([_r2_ols(rot_onehot, z_at_cue[:, d]) for d in range(Z_dim)])
+
+    # Pooled partial color R²: color variance after removing rotation mean
+    within_color_r2 = np.zeros(Z_dim)
+    for d in range(Z_dim):
+        y        = z_at_cue[:, d]
+        rot_beta = np.linalg.lstsq(rot_onehot, y, rcond=None)[0]
+        y_resid  = y - rot_onehot @ rot_beta
+        within_color_r2[d] = _r2_ols(color_onehot, y_resid)
+
+    # Per-rotation color R²: computed independently within each rotation context.
+    # This catches rotation-specific color modulation that the pooled metric misses
+    # (e.g. Z dims that fan out by color only under one rotation).
+    per_rot_color_r2 = np.zeros((n_rots, Z_dim))
+    for ri in range(n_rots):
+        mask  = rot_idx == ri
+        z_sub = z_at_cue[mask]
+        c_sub = color_onehot[mask]
+        if mask.sum() >= nc:
+            for d in range(Z_dim):
+                per_rot_color_r2[ri, d] = _r2_ols(c_sub, z_sub[:, d])
+
+    # ── Mean Z per (rotation, color) ─────────────────────────────────────────
+    z_by_color_rot = np.full((n_rots, nc, Z_dim), np.nan)
+    for ri, rot in enumerate(unique_rots):
+        for ci in range(nc):
+            mask = (rot_degs == rot) & (colors == ci)
+            if mask.sum() > 0:
+                z_by_color_rot[ri, ci] = z_at_cue[mask].mean(axis=0)
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    n_z_panels = min(Z_dim, 4)   # cap to avoid absurdly wide figures
+    n_cols     = n_z_panels + 1
+    fig, axes  = plt.subplots(1, n_cols, figsize=FigSize.row(n_cols, FigSize.small))
+    axes       = list(np.atleast_1d(axes))
+
+    rot_cmap = plt.get_cmap('tab10', max(n_rots, 2))
+
+    for d in range(n_z_panels):
+        ax = axes[d]
+        for ri, rot in enumerate(unique_rots):
+            means = z_by_color_rot[ri, :, d]
+            ax.plot(np.arange(nc), means, '-o', ms=4, lw=1.2,
+                    label=f'{rot:.0f}°  col R²={per_rot_color_r2[ri, d]:.2f}',
+                    color=rot_cmap(ri))
+        ax.set_xlabel('Color index')
+        ax.set_ylabel(f'Mean Z[{d}]')
+        ax.set_xticks(np.arange(nc))
+        ax.set_title(f'Z[{d}]  rot R²={rotation_r2[d]:.2f}', fontsize=7)
+        ax.legend(fontsize=5)
+
+    # Bar chart: rotation R² + per-rotation color R² side by side
+    ax  = axes[-1]
+    x   = np.arange(Z_dim)
+    n_bars = 1 + n_rots          # rotation + one bar per rotation for color
+    w   = 0.8 / n_bars
+    ax.bar(x - (n_bars / 2 - 0.5) * w, rotation_r2, width=w,
+           label='Rotation R²', color='tab:blue', alpha=0.85)
+    for ri, rot in enumerate(unique_rots):
+        offset = (-n_bars / 2 + 1 + ri) * w
+        ax.bar(x + offset, per_rot_color_r2[ri], width=w,
+               label=f'Color R² @{rot:.0f}°', color=rot_cmap(ri), alpha=0.65)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'Z[{d}]' for d in range(Z_dim)], rotation=45, fontsize=6)
+    ax.set_ylabel('Variance explained (R²)')
+    ax.set_ylim(0, 1)
+    ax.legend(fontsize=5)
+    ax.set_title('Z: rotation vs color (per rotation)', fontsize=7)
+
+    plt.tight_layout()
+
+    return dict(
+        rotation_r2=rotation_r2,
+        within_color_r2=within_color_r2,
+        per_rot_color_r2=per_rot_color_r2,
+        z_by_color_rot=z_by_color_rot,
+        unique_rots=unique_rots,
+        n_cue_samples=len(colors),
+    ), fig

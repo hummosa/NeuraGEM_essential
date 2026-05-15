@@ -1,6 +1,6 @@
 # Configuration Objects
 
-`configs.py` — classes: `Config`, `ContextualSwitchingTaskConfig`, `SeqLearnConfig`
+`configs.py` — classes: `Config`, `ContextualSwitchingTaskConfig`, `SeqLearnConfig`, `RotatingTargetsConfig`, `MeanPredictionConfig`
 
 Abbreviations used throughout the codebase: **LU** = Latent Update (Z optimization) | **WU** = Weight Update (standard BPTT)
 
@@ -11,7 +11,9 @@ Abbreviations used throughout the codebase: **LU** = Latent Update (Z optimizati
 ```
 Config  (base — all shared parameters)
 ├── ContextualSwitchingTaskConfig   (1D Gaussian context switching)
-└── SeqLearnConfig                  (Beukers et al. sequence learning)
+│   └── MeanPredictionConfig        (predict latent mean instead of next observation)
+├── SeqLearnConfig                  (Beukers et al. sequence learning)
+└── RotatingTargetsConfig           (Yu et al. rotating targets)
 ```
 
 `Config.__init__` sets every parameter that is shared across tasks. Subclasses call `super().__init__()`, set their task-specific fields, then call `self._validate()` at the end to catch misconfigured coupled parameters.
@@ -98,6 +100,19 @@ Z has shape `(batch, seq_len, Z_dim)` where `Z_dim = product(latent_dims)`.
 | `shuffle_or_interleave` | `'interleave'` | Task ordering in the interleaved phase |
 | `random_transition_shuffle_or_interleave` | `'shuffle'` | Low-level transition ordering |
 | `start_always_on_the_same_block` | `False` | Always begin with context A (the minimum mean) |
+
+### Loss and Input Masking
+
+Two complementary masks control which dimensions participate in learning. Both are lists of 0/1 with length equal to `output_size` / `input_size` respectively, or `None` to use all dimensions.
+
+| Field | Default | Description |
+|---|---|---|
+| `output_loss_mask` | `None` | Per-output-dimension loss weight. `[0,0,0,0,0,1,1]` trains only on the last two dims. Applied after loss computation, before `.backward()`. |
+| `input_feed_mask` | `None` | Per-input-dimension zeroing mask applied before the model forward pass. `[1,0]` hides dim 1 from the model so it cannot read a target that is embedded in the input vector. |
+
+These two masks work together for the **augmented-input trick**: embed the ground-truth target as an extra input dimension, hide it from the model with `input_feed_mask`, and select it as the only loss signal with `output_loss_mask`. See `MeanPredictionConfig` for a concrete example.
+
+`output_loss_mask` is used in `RotatingTargetsConfig` (`[0,0,0,0,0,1,1]`) to suppress loss on the color one-hot input and train only on the `(x, y)` attack coordinates.
 
 ### Noise Injection
 
@@ -284,6 +299,62 @@ export_path = f"{export_folder}/{dataset_name}/{run_name}/"
 Example: `./exports/contextual_switching_task/my_experiment/`
 
 The directory is created automatically when `run_name` is assigned or `update_export_path()` is called.
+
+---
+
+## `MeanPredictionConfig(ContextualSwitchingTaskConfig)`
+
+**`dataset_name = 'mean_prediction'`**
+
+A direct subclass of `ContextualSwitchingTaskConfig` where the network is trained to predict the **latent mean** (the context value) rather than the next observation. The task uses the same two-context Gaussian setup but trains a different learning signal.
+
+### How the augmented-input trick works
+
+Each dataset timestep is 2D: `[observation, ground_truth_mean]`. Two masks split the roles:
+
+```
+input  dim 0: observation  → seen by model (input_feed_mask = 1)
+input  dim 1: mean         → zeroed out before forward pass (input_feed_mask = 0)
+output dim 0: (unused)     → no loss gradient (output_loss_mask = 0)
+output dim 1: mean estimate→ trained via MSE against the true mean (output_loss_mask = 1)
+```
+
+The model must infer the mean from noisy observations. Z (the latent variable) adapts to help maintain the context estimate across timesteps.
+
+### Overridden fields
+
+| Field | Value | Inherited default |
+|---|---|---|
+| `dataset_name` | `'mean_prediction'` | `'contextual_switching_task'` |
+| `input_size` | `2` | `1` |
+| `output_size` | `2` | `1` |
+| `input_feed_mask` | `[1, 0]` | `None` |
+| `output_loss_mask` | `[0, 1]` | `None` |
+
+All other parameters (training schedule, latent optimizer, gating architecture) are inherited unchanged from `ContextualSwitchingTaskConfig`.
+
+### Usage
+
+```python
+config = MeanPredictionConfig(experiment_to_run='figure')
+config.default_std = 0.1   # harder task at low noise (less info per observation)
+
+logger, model, config, figs = train_model(config, seed=0)
+
+# After training, logger.outputs[:, :, 1] should track logger.llcids
+# (model's mean estimate should match the ground-truth context mean)
+```
+
+### Timing: predict_first_frame=False
+
+With `predict_first_frame=False` (inherited from `ContextualSwitchingTaskConfig`), the model at step `t` predicts what happens at `t+1`. Since the mean is constant within a block, `mean[t+1] == mean[t]`, so the one-step shift causes no ambiguity.
+
+### Ablation (confirming the mask)
+
+```python
+config.input_feed_mask = [1, 1]   # let model see the true mean on input dim 1
+# → model can copy it directly; near-zero loss immediately confirms mask is the blocker
+```
 
 ---
 

@@ -268,6 +268,47 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             ax.plot(smoothed, linewidth=1, color='k', label='|pred − mean|')
             ax.set_ylabel('|pred − mean|')
 
+        elif logger.predicted_outputs and config.dataset_name == 'mean_prediction':
+            import plot_style
+            cs = plot_style.Color_scheme()
+            rng_scatter = np.random.default_rng(42)
+
+            # oi[:, 1] = predicted mean; ll[:, 0] = true context mean
+            pred_mean = oi[x1:x2, 1]
+            true_mean = ll[x1:x2, 0]
+            midpoint = np.mean(config.training_data_means)
+
+            # Correct = predicted mean is on the same side of midpoint as the true context
+            correct = (pred_mean - midpoint) * (true_mean - midpoint) > 0
+
+            # Scatter with y-jitter: correct trials cluster near y=1, wrong near y=0
+            jitter = rng_scatter.uniform(-0.08, 0.08, size=len(correct))
+            correct_y = correct.astype(float) + jitter
+            x_ts = np.arange(len(correct))
+
+            wrong_mask = ~correct
+            ax.scatter(x_ts[wrong_mask],  correct_y[wrong_mask],
+                       s=8, color='tab:gray', alpha=0.45, edgecolors='none', zorder=2)
+            ax.scatter(x_ts[~wrong_mask], correct_y[~wrong_mask],
+                       s=8, color=cs.neuragem, alpha=0.45, edgecolors='none', zorder=2)
+
+            # Causal moving average: at time t, averages only correct[t-window+1 : t+1]
+            ma_window = 20
+            kernel = np.ones(ma_window) / ma_window
+            ma = np.convolve(correct.astype(float), kernel, mode='full')[:len(correct)]
+            ax.plot(0.15 + 0.70 * ma, color='k', linewidth=0.75, alpha=0.9, zorder=3,
+                    label=f'MA({ma_window})')
+
+            # Asymptote reference lines: where MA saturates at all-wrong (0.15) and all-correct (0.85)
+            ax.axhline(0.85, color='k', linewidth=0.5, linestyle='--', alpha=0.25, zorder=1)
+            ax.axhline(0.15, color='k', linewidth=0.5, linestyle='--', alpha=0.25, zorder=1)
+            ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.3, zorder=1)
+            ax.set_yticks([0.0, 1.0])
+            ax.set_yticklabels(['Wrong', 'Correct'])
+            ax.set_ylim(-0.28, 1.28)
+            ax.set_ylabel('Side correct')
+            ax.legend(loc='upper left', fontsize=5)
+
         else:
             print('No corrects to plot for this dataset')
 

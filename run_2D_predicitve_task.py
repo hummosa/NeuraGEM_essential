@@ -61,12 +61,31 @@ if config.pre_gating:
     config.LU_lr = 0.1
     config.l2_loss = 0.000_0011
 else:
-    config.LU_lr = 0.5
+    config.LU_lr = .05
     config.l2_loss = 0.000_1
+
+
 # config.seq_len = 4
 config.WU_lr = 0.001
 config.what_latent_to_use = 'self'
 
+over_segment = True
+if over_segment: # trying out changing params to make ng oversegment to shields
+    config.latent_dims = [10]    # e.g. [4] for Z_dim=4; [2, 2] for Z_dim=4 split into 2 chunks of 2
+    config.latent_chunks = 5    # number of independently-activated sub-vectors within Z
+    config.latent_activation = 'softmax_chunked'   # 'softmax', 'sigmoid', or 'none'; applied before Z is used
+    config.LU_lr = 1.
+    config.l2_loss = 0.000_8
+    config.seq_len = 2
+    config.add_passive_learning_phase = False
+    config.blocked_phase_length = 1500   # ← 
+    config.block_size = 200
+    # config.LU_optimizer = 'sgd' # 'adam' or 'sgd'; Adam's momentum seems to make it harder for the model to adapt quickly within a block, even with a low LU_lr.
+    # config.l2_loss = 0.0
+    # config.latent_aggregation_op = 'none'
+    # config.update_latent_before_weights = True # whether to run the LU step before the WU step within each batch. This seems to help a lot with oversegmenting models, maybe by giving them a chance to adjust Z before the weights have to follow it.
+    config.pre_gating = False
+    config.post_gating = not config.pre_gating
 run_rnn = False
 if run_rnn:
     config.no_of_steps_in_latent_space = 0
@@ -196,44 +215,6 @@ def extract_color_trials(logger, config, color_idx=0):
     return dict(t=ts, obs_xy=obs_xy, pred_xy=pred_xy, llcid=llcids, trial_no=trial_no)
 
 
-def plot_color_response_over_time(logger, config, color_idx=0):
-    """Show how model predictions for one shield color evolve across training."""
-    d = extract_color_trials(logger, config, color_idx=color_idx)
-    if d['pred_xy'] is None:
-        print('No predicted_outputs logged.'); return
-
-    fig, axes = plt.subplots(1, 2, figsize=(8, 3))
-
-    # ── x and y prediction vs observation over trial index ─────────────────
-    ax = axes[0]
-    ax.plot(d['trial_no'], d['obs_xy'][:, 0], '.', color='tab:grey',  alpha=0.5, ms=3, label='obs x')
-    ax.plot(d['trial_no'], d['pred_xy'][:, 0], '.', color='tab:blue', alpha=0.7, ms=3, label='pred x')
-    ax.plot(d['trial_no'], d['obs_xy'][:, 1], '.', color='tab:orange', alpha=0.5, ms=3, label='obs y')
-    ax.plot(d['trial_no'], d['pred_xy'][:, 1], '.', color='tab:red',   alpha=0.7, ms=3, label='pred y')
-    # mark context switches
-    switches = np.where(np.diff(d['llcid']) != 0)[0]
-    for s in switches:
-        ax.axvline(s, color='k', linewidth=0.8, alpha=0.4)
-    ax.legend(fontsize=7, ncol=2)
-    ax.set_xlabel('Trial # (color appearances)')
-    ax.set_ylabel('Position')
-    ax.set_title(f'Color {color_idx} — x/y over time', fontsize=8)
-
-    # ── prediction error over trial index ──────────────────────────────────
-    ax = axes[1]
-    err = np.linalg.norm(d['pred_xy'] - d['obs_xy'], axis=1)
-    ax.plot(d['trial_no'], err, '.', color='tab:grey', alpha=0.5, ms=3)
-    ax.plot(d['trial_no'], np.convolve(err, np.ones(10)/10, mode='same'), color='k', linewidth=1)
-    for s in switches:
-        ax.axvline(s, color='k', linewidth=0.8, alpha=0.4)
-    ax.set_xlabel('Trial # (color appearances)')
-    ax.set_ylabel('||pred − obs||')
-    ax.set_title(f'Color {color_idx} — prediction error', fontsize=8)
-
-    plt.tight_layout()
-    return fig, d
-
-
 def __main__(config):
     # ── Train ─────────────────────────────────────────────────────────────────────
 
@@ -244,16 +225,15 @@ def __main__(config):
     )
 
     # ── Plot ──────────────────────────────────────────────────────────────────────
-    #%%
     if config.dataset_name == 'seq_learn':
         fig = plot_corrects_seq_learn(logger, config)
     else:
         # Full overview: task structure, raw behaviour, latent dynamics, gradient signal
-        panel_order = ['latent_2d', 'loss' ]
+        panel_order = ['rotating_targets_behavior', 'latent_2d', 'loss' ]
         fig = plot_logger_panels(logger, config, panel_order, x2=None, annotate_phases='latent_2d', width= 5)
         x_start = config.passive_phase_length+config.blocked_phase_length//2
         x_end   = x_start + config.passive_phase_length+config.blocked_phase_length
-        fig = plot_logger_panels(logger, config, panel_order[1:], x1=x_start, x2=x_end, annotate_phases=None)
+        # fig = plot_logger_panels(logger, config, panel_order, x1=x_start, x2=x_end, annotate_phases=None)
 
     fig, ax = plt.subplots(1,2, figsize=(7, 3.5))
     t_start = logger.phases[2][1] if len(logger.phases) > 1 else (len(logger.inputs) - 2*  config.block_size) 
@@ -261,9 +241,11 @@ def __main__(config):
     _=plot_arena_trials(logger, config, t_start=t_start, ax=ax[0])
     plot_arena_trials(logger, config, t_start=t_start+config.block_size, ax=ax[1])
 
-    fig_debug, d = plot_color_response_over_time(logger, config, color_idx=0)
-
-    return logger, model, config, figs, fig_debug, d
+    from rotating_targets_analysis import analyze_z_color_modulation
+    results, fig3 = analyze_z_color_modulation(logger, config, phase='phase3a')
+    # results['rotation_r2']      → how much Z encodes rotation
+    # results['within_color_r2']  → how much Z leaks color identity within a block
+    return logger, model, config, figs
 
 if __name__ == '__main__':
-    logger, model, config, figs, fig_debug, d = __main__(config)
+    logger, model, config, figs = __main__(config)

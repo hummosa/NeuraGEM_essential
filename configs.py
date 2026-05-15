@@ -140,7 +140,7 @@ class Config:
         """
         self.what_latent_to_use = 'self'
         self.no_of_steps_in_weight_space = 0
-        self.block_size  = getattr(self, 'test_block_size',   200)
+        self.block_size  = getattr(self, 'test_block_size',   self.block_size)
         self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.update_export_path()
 
@@ -258,7 +258,7 @@ class ContextualSwitchingTaskConfig(Config):
         self.epochs = 1
         self.no_of_steps_in_weight_space = 0
         self.add_noise_to_input = False
-        self.block_size   = getattr(self, 'test_block_size',   200)
+        self.block_size   = getattr(self, 'test_block_size',  self.block_size)
         self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.limited_testing_samples_no = int(2000 / self.batch_size)
 
@@ -333,7 +333,7 @@ class SeqLearnConfig(Config):
         """Switch to inference mode for the test phase."""
         self.what_latent_to_use = 'self'
         self.no_of_steps_in_weight_space = 0
-        self.block_size   = getattr(self, 'test_block_size',   200)
+        self.block_size   = getattr(self, 'test_block_size',   self.block_size)
         self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.limited_testing_samples_no = int(500 / self.batch_size)
 
@@ -419,6 +419,26 @@ class RotatingTargetsConfig(Config):
         self.block_size   = getattr(self, 'test_block_size',   self.block_size)
         self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.update_export_path()
+
+class MeanPredictionConfig(ContextualSwitchingTaskConfig):
+    """
+    Variant of the 1D contextual switching task where the network predicts the
+    latent mean rather than the next observation.
+
+    The dataset augments each timestep to 2D: [observation, ground_truth_mean].
+    input_feed_mask hides the mean from the model input (no cheating).
+    output_loss_mask trains only on the mean-prediction output dimension.
+    """
+
+    def __init__(self, experiment_to_run='figure'):
+        super().__init__(experiment_to_run)
+        self.dataset_name    = 'mean_prediction'
+        self.input_size      = 2   # [observation, mean]
+        self.output_size     = 2
+        self.input_feed_mask  = [1, 0]  # zero out mean dim before model sees input
+        self.output_loss_mask = [0, 1]  # compute loss only on mean-prediction dim
+        self.update_export_path()
+
 
 # Backwards-compatibility aliases
 seq_learnConfig = SeqLearnConfig

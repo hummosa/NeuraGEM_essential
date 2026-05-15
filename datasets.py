@@ -457,6 +457,41 @@ class RotatingTargetsTestDataset(RotatingTargetsDataset):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Mean Prediction Task
+# ──────────────────────────────────────────────────────────────────────────────
+
+class MeanPredictionDataset(BaseTaskDataset):
+    """
+    1D contextual switching task where the training target is the latent mean.
+
+    Each timestep element is 2D: [observation, ground_truth_mean].
+    Use with MeanPredictionConfig, which sets:
+        input_feed_mask  = [1, 0]  — hides dim 1 (mean) from the model input
+        output_loss_mask = [0, 1]  — trains only on the mean-prediction output dim
+    The model sees noisy observations and must learn to output the inferred mean.
+    """
+
+    def generate_sequences(self):
+        latent_values = self.config.training_data_means
+        data_rng = np.random.default_rng(self.config.env_seed)
+
+        current_latent = (min(latent_values) if self.config.start_always_on_the_same_block
+                          else self.rng.choice(latent_values))
+
+        data_seq, llcid_seq, hlcid_seq = [], [], []
+        for i, block_size in enumerate(self.block_sizes):
+            options = [v for v in latent_values if v != current_latent]
+            if options:
+                current_latent = self.rng.choice(options)
+            block_obs = data_rng.normal(current_latent, self.config.default_std, block_size)
+            for obs in block_obs:
+                data_seq.append([obs, current_latent])  # [observation, mean]
+            llcid_seq.extend([current_latent] * block_size)
+            hlcid_seq.extend([0.0] * block_size)
+        return data_seq, llcid_seq, hlcid_seq
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Registry
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -465,3 +500,4 @@ DATASET_REGISTRY['contextual_switching_task_2D'] = TaskDataset2D
 DATASET_REGISTRY['seq_learn'] = seq_learnDataset
 DATASET_REGISTRY['rotating_targets'] = RotatingTargetsDataset
 DATASET_REGISTRY['rotating_targets_test'] = RotatingTargetsTestDataset
+DATASET_REGISTRY['mean_prediction'] = MeanPredictionDataset

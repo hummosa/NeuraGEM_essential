@@ -41,11 +41,13 @@ from run_2D_predicitve_task import plot_arena_trials
 from rotating_targets_analysis import (
     analyze_block_switch_adaptation,
     analyze_novel_rotation_test,
+    analyze_rotation_sweep,
     analyze_z_trajectory,
     get_phase3a_range,
     plot_adaptation_comparison,
     plot_miniblock_norm_comparison,
     plot_novel_rotation_comparison,
+    plot_rotation_angle_sweep,
     plot_z_by_rotation,
 )
 
@@ -53,19 +55,25 @@ from rotating_targets_analysis import (
 
 BLOCKED_PHASE_LENGTH = 3000   # longer → more block switches in last 1/3
 PASSIVE_PHASE_LENGTH = 500
-NOVEL_ROTATIONS      = [45.0, 135.0]   # test angles (degrees)
-NOVEL_N_BLOCKS       = 10              # blocks in Phase 3a (novel rotation test)
+NOVEL_ROTATIONS      = list(range(0, 360, 15))  # all 24 angles in 15° steps
+NOVEL_N_BLOCKS       = 50              # ~2 samples per angle; use block_range to compare early vs late
 SEED                 = 42
 N_MINIBLOCKS_TRACK   = 6
 Z_WINDOW             = 40
 
+'''
+test all rotations in 15 deg increments
+Parametrize Z dims and see if it learns a more continuous representation of rotation space (e.g. circular manifold) 
+Parametrize Z lr to see the effects of faster vs slower context inference 
+test contexts that are not rotations, but randomly sampled shield targets for each colors.
 
+'''
 # ── Shared config factory ──────────────────────────────────────────────────────
 
 def make_base_config():
     cfg = RotatingTargetsConfig()
-    # cfg.train_rotations = [0.0, 70.0, 115.0]  
-    cfg.train_rotations = [0.0, 90.0]  
+    cfg.train_rotations = [0.0, 70.0, 115.0]  
+    # cfg.train_rotations = [0.0, 90.0]  
 
     cfg.add_passive_learning_phase = True
     cfg.passive_phase_length  = PASSIVE_PHASE_LENGTH
@@ -93,7 +101,7 @@ def make_base_config():
     # Novel rotation test (Phase 3a) — run immediately after Phase 2
     # reconfigure_for_prediction uses these to set up Phase 3:
     cfg.test_rotations               = NOVEL_ROTATIONS
-    cfg.test_no_of_steps_in_weight_space = 0   # keep WU active so model can learn novel rotations
+    cfg.test_no_of_steps_in_weight_space = 0   # weights plastic — models learn novel rotations over 50 blocks
     cfg.test_no_of_blocks            = NOVEL_N_BLOCKS
 
     return cfg
@@ -113,7 +121,7 @@ def make_base_config():
 COMPARISONS = [
     ('NeuraGEM',  dict(no_of_steps_in_latent_space=1, what_latent_to_use='self')),
     ('RNN',       dict(no_of_steps_in_latent_space=0, what_latent_to_use='self',)), # WU_lr=0.01)), Can increase lr to give it more realisdtic adaptation time.
-    ('Oracle Z',  dict(no_of_steps_in_latent_space=0, what_latent_to_use='taskID')),
+    # ('Oracle Z',  dict(no_of_steps_in_latent_space=0, what_latent_to_use='taskID')),
 ]
 
 
@@ -121,6 +129,7 @@ COMPARISONS = [
 
 results       = {}   # Phase-2 analysis
 novel_results = {}   # Phase-3a novel rotation analysis
+sweep_results = {}   # Phase-3a per-rotation-angle error sweep
 
 for label, overrides in COMPARISONS:
     print(f'\n{"="*60}')
@@ -153,6 +162,9 @@ for label, overrides in COMPARISONS:
         print(f'  → Phase 3a: {nov["n_switches"]} switches on novel rotations')
     else:
         print('  → Phase 3a: no data (run_test_phase may have been False)')
+
+    # ── Phase-3a rotation sweep (all angles, trials 2-5 vs analytical target mean) ─
+    sweep_results[label] = analyze_rotation_sweep(logger, cfg)
 
 
 # ── Training behavior panels (per model) ──────────────────────────────────────
@@ -254,6 +266,14 @@ print(f'Figure saved as: {os.path.join(cfg_ref.export_path, f"arena_plots_novel_
 
 
 
+# ── P9: Rotation sweep — per-angle error across all 24 test angles ────────────
+#%%
+fig_sweep = plot_rotation_angle_sweep(sweep_results, cfg_ref)
+plt.show()
+fig_sweep.savefig(os.path.join(cfg_ref.export_path, f'rotation_sweep_seed{SEED}.png'), dpi=300, bbox_inches='tight')
+print(f'Figure saved as: {os.path.join(cfg_ref.export_path, f"rotation_sweep_seed{SEED}.png")}')
+
+
 # ── Z-space: how NeuraGEM represents each rotation ────────────────────────────
 #%%
 neuragm_logger = results['NeuraGEM']['logger']
@@ -280,7 +300,7 @@ for label, res in results.items():
     m = np.nanmean(res['trial_norm_errors'], axis=0)
     print(f'{label:<14}' + ''.join(f'  {v:6.4f} ' for v in m))
 
-print(f'\n── Phase 3a (novel {NOVEL_ROTATIONS}°): normalized state error per trial position ──')
+print(f'\n── Phase 3a ({len(NOVEL_ROTATIONS)} novel angles, 0–345° in 15° steps): normalized state error per trial position ──')
 print(header)
 for label, nov in novel_results.items():
     if nov is None:
