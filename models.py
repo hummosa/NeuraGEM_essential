@@ -187,7 +187,7 @@ class RNN_with_latent(nn.Module):
     def _build_W_optimizer(self):
         params = [p for name, p in self.named_parameters() if name != "Z"]
         lr = float(self.config.WU_lr)
-        weight_decay = float(self.config.l2_loss or 0.0)
+        weight_decay = float(self.config.W_l2_loss or 0.0)
         opt_name = self.config.WU_optimizer.lower()
         if opt_name == "adam":
             return torch.optim.Adam(params, lr=lr, weight_decay=weight_decay)
@@ -201,9 +201,9 @@ class RNN_with_latent(nn.Module):
         if opt_name in ("adam", "adamw"):
             betas = self.config.LU_Adam_betas
             cls = torch.optim.Adam if opt_name == "adam" else torch.optim.AdamW
-            return cls([self.Z], lr=lr, betas=betas)
+            return cls([self.Z], lr=lr, betas=betas, weight_decay=float(self.config.Z_l2_loss or 0.0))
         if opt_name == "sgd":
-            return torch.optim.SGD([self.Z], lr=lr, momentum=float(self.config.LU_momentum))
+            return torch.optim.SGD([self.Z], lr=lr, momentum=float(self.config.LU_momentum), weight_decay=float(self.config.Z_l2_loss or 0.0))
         raise ValueError(f"Unsupported LU_optimizer '{self.config.LU_optimizer}'.")
 
     # ── Latent activation ──────────────────────────────────────────────────────
@@ -501,7 +501,7 @@ class RNN_with_latent(nn.Module):
         grad = self.Z.grad
         base_lr = float(self.config.LU_lr) or 1.0
         chunk_lrs = getattr(self.config, "chunk_LU_lrs", None)
-        base_decay = float(self.config.l2_loss or 0.0)
+        base_decay = float(self.config.Z_l2_loss or 0.0)
         chunk_decays = getattr(self.config, "chunk_l2_losses", None)
         chunk_size = self.Z_dim // self.Z_chunks
 

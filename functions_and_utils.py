@@ -55,7 +55,7 @@ def stats(var, var_name=None):
 import matplotlib.pyplot as plt
 import numpy as np
 
-def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subplot_height=1.4, width=3, annotate_phases=None, rasterize=False):
+def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subplot_height=1.4, width=3, annotate_phases=None, rasterize=False, legends=False):
     # Panel layout, adjust based on panel_order length
     fig, axes = plt.subplot_mosaic(
         [[panel] for panel in panel_order], 
@@ -91,7 +91,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
 
     # Helper functions to plot specific panels
     def plot_behavior(ax):
-        if ii.shape[-1] > 1:
+        if ii.shape[-1] > 2:
             im = ax.imshow(ii[x1:x2, ].T, aspect='auto', cmap='viridis', interpolation='none')
             if rasterize:
                 im.set_rasterized(True)
@@ -102,10 +102,11 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             if rasterize:
                 for line in line1 + line2:
                     line.set_rasterized(True)
-            # legend = ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0))
-            legend = ax.legend(loc='upper center',bbox_to_anchor=(.4, 1.16))
-            for lh in legend.legend_handles:
-                lh.set_alpha(1.0)
+            if legends:
+                # legend = ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0))
+                legend = ax.legend(loc='upper center',bbox_to_anchor=(.4, 1.16))
+                for lh in legend.legend_handles:
+                    lh.set_alpha(1.0)
         ax.set_ylabel('Observed value')
 
     def plot_latent(ax, force_2d=False, chunk_no=None):
@@ -293,7 +294,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
                        s=8, color=cs.neuragem, alpha=0.45, edgecolors='none', zorder=2)
 
             # Causal moving average: at time t, averages only correct[t-window+1 : t+1]
-            ma_window = 20
+            ma_window = 5
             kernel = np.ones(ma_window) / ma_window
             ma = np.convolve(correct.astype(float), kernel, mode='full')[:len(correct)]
             ax.plot(0.15 + 0.70 * ma, color='k', linewidth=0.75, alpha=0.9, zorder=3,
@@ -305,9 +306,9 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.3, zorder=1)
             ax.set_yticks([0.0, 1.0])
             ax.set_yticklabels(['Wrong', 'Correct'])
-            ax.set_ylim(-0.28, 1.28)
-            ax.set_ylabel('Side correct')
-            ax.legend(loc='upper left', fontsize=5)
+            ax.set_ylim(-0.22, 1.22)
+            # ax.text(-0.05, 0.5, 'correctness\nmoving avg', rotation=90, va='center', ha='right', fontsize=6, color='k')
+            ax.legend(loc='lower right', fontsize=6)
 
         else:
             print('No corrects to plot for this dataset')

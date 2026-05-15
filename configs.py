@@ -30,7 +30,7 @@ class Config:
         self.LU_optimizer = 'Adam'        # 'Adam', 'AdamW', or 'SGD'
         self.LU_Adam_betas = (0.6, 0.7)   # For faster dynamics (0.9, 0.999)
         self.LU_momentum = 0.0            # only used when LU_optimizer='SGD'
-        self.l2_loss = 0.0001                  # L2 regularization weight on Z (weight decay)
+        self.Z_l2_loss = 0.0001                  # L2 regularization weight on Z (weight decay)
         self.loss_reduction_LU = 'mean'    # how to reduce per-element loss before backward: 'sum' or 'mean'
         # Gradient aggregation across the time dimension of Z before each LU optimizer step.
         # Options: 'exponential_increase' (recent steps weighted more), 'average', 'last', 'none'.
@@ -144,6 +144,12 @@ class Config:
         self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.update_export_path()
 
+    def __setattr__(self, name, value):
+        if name == 'l2_loss':
+            super().__setattr__('Z_l2_loss', value)
+        else:
+            super().__setattr__(name, value)
+
     def _validate(self):
         """Check that coupled parameters are consistent. Called at end of subclass __init__."""
         assert len(self.exponential_increase_steepness) == self.latent_chunks, (
@@ -214,7 +220,7 @@ class ContextualSwitchingTaskConfig(Config):
         self.no_of_steps_in_latent_space = 1
         self.LU_lr = 0.8
         self.LU_Adam_betas = (0.6, 0.7)
-        self.l2_loss = 0.0001
+        self.Z_l2_loss = 0.0001
         self.LU_optimizer = 'Adam'
         self.exponential_increase_steepness = [2] * self.latent_chunks
 
@@ -306,7 +312,7 @@ class SeqLearnConfig(Config):
         self.latent_aggregation_op = 'average'
         self.pass_previous_latent = False
         self.no_of_steps_in_latent_space = 10
-        self.l2_loss = 0
+        self.Z_l2_loss = 0
         self.LU_lr = 0.1
         self.LU_optimizer = 'Adam'
         self.WU_lr = 0.001
@@ -387,7 +393,7 @@ class RotatingTargetsConfig(Config):
         # ── Latent variable ───────────────────────────────────────────────
         self.latent_dims = [2]   # scalar Z = rotation angle in radians
         self.LU_lr = 0.2
-        self.l2_loss = 0.0001
+        self.Z_l2_loss = 0.0001
         self.latent_chunks = 1
         self.latent_activation = 'softmax'
         self.no_of_steps_in_latent_space = 1

@@ -36,14 +36,22 @@ from train_and_infer_functions import *
 
 config = MeanPredictionConfig(experiment_to_run='figure')
 
-config.default_std = 0.2          # observation noise (lower = easier; higher = harder)
+config.default_std = 0.4          # observation noise (lower = easier; higher = harder)
 config.save_model  = False
-config.blocked_phase_length = 200
+config.blocked_phase_length = 400
 config.test_block_size = 20
 config.seq_len = 3
 config.no_of_steps_in_latent_space = 1
+##
+config.LU_optimizer = 'sgd'
 config.l2_loss = 8e-4
 config.LU_lr   = 0.9
+##
+# config.l2_loss = 1e-4
+# config.LU_lr   = 0.4
+##
+# config.l2_loss = 1e-5
+# config.LU_lr   = 0.1
 
 # ── Train ─────────────────────────────────────────────────────────────────────
 
@@ -59,7 +67,7 @@ logger, model, config, figs = train_model(
 
 panel_order = ['behavior', 'latent_2d', 'corrects']
 fig = plot_logger_panels(logger, config, panel_order, x2=None,
-                         annotate_phases='behavior', width=5)
+                         annotate_phases='behavior', width=5, legends=False)
 
 print(f'Export path: {config.export_path}')
 
