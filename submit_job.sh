@@ -17,9 +17,11 @@ if [ "$EXPERIMENT_NAME" = "learning" ]; then
     PYTHON_FILE="cst_correlated_noise_sweep.py"
 elif [ "$EXPERIMENT_NAME" = "generalization_tests" ]; then
     PYTHON_FILE="cst_run_generalization.py"
+elif [ "$EXPERIMENT_NAME" = "mean_prediction" ]; then
+    PYTHON_FILE="mean_prediction_sweep.py"
 else
     echo "Invalid experiment name: $EXPERIMENT_NAME"
-    echo "Valid options: learning | generalization_tests"
+    echo "Valid options: learning | generalization_tests | mean_prediction"
     exit 1
 fi
 

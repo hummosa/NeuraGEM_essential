@@ -11,16 +11,16 @@ import matplotlib as mpl
 class FigSize:
     """Standard single-panel figure sizes (width × height, inches)."""
     small  = (1.5, 1.5)   # compact square: summary stats, small insets
-    large  = (3.0, 3.0)   # full square: main result panels
-    wide   = (3.0, 1.5)   # landscape: time-series, learning curves
-    narrow = (1.5, 3.0)   # portrait: distributions, bar charts
-    tall   = (2.0, 3.0)   # alias for narrow-ish portrait
+    large  = (2.0, 2.0)   # full square: main result panels
+    wide   = (2.0, 1.5)   # landscape: time-series, learning curves
+    narrow = (1.5, 2.0)   # portrait: distributions, bar charts
+    tall   = (2.0, 1.5)   # alias for narrow-ish portrait
     # add 0.5 inch to height to make room for titles:
-    small = (small[0], small[1] + 1)
-    large = (large[0], large[1] + 1)
-    wide  = (wide[0], wide[1] + 1)
-    narrow = (narrow[0], narrow[1] + 1)
-    tall   = (tall[0], tall[1] + 1)
+    # small = (small[0], small[1] + 1)
+    # large = (large[0], large[1] + 1)
+    # wide  = (wide[0], wide[1] + 1)
+    # narrow = (narrow[0], narrow[1] + 1)
+    # tall   = (tall[0], tall[1] + 1)
 
     @staticmethod
     def row(n, panel=None):

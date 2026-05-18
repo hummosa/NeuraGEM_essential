@@ -276,7 +276,7 @@ Beukers et al. (2024) blocked sequence-learning task. Two task types, each with 
 config = ContextualSwitchingTaskConfig()
 
 # Override any parameter after construction
-config.LU_lr = 0.5
+config.Z_lr = 0.5
 config.hidden_size = 64
 config.latent_dims = [4]
 config.latent_chunks = 2
@@ -341,7 +341,7 @@ config.default_std = 0.1   # harder task at low noise (less info per observation
 
 logger, model, config, figs = train_model(config, seed=0)
 
-# After training, logger.outputs[:, :, 1] should track logger.llcids
+# After training, logger.outputs[:, :, 1] should track logger.context_ids
 # (model's mean estimate should match the ground-truth context mean)
 ```
 

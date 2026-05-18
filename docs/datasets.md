@@ -121,9 +121,9 @@ Looks up `config.dataset_name` in `DATASET_REGISTRY`, instantiates train and tes
 
 All loaders yield 3-tuples:
 ```
-(data, llcids, hlcids)
+(data, context_ids, hlcids)
 data:   (batch, seq_len, input_size)
-llcids: (batch, seq_len, 1)
+context_ids: (batch, seq_len, 1)
 hlcids: (batch, seq_len, 1)
 ```
 
@@ -276,10 +276,10 @@ Controlled by `config.shuffle_or_interleave` (`'interleave'` alternates tasks, `
 
 `predictive_learning()` iterates the DataLoader:
 ```python
-for inputs, llcids, hlcids in dataloader:
+for inputs, context_ids, hlcids in dataloader:
     # inputs:  (B=1, seq_len, input_size)
-    # llcids:  (B=1, seq_len, 1)  — low-level context IDs; passed to model as taskID in oracle mode
+    # context_ids:  (B=1, seq_len, 1)  — low-level context IDs; passed to model as taskID in oracle mode
     # hlcids:  (B=1, seq_len, 1)  — high-level context IDs; logged for analysis
 ```
 
-When `config.what_latent_to_use = 'taskID'`, `llcids` is used directly as the oracle context label, bypassing Z optimization entirely. This is the oracle baseline.
+When `config.what_latent_to_use = 'taskID'`, `context_ids` is used directly as the oracle context label, bypassing Z optimization entirely. This is the oracle baseline.

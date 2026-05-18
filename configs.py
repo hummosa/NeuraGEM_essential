@@ -26,11 +26,11 @@ class Config:
         self.what_latent_to_use = 'self'  # 'self' (learn Z), 'taskID' (oracle), 'uniform', or 'zeros'
 
         # ── Latent Optimizer (LU) ──────────────────────────────────────────────
-        self.LU_lr = 0.4
+        self.Z_lr = 0.4
         self.LU_optimizer = 'Adam'        # 'Adam', 'AdamW', or 'SGD'
         self.LU_Adam_betas = (0.6, 0.7)   # For faster dynamics (0.9, 0.999)
         self.LU_momentum = 0.0            # only used when LU_optimizer='SGD'
-        self.Z_l2_loss = 0.0001                  # L2 regularization weight on Z (weight decay)
+        self.Z_decay = 0.0001                  # L2 regularization weight on Z (weight decay)
         self.loss_reduction_LU = 'mean'    # how to reduce per-element loss before backward: 'sum' or 'mean'
         # Gradient aggregation across the time dimension of Z before each LU optimizer step.
         # Options: 'exponential_increase' (recent steps weighted more), 'average', 'last', 'none'.
@@ -44,6 +44,7 @@ class Config:
         self.WU_lr = 0.001
         self.WU_optimizer = 'Adam'
         self.WU_momentum = 0.0
+        self.W_l2_loss = 0.0  # L2 regularization weight on model weights (weight decay)
         self.loss_reduction_WU = 'mean'
 
         # ── Architecture ───────────────────────────────────────────────────────
@@ -145,10 +146,12 @@ class Config:
         self.update_export_path()
 
     def __setattr__(self, name, value):
-        if name == 'l2_loss':
-            super().__setattr__('Z_l2_loss', value)
-        else:
-            super().__setattr__(name, value)
+        # Backward-compat: old names redirect to current names
+        if name == 'l2_loss' or name == 'Z_l2_loss':
+            name = 'Z_decay'
+        elif name == 'LU_lr':
+            name = 'Z_lr'
+        super().__setattr__(name, value)
 
     def _validate(self):
         """Check that coupled parameters are consistent. Called at end of subclass __init__."""
@@ -179,7 +182,7 @@ class ContextualSwitchingTaskConfig(Config):
     Usage:
         config = ContextualSwitchingTaskConfig()           # paper figure preset
         config = ContextualSwitchingTaskConfig('tweaking') # exploration preset
-        config.LU_lr = 0.5                                  # override any parameter
+        config.Z_lr = 0.5                                  # override any parameter
     """
     def __init__(self, experiment_to_run='figure'):
         super().__init__()
@@ -218,9 +221,9 @@ class ContextualSwitchingTaskConfig(Config):
         self.latent_aggregation_op = 'exponential_increase'
         self.pass_previous_latent = True
         self.no_of_steps_in_latent_space = 1
-        self.LU_lr = 0.8
+        self.Z_lr = 0.8
         self.LU_Adam_betas = (0.6, 0.7)
-        self.Z_l2_loss = 0.0001
+        self.Z_decay = 0.0001
         self.LU_optimizer = 'Adam'
         self.exponential_increase_steepness = [2] * self.latent_chunks
 
@@ -251,7 +254,7 @@ class ContextualSwitchingTaskConfig(Config):
 
         # Tweaking-specific overrides (exploration preset differs in 3 values)
         if experiment_to_run in ('tweaking', 'weight_grads_comp'):
-            self.LU_lr = 0.5
+            self.Z_lr = 0.5
             self.WU_lr = 0.005
             self.blocked_phase_length = 1200
 
@@ -312,8 +315,8 @@ class SeqLearnConfig(Config):
         self.latent_aggregation_op = 'average'
         self.pass_previous_latent = False
         self.no_of_steps_in_latent_space = 10
-        self.Z_l2_loss = 0
-        self.LU_lr = 0.1
+        self.Z_decay = 0
+        self.Z_lr = 0.1
         self.LU_optimizer = 'Adam'
         self.WU_lr = 0.001
         self.loss_reduction_LU = 'mean'
@@ -392,8 +395,8 @@ class RotatingTargetsConfig(Config):
 
         # ── Latent variable ───────────────────────────────────────────────
         self.latent_dims = [2]   # scalar Z = rotation angle in radians
-        self.LU_lr = 0.2
-        self.Z_l2_loss = 0.0001
+        self.Z_lr = 0.2
+        self.Z_decay = 0.0001
         self.latent_chunks = 1
         self.latent_activation = 'softmax'
         self.no_of_steps_in_latent_space = 1

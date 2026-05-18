@@ -38,20 +38,24 @@ config = MeanPredictionConfig(experiment_to_run='figure')
 
 config.default_std = 0.4          # observation noise (lower = easier; higher = harder)
 config.save_model  = False
-config.blocked_phase_length = 400
+config.blocked_phase_length = 300
 config.test_block_size = 20
 config.seq_len = 3
 config.no_of_steps_in_latent_space = 1
+config.seq_len = 4
 ##
-config.LU_optimizer = 'sgd'
-config.l2_loss = 8e-4
-config.LU_lr   = 0.9
+# config.LU_optimizer = 'adam'
+# config.Z_decay = 8e-4
+# config.Z_lr   = 0.9
+# config.loss_reduction_LU = 'sum'    # how to reduce per-element loss before backward: 'sum' or 'mean'
+
 ##
-# config.l2_loss = 1e-4
-# config.LU_lr   = 0.4
+_z_decay_for_lr = lambda lr: 1e-3 * lr ** 2
+config.Z_lr   = 1.0
+config.Z_decay = _z_decay_for_lr(config.Z_lr)
 ##
-# config.l2_loss = 1e-5
-# config.LU_lr   = 0.1
+# config.Z_decay = 1e-5
+# config.Z_lr   = 0.1
 
 # ── Train ─────────────────────────────────────────────────────────────────────
 
@@ -62,12 +66,12 @@ logger, model, config, figs = train_model(
 
 # ── Plot ──────────────────────────────────────────────────────────────────────
 
-# logger.outputs dim 1 should track logger.llcids after learning converges.
+# logger.outputs dim 1 should track logger.context_ids after learning converges.
 # logger.outputs dim 0 is unconstrained (no loss gradient on it).
 
 panel_order = ['behavior', 'latent_2d', 'corrects']
 fig = plot_logger_panels(logger, config, panel_order, x2=None,
-                         annotate_phases='behavior', width=5, legends=False)
+                         annotate_phases='behavior', width=5, legends=False, dpi=200)
 
 print(f'Export path: {config.export_path}')
 

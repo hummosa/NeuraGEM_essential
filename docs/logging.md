@@ -46,7 +46,7 @@ Shape convention per entry: `(batch_size, stride, var_dim)` — *except* the fir
 
 | Attribute | Shape per Entry | Description |
 |---|---|---|
-| `llcids` | `(B, stride, 1)` | Low-level context IDs from dataset |
+| `context_ids` | `(B, stride, 1)` | Low-level context IDs from dataset |
 | `hlcids` | `(B, stride, 1)` | High-level context IDs |
 
 #### Model Internals (optional)
@@ -103,7 +103,7 @@ logger.log_gradients_corrections(grad)   # Z.grad after aggregation
 logger.log_latent_updating_loss(loss)    # scalar per LU step
 logger.log_latent_updating_latent(Z)
 logger.log_latent_updating_output(out)
-logger.log_llcid(llcids)
+logger.log_llcid(context_ids)
 logger.log_hlcid(hlcids)
 logger.log_hidden_states(h)              # handles LSTM tuple
 ```

@@ -57,10 +57,10 @@ def _mask_loss(loss, config):
 # Batch preparation
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _prepare_batch_inputs(model, config, raw_inputs, batch_llcids):
+def _prepare_batch_inputs(model, config, raw_inputs, batch_context_ids):
     """Move inputs to device, optionally add noise, and build combined input for add-gating."""
     inputs = raw_inputs.to(config.device)
-    llcids = batch_llcids.to(config.device)
+    context_ids = batch_context_ids.to(config.device)
 
     gated_inputs = inputs
     if config.add_noise_to_input:
@@ -74,17 +74,17 @@ def _prepare_batch_inputs(model, config, raw_inputs, batch_llcids):
     if config.predict_first_frame:
         zero_frame = torch.zeros_like(model_inputs[:, :1, :])
         model_inputs = torch.cat((zero_frame, model_inputs[:, :-1, :]), dim=1)
-        latent_inputs = llcids[:, :]
+        latent_inputs = context_ids[:, :]
     else:
         model_inputs = model_inputs[:, :-1, :]
-        latent_inputs = llcids[:, 1:]
+        latent_inputs = context_ids[:, 1:]
 
     combined_input = model.combine_input_with_latent(
         model_inputs, what_latent=config.what_latent_to_use, taskID=latent_inputs,
     )
 
 
-    return combined_input, model_inputs, inputs, latent_inputs, #llcids
+    return combined_input, model_inputs, inputs, latent_inputs, #context_ids
 
 
 
@@ -195,7 +195,7 @@ def _latent_update_step(model, config, model_inputs, inputs, criterion, logger, 
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
-               model, combined_input, llcids, hlcids, hidden_states, bi):
+               model, combined_input, context_ids, hlcids, hidden_states, bi):
     """Record all per-batch quantities to the logger."""
     stride = config.stride
 
@@ -210,7 +210,7 @@ def _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
 
     logger.log_training_batch(combined_input.cpu().detach().numpy()[:, -stride:, :])
     logger.log_training_loss(full_loss[:, -stride:, :])
-    logger.llcids.append(llcids[:, -stride:].cpu().detach().numpy())
+    logger.context_ids.append(context_ids[:, -stride:].cpu().detach().numpy())
     logger.hlcids.append(hlcids[:, -stride:].cpu().detach().numpy())
 
     if config.log_hidden_states:
@@ -258,21 +258,21 @@ def predictive_learning(logger, config, dataloader, model,
     pbar = tqdm(enumerate(dataloader), total=len(dataloader))
 
     for bi, batch in pbar:
-        inputs, batch_llcids, batch_hlcids = batch
+        inputs, batch_context_ids, batch_hlcids = batch
         batch_hlcids = batch_hlcids.to(config.device)
 
         # ── 1. Prepare inputs ─────────────────────────────────────────
-        combined_input, core_inputs, inputs, llcids = _prepare_batch_inputs(
-            model, config, inputs, batch_llcids
+        combined_input, core_inputs, inputs, context_ids = _prepare_batch_inputs(
+            model, config, inputs, batch_context_ids
         )
 
         if config.update_latent_before_weights:
             first_full_loss = _latent_update_step(
-                model, config, core_inputs, inputs, criterion, logger, llcids
+                model, config, core_inputs, inputs, criterion, logger, context_ids
             )
         # ── 2. Weight Update (WU) ─────────────────────────────────────
         outputs, full_loss, hidden_states = _weight_update_step(
-            model, config, combined_input, core_inputs, inputs, llcids, criterion
+            model, config, combined_input, core_inputs, inputs, context_ids, criterion
         )
 
         # Log weight gradient norms for diagnostic use
@@ -295,7 +295,7 @@ def predictive_learning(logger, config, dataloader, model,
             )
         # ── 4. Log ────────────────────────────────────────────────────
         _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
-                    model, combined_input, llcids, batch_hlcids, hidden_states, bi)
+                    model, combined_input, context_ids, batch_hlcids, hidden_states, bi)
 
         running_loss += full_loss.sum()
 

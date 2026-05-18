@@ -46,7 +46,7 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
     model.init_hidden(batch_size)           # h ← 10/hidden_size, c ← 0
 
     for epoch in range(epochs):
-        for inputs, llcids, hlcids in dataloader:
+        for inputs, context_ids, hlcids in dataloader:
             # ── inputs: (B, seq_len, input_size) ──────────────────────────
 
             # 1. WEIGHT UPDATE
@@ -56,7 +56,7 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
                 combined = combine_input_with_latent(inputs, 'self')  # (B, seq, in+Z)
                 outputs, _ = model.forward(combined)
             else:
-                outputs, _ = model.forward(inputs, taskID=llcids, what_latent='self')
+                outputs, _ = model.forward(inputs, taskID=context_ids, what_latent='self')
 
             loss = criterion(outputs, targets)    # (B, seq, out), MSE unreduced
             loss.sum().backward()
@@ -69,7 +69,7 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
                 model.reset_Z(B, seq_len)  # Z ← zeros
 
             if no_of_steps_in_latent_space > 0:
-                before_loss = model.update_Z(inputs, criterion, logger, llcids,
+                before_loss = model.update_Z(inputs, criterion, logger, context_ids,
                                              no_of_steps=no_of_steps_in_latent_space)
 
             # 3. LOG
@@ -77,7 +77,7 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
             logger.log_predicted_output(outputs)
             logger.log_latent_value(model.Z)
             logger.log_gradients_corrections(model.Z.grad)
-            logger.log_llcid(llcids)
+            logger.log_llcid(context_ids)
             logger.log_hlcid(hlcids)
 ```
 

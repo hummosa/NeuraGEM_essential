@@ -126,6 +126,7 @@ Default experiment values: `B=1`, `seq_len=10`, `input_size=1`, `Z_dim=2`, `hidd
 - **Logger entries** use shape `(B, stride, dim)` per batch; they are concatenated into `(total_timesteps, dim)` at plot time.
 - **Latent initialization**: Z starts at zeros each reset; exponential filter normalizes to sum-1 for learning-rate stability.
 
+I recently named config.l2_loss to config.Z_decay. You might see some descrepancies, fix them if you do. Also from logger.context_ids to logger.context_ids.
 ---
 
 ## See Also

@@ -2,9 +2,9 @@
 datasets.py — Dataset classes for NeuraGEM tasks.
 
 Every dataset returns 3-tuples from its DataLoader:
-    (data, llcids, hlcids)
+    (data, context_ids, hlcids)
     data:   (batch, seq_len, input_size)  — observations
-    llcids: (batch, seq_len, 1)           — low-level context IDs
+    context_ids: (batch, seq_len, 1)           — low-level context IDs
     hlcids: (batch, seq_len, 1)           — high-level context IDs
 
 Adding a new dataset
@@ -17,14 +17,14 @@ Example (2D Gaussian with two contexts):
 
     class My2DDataset(BaseTaskDataset):
         def generate_sequences(self):
-            data, llcids, hlcids = [], [], []
+            data, context_ids, hlcids = [], [], []
             for block_idx, block_size in enumerate(self.block_sizes):
                 mean = [0.2, 0.8] if block_idx % 2 == 0 else [0.8, 0.2]
                 block = self.rng.normal(mean, self.config.default_std, (block_size, 2))
                 data.extend(block)
-                llcids.extend([float(block_idx % 2)] * block_size)
+                context_ids.extend([float(block_idx % 2)] * block_size)
                 hlcids.extend([0.0] * block_size)
-            return data, llcids, hlcids
+            return data, context_ids, hlcids
 
     DATASET_REGISTRY['my_2d'] = My2DDataset
 
@@ -57,7 +57,7 @@ def create_datasets_and_loaders(config, pattern=None):
 
     Returns: (dataset, dataset_test, train_loader, test_loader)
 
-    Each loader yields (data, llcids, hlcids) with shapes
+    Each loader yields (data, context_ids, hlcids) with shapes
     (batch, seq_len, input_size), (batch, seq_len, 1), (batch, seq_len, 1).
     """
     cls = DATASET_REGISTRY.get(config.dataset_name)
@@ -138,12 +138,12 @@ class BaseTaskDataset(Dataset, ABC):
         end = start + self.config.seq_len
 
         data = self.data_sequence[start:end]
-        llcids = self.llcid_sequence[start:end]
+        context_ids = self.llcid_sequence[start:end]
         hlcids = self.hlcid_sequence[start:end]
 
         # Convert to tensors with explicit shape (seq_len, input_size)
         data_t = torch.tensor(np.array(data), dtype=torch.float32).reshape(self.config.seq_len, self.config.input_size)
-        llcid_t = torch.tensor(np.array(llcids, dtype=np.float32)).reshape(self.config.seq_len, 1)
+        llcid_t = torch.tensor(np.array(context_ids, dtype=np.float32)).reshape(self.config.seq_len, 1)
         hlcid_t = torch.tensor(np.array(hlcids, dtype=np.float32)).reshape(self.config.seq_len, 1)
 
         return data_t, llcid_t, hlcid_t

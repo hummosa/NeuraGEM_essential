@@ -6,8 +6,8 @@ Comparisons
   RNN               : no_of_steps_in_latent_space = 0
   NeuraGEM          : no_of_steps_in_latent_space = 1  (standard defaults)
   NeuraGEM LU-first : update_latent_before_weights=True, latent_aggregation_op='none'
-  NeuraGEM slow     : LU_lr=0.05,  l2_loss=1e-5   (too slow)
-  NeuraGEM fast     : LU_lr=0.7,   l2_loss=8e-4   (too fast)
+  NeuraGEM slow     : Z_lr=0.05,  Z_decay=1e-5   (too slow)
+  NeuraGEM fast     : Z_lr=0.7,   Z_decay=8e-4   (too fast)
 
 Shared sweep params (edit below) are applied to every condition.
 """
@@ -60,19 +60,19 @@ COMPARISONS = [
         ),
     ),
     (
-        'NeuraGEM slow (LU_lr=0.2)',
+        'NeuraGEM slow (Z_lr=0.2)',
         dict(
             no_of_steps_in_latent_space=1,
-            LU_lr=0.2,
-            l2_loss=5e-5,
+            Z_lr=0.2,
+            Z_decay=5e-5,
         ),
     ),
     (
-        'NeuraGEM fast (LU_lr=0.7)',
+        'NeuraGEM fast (Z_lr=0.7)',
         dict(
             no_of_steps_in_latent_space=1,
-            LU_lr=0.7,
-            l2_loss=8e-4,
+            Z_lr=0.7,
+            Z_decay=8e-4,
         ),
     ),
 ]

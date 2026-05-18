@@ -55,6 +55,15 @@ def stats(var, var_name=None):
 import matplotlib.pyplot as plt
 import numpy as np
 
+
+def _active_dims(arr, mask):
+    """Return only the columns of arr where mask[i]==1. Pass-through if mask is None."""
+    if mask is None:
+        return arr
+    idx = [i for i, m in enumerate(mask) if m]
+    return arr[:, idx]
+
+
 def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subplot_height=1.4, width=3, annotate_phases=None, rasterize=False, legends=False):
     # Panel layout, adjust based on panel_order length
     fig, axes = plt.subplot_mosaic(
@@ -81,7 +90,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
     if logger.predicted_outputs:
         oi = np.concatenate(logger.predicted_outputs, axis=0)
         oi = oi.reshape(-1, oi.shape[-1])
-    ll = np.concatenate(logger.llcids, axis=0)
+    ll = np.concatenate(logger.context_ids, axis=0)
     hh = np.concatenate(logger.hlcids, axis=0)
 
     if x2 is None:
@@ -91,14 +100,18 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
 
     # Helper functions to plot specific panels
     def plot_behavior(ax):
-        if ii.shape[-1] > 2:
-            im = ax.imshow(ii[x1:x2, ].T, aspect='auto', cmap='viridis', interpolation='none')
+        input_mask  = getattr(config, 'input_feed_mask',  None)
+        output_mask = getattr(config, 'output_loss_mask', None)
+        ii_plot = _active_dims(ii, input_mask)
+        if ii_plot.shape[-1] > 2:
+            im = ax.imshow(ii_plot[x1:x2, ].T, aspect='auto', cmap='viridis', interpolation='none')
             if rasterize:
                 im.set_rasterized(True)
         else:
-            line1 = ax.plot(ii[x1:x2, ], '.', alpha=0.6, markersize=3, linewidth=1, color=obs_color, label='Observed')
+            line1 = ax.plot(ii_plot[x1:x2, ], '.', alpha=0.6, markersize=3, linewidth=1, color=obs_color, label='Observed')
             if logger.predicted_outputs:
-                line2 = ax.plot(oi[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color=preds_color)
+                oi_plot = _active_dims(oi, output_mask)
+                line2 = ax.plot(oi_plot[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color=preds_color)
             if rasterize:
                 for line in line1 + line2:
                     line.set_rasterized(True)
@@ -262,7 +275,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             ax.set_ylim(0, 1.1)
 
         elif logger.predicted_outputs and config.dataset_name in ['contextual_switching_task', 'contextual_switching_task_2D']:
-            # abs distance of predictions from the underlying block mean (llcids store the true mean)
+            # abs distance of predictions from the underlying block mean (context_ids store the true mean)
             abs_dist = np.abs(oi[x1:x2] - ll[x1:x2])
             smoothed = np.convolve(abs_dist[:, 0], np.ones(20) / 20, mode='same')
             # ax.plot(abs_dist[:, 0], '.', alpha=0.3, markersize=2, color='grey')
@@ -425,7 +438,7 @@ def extract_block_corrects(logger, last_ts_in_a_block=15,
     if not logger.predicted_outputs:
         return None, None
 
-    ll_full = np.concatenate(logger.llcids, axis=0).reshape(-1, 1)
+    ll_full = np.concatenate(logger.context_ids, axis=0).reshape(-1, 1)
     oi_full = np.concatenate(logger.predicted_outputs, axis=0)
     oi_full = oi_full.reshape(-1, oi_full.shape[-1])
 
@@ -531,14 +544,19 @@ def plot_behavior_panel(ax, logger, config, x2=None):
     else:
         x1, x2 = 0, x2
 
-    if ii.shape[-1] > 1:
-        ax.imshow(ii[x1:x2, ].T, aspect='auto', cmap='viridis', interpolation='none')
+    input_mask  = getattr(config, 'input_feed_mask',  None)
+    output_mask = getattr(config, 'output_loss_mask', None)
+    ii_plot = _active_dims(ii, input_mask)
+
+    if ii_plot.shape[-1] > 1:
+        ax.imshow(ii_plot[x1:x2, ].T, aspect='auto', cmap='viridis', interpolation='none')
     else:
-        ax.plot(ii[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, color='tab:grey', label='Observed')
+        ax.plot(ii_plot[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, color='tab:grey', label='Observed')
         if logger.predicted_outputs:
             oi = np.concatenate(logger.predicted_outputs, axis=0)
             oi = oi.reshape(-1, oi.shape[-1])
-            ax.plot(oi[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color='tab:red')
+            oi_plot = _active_dims(oi, output_mask)
+            ax.plot(oi_plot[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color='tab:red')
             ax.legend(loc='lower center')
     ax.set_ylabel('Data dim')
     ax.set_xlabel('Time steps')
@@ -570,7 +588,7 @@ def plot_task_and_hierarchies_illustration(logger,  config, x2=None, show_output
     if logger.predicted_outputs != []:
         oi = np.concatenate(logger.predicted_outputs, axis=0)
         oi = oi.reshape(-1, oi.shape[-1])
-    ll = np.concatenate(logger.llcids, axis=0)
+    ll = np.concatenate(logger.context_ids, axis=0)
     ll = ll.reshape(-1, 1)
     hh = np.concatenate(logger.hlcids, axis=0)
     hh = hh.reshape(-1,1)
@@ -827,7 +845,7 @@ def plot_switches(ax, states, both_starts):
 def plot_switches_from_logger(ax, logger, config, use_ll=True, alpha =0.1, alpha_interleaved=0.03, x1=0, x2=None):
     import plot_style
     cs = plot_style.Color_scheme()
-    ll = np.concatenate(logger.llcids, axis=0)
+    ll = np.concatenate(logger.context_ids, axis=0)
     ll = ll.reshape(-1, ll.shape[-1])
     if not use_ll:
         hh = np.concatenate(logger.hlcids, axis=0)
@@ -1011,7 +1029,7 @@ def plot_corrects_seq_learn(logger, config):
     ax.plot(corrects + np.random.normal(0, 0.1, len(corrects)), 'o', alpha=0.5, markersize=1)
     #plot again with a moving average
 
-    ll = np.concatenate(logger.llcids, axis=0)
+    ll = np.concatenate(logger.context_ids, axis=0)
     ll = ll.reshape(-1, 1)
     hh = np.concatenate(logger.hlcids, axis=0)
     hh = hh.reshape(-1,1)
@@ -1126,7 +1144,7 @@ class Logger:
     - latent_updating_grad_model_outputs: List - Model output gradients during LU
     
     Task Context IDs:
-    - llcids: List[(batch, stride, 1)] - Low-level context IDs (block-level latent indicators)
+    - context_ids: List[(batch, stride, 1)] - Low-level context IDs (block-level latent indicators)
     - hlcids: List[(batch, stride, 1)] - High-level context IDs (hierarchical latent indicators)
     
     Model Internal States:
@@ -1189,7 +1207,7 @@ class Logger:
         self.predicted_outputs = []
         self.prediction_losses = []
         self.inputs = []
-        self.llcids = []
+        self.context_ids = []
         self.hlcids = []
         self.hidden_states = []
         self.gradients_max_entropy = []

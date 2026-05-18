@@ -91,11 +91,11 @@ def make_base_config():
     cfg.post_gating = True
 
     if cfg.pre_gating:
-        cfg.LU_lr = 0.1
-        cfg.l2_loss = 0.000_0011
+        cfg.Z_lr = 0.1
+        cfg.Z_decay = 0.000_0011
     else:
-        cfg.LU_lr    = 0.5
-        cfg.l2_loss  = 0.000_1
+        cfg.Z_lr    = 0.5
+        cfg.Z_decay  = 0.000_1
 
 
     # Novel rotation test (Phase 3a) — run immediately after Phase 2

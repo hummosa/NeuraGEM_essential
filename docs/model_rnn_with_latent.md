@@ -201,7 +201,7 @@ Collects all parameters **except** Z:
 ```python
 params = [p for name, p in model.named_parameters() if 'Z' not in name]
 ```
-Supports `'adam'` and `'sgd'`. Adam is default. `weight_decay` is set from `config.l2_loss`.
+Supports `'adam'` and `'sgd'`. Adam is default. `weight_decay` is set from `config.Z_decay`.
 
 ### Latent Optimizer (`Z_optimizer`)
 Optimizes only `model.Z`:

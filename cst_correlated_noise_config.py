@@ -19,7 +19,7 @@ COLOR_SCHEME = plot_style.Color_scheme()
 
 # ── Sweep conditions ──────────────────────────────────────────────────────────
 
-# l2_loss scales as lr^2 (power-law fit to hand-tuned values; rough approximation).
+# Z_decay scales as lr^2 (power-law fit to hand-tuned values; rough approximation).
 _l2_for_lr = lambda lr: 1e-3 * lr ** 2
 
 _NG_LRS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
@@ -29,8 +29,8 @@ CONDITIONS: Dict[str, Dict[str, Any]] = {
     **{
         rf"NG$\alpha_z={lr}$": dict(
             no_of_steps_in_latent_space=1,
-            LU_lr=lr,
-            l2_loss=_l2_for_lr(lr),
+            Z_lr=lr,
+            Z_decay=_l2_for_lr(lr),
         )
         for lr in _NG_LRS
     },
@@ -41,8 +41,8 @@ CONDITIONS: Dict[str, Dict[str, Any]] = {
 #     "rnn":               dict(no_of_steps_in_latent_space=0),
 #     "neuragem":          dict(no_of_steps_in_latent_space=1),
 #     "neuragem_lu_first": dict(no_of_steps_in_latent_space=1, update_latent_before_weights=True),
-#     "neuragem_slow":     dict(no_of_steps_in_latent_space=1, LU_lr=0.2, l2_loss=5e-5),
-#     "neuragem_fast":     dict(no_of_steps_in_latent_space=1, LU_lr=0.7, l2_loss=8e-4),
+#     "neuragem_slow":     dict(no_of_steps_in_latent_space=1, Z_lr=0.2, Z_decay=5e-5),
+#     "neuragem_fast":     dict(no_of_steps_in_latent_space=1, Z_lr=0.7, Z_decay=8e-4),
 # }
 
 DEFAULT_SEEDS: int = 10
@@ -87,6 +87,6 @@ CONDITION_INFO: Dict[str, ConditionInfo] = {
 #     "rnn":               ConditionInfo("RNN",                        COLOR_SCHEME.short_horizon_rnn),
 #     "neuragem":          ConditionInfo("NeuraGEM",                   COLOR_SCHEME.neuragem),
 #     "neuragem_lu_first": ConditionInfo("NeuraGEM LU-first",          plt.cm.tab10(2)),
-#     "neuragem_slow":     ConditionInfo(r"NeuraGEM slow (LU_lr=0.2)", plt.cm.tab10(1)),
-#     "neuragem_fast":     ConditionInfo(r"NeuraGEM fast (LU_lr=0.7)", plt.cm.tab10(3)),
+#     "neuragem_slow":     ConditionInfo(r"NeuraGEM slow (Z_lr=0.2)", plt.cm.tab10(1)),
+#     "neuragem_fast":     ConditionInfo(r"NeuraGEM fast (Z_lr=0.7)", plt.cm.tab10(3)),
 # }

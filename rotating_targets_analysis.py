@@ -50,7 +50,7 @@ def flatten_logger(logger, config):
     """
     ii = np.concatenate(logger.inputs, axis=0).reshape(-1, config.input_size)
     oi = np.concatenate(logger.predicted_outputs, axis=0).reshape(-1, config.output_size)
-    ll = np.concatenate(logger.llcids, axis=0).reshape(-1)
+    ll = np.concatenate(logger.context_ids, axis=0).reshape(-1)
     li = None
     if logger.latent_values:
         li = np.concatenate(logger.latent_values, axis=0).reshape(-1, sum(config.latent_dims))

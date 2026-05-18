@@ -9,10 +9,15 @@ from plot_style import FigSize
 ```
 
 ### Font sizes
-Stop specifying fonesize for standard elements like titles axes labels and legends so those can be standarized by the plot_style file. 
+**Never pass `fontsize=` to standard elements** (axis labels, tick labels, legends, titles).  Let `plot_style.set_plot_style()` set all of those via `rcParams`.  The only acceptable exception is a one-off annotation that deliberately deviates from the global style (e.g., a single data label overlaid on a panel).
 
 ### Titles
-You have a tendency to add titles to everything. Mostly uncessary. Most of the time the x and y labels tell the story like it should. Only need titles for things than cannot be disambuguated otherwise. Definitely not to add methods details or stuff like that. 
+**Default: no title.**  x/y labels carry the message.  A title is only justified when the content literally cannot be read without it — e.g., a panel in a grid where both axes are shared and the panel identity is otherwise ambiguous.  Never use titles to describe the method, the model, or the parameters — those belong in the caption or the legend.  `ax.set_title(...)` and `fig.suptitle(...)` should be rare exceptions, not the default.
+
+### Figure sizes — the most common mistake
+Figures look large in Jupyter because the notebook scales them up.  Do not increase `figsize` to make text look bigger — **zoom the notebook instead**.  The sizes in `FigSize` are calibrated for print/PDF at the actual panel dimensions.
+
+A telltale sign you've made the figure too big: the text looks tiny relative to the panel.  That happens when you use large `figsize` values (e.g. 6×4) and the font, set to 6–7 pt by `plot_style`, becomes microscopic at the rendered DPI.  Use the presets and trust them.  If you're tempted to write `figsize=(6, 4)` or larger, stop and use `FigSize.large` or `FigSize.wide` instead.
 
 ### Single-panel presets (width × height, inches)
 

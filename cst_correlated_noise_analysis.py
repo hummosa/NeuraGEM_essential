@@ -178,7 +178,7 @@ def compute_block_end_lr(
     per_seed_block_pairs: List[List[Tuple[np.ndarray, np.ndarray]]] = []
 
     for logger in loggers:
-        ll  = np.concatenate(logger.llcids,            axis=0).reshape(-1)
+        ll  = np.concatenate(logger.context_ids,            axis=0).reshape(-1)
         oi  = np.concatenate(logger.predicted_outputs,  axis=0).reshape(-1)
         inp = np.concatenate(logger.inputs,             axis=0).reshape(-1)
 
@@ -283,7 +283,7 @@ def extract_switch_aligned_windows(
     all_windows: List[np.ndarray] = []
 
     for logger in loggers:
-        ll  = np.concatenate(logger.llcids,           axis=0).reshape(-1)
+        ll  = np.concatenate(logger.context_ids,           axis=0).reshape(-1)
         oi  = np.concatenate(logger.predicted_outputs, axis=0).reshape(-1)
         inp = np.concatenate(logger.inputs,            axis=0).reshape(-1)
 

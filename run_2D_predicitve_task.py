@@ -58,11 +58,11 @@ config.pre_gating = False # the rotating targets task worked not with pre_gating
 config.post_gating = not config.pre_gating
 
 if config.pre_gating:
-    config.LU_lr = 0.1
-    config.l2_loss = 0.000_0011
+    config.Z_lr = 0.1
+    config.Z_decay = 0.000_0011
 else:
-    config.LU_lr = .05
-    config.l2_loss = 0.000_1
+    config.Z_lr = .05
+    config.Z_decay = 0.000_1
 
 
 # config.seq_len = 4
@@ -74,14 +74,14 @@ if over_segment: # trying out changing params to make ng oversegment to shields
     config.latent_dims = [10]    # e.g. [4] for Z_dim=4; [2, 2] for Z_dim=4 split into 2 chunks of 2
     config.latent_chunks = 5    # number of independently-activated sub-vectors within Z
     config.latent_activation = 'softmax_chunked'   # 'softmax', 'sigmoid', or 'none'; applied before Z is used
-    config.LU_lr = 1.
-    config.l2_loss = 0.000_8
+    config.Z_lr = 1.
+    config.Z_decay = 0.000_8
     config.seq_len = 2
     config.add_passive_learning_phase = False
     config.blocked_phase_length = 1500   # ← 
     config.block_size = 200
-    # config.LU_optimizer = 'sgd' # 'adam' or 'sgd'; Adam's momentum seems to make it harder for the model to adapt quickly within a block, even with a low LU_lr.
-    # config.l2_loss = 0.0
+    # config.LU_optimizer = 'sgd' # 'adam' or 'sgd'; Adam's momentum seems to make it harder for the model to adapt quickly within a block, even with a low Z_lr.
+    # config.Z_decay = 0.0
     # config.latent_aggregation_op = 'none'
     # config.update_latent_before_weights = True # whether to run the LU step before the WU step within each batch. This seems to help a lot with oversegmenting models, maybe by giving them a chance to adjust Z before the weights have to follow it.
     config.pre_gating = False
@@ -122,7 +122,7 @@ def plot_arena_trials(logger, config, t_start=0, t_end=None, same_block_only=Tru
         Use 'novel' for Phase 3a test blocks so the annotation is clear.
     """
     ii = np.concatenate(logger.inputs, axis=0).reshape(-1, config.input_size)
-    ll = np.concatenate(logger.llcids, axis=0).reshape(-1)
+    ll = np.concatenate(logger.context_ids, axis=0).reshape(-1)
 
     has_preds = bool(logger.predicted_outputs)
     if has_preds:
@@ -196,7 +196,7 @@ def extract_color_trials(logger, config, color_idx=0):
     'trial_no' : (N,)  sequential trial index (cue occurrences of this color)
     """
     ii = np.concatenate(logger.inputs, axis=0).reshape(-1, config.input_size)
-    ll = np.concatenate(logger.llcids, axis=0).reshape(-1)
+    ll = np.concatenate(logger.context_ids, axis=0).reshape(-1)
     has_preds = bool(logger.predicted_outputs)
     if has_preds:
         oi = np.concatenate(logger.predicted_outputs, axis=0).reshape(-1, config.output_size)
@@ -209,10 +209,10 @@ def extract_color_trials(logger, config, color_idx=0):
     ts       = np.array(cue_ts)
     obs_xy   = ii[ts + 1, -2:]                            # outcome frame
     pred_xy  = oi[ts + 1, -2:] if has_preds else None    # prediction FOR outcome frame
-    llcids   = ll[ts]
+    context_ids   = ll[ts]
     trial_no = np.arange(len(ts))
 
-    return dict(t=ts, obs_xy=obs_xy, pred_xy=pred_xy, llcid=llcids, trial_no=trial_no)
+    return dict(t=ts, obs_xy=obs_xy, pred_xy=pred_xy, llcid=context_ids, trial_no=trial_no)
 
 
 def __main__(config):
