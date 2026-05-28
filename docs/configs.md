@@ -45,7 +45,7 @@ Z has shape `(batch, seq_len, Z_dim)` where `Z_dim = product(latent_dims)`.
 | `latent_activation` | `'none'` | Applied to Z before it is used. Options: `'softmax'`, `'sigmoid'`, `'none'` |
 | `softmax_temp` | 1 | Temperature for softmax (higher → more uniform) |
 | `pass_previous_latent` | `True` | Carry Z across batches (warm-start LU from prior context). Set `False` to reset Z to zeros each batch |
-| `what_latent_to_use` | `'self'` | Which latent to use: `'self'` (learn Z), `'taskID'` (oracle one-hot), `'uniform'` (constant), `'zeros'` |
+| `what_latent_to_use` | `'self'` | Which latent to use: `'self'` (learn Z), `'context_ids'` (oracle one-hot), `'uniform'` (constant), `'zeros'` |
 
 ### Latent Optimizer (LU)
 

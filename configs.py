@@ -23,7 +23,7 @@ class Config:
         self.latent_activation = 'softmax'   # 'softmax', 'sigmoid', or 'none'; applied before Z is used
         self.softmax_temp = 1             # temperature for softmax (higher = more uniform)
         self.pass_previous_latent = True  # carry Z across batches so LU warm-starts from prior context
-        self.what_latent_to_use = 'self'  # 'self' (learn Z), 'taskID' (oracle), 'uniform', or 'zeros'
+        self.what_latent_to_use = 'self'  # 'self' (learn Z), 'context_ids' (oracle), 'uniform', or 'zeros'
 
         # ── Latent Optimizer (LU) ──────────────────────────────────────────────
         self.Z_lr = 0.4
@@ -247,9 +247,6 @@ class ContextualSwitchingTaskConfig(Config):
         self.post_window = 20
         self.length_of_opposite_block_sequence = 4  # for COIN-style test truncation
 
-        if self.use_add_gating:
-            self.input_size += int(np.prod(self.latent_dims))
-
         self.update_export_path()
 
         # Tweaking-specific overrides (exploration preset differs in 3 values)
@@ -297,9 +294,6 @@ class SeqLearnConfig(Config):
         self.plot_diagnostic_plots = False
         self.plot_dynamic_optim_gif = False
         self.grad_model_type = 'none'
-
-        if self.use_add_gating:
-            self.input_size += int(np.prod(self.latent_dims))
 
         if experiment_to_run == 'few_long_blocks':
             self._apply_few_long_blocks_preset()
@@ -447,6 +441,155 @@ class MeanPredictionConfig(ContextualSwitchingTaskConfig):
         self.input_feed_mask  = [1, 0]  # zero out mean dim before model sees input
         self.output_loss_mask = [0, 1]  # compute loss only on mean-prediction dim
         self.update_export_path()
+
+
+class FlankerTaskConfig(Config):
+    """
+    Flanker task pretraining configuration.
+
+    5-slot arrow display: [far_left, near_left, center, near_right, far_right].
+    Each trial presents a target slot + one companion slot with noisy arrow observations.
+    The companion's direction is correlated with the target according to p_corr_by_distance.
+    The RNN must infer the target direction; speed pressure is applied via temporally
+    decaying loss weights (Option A: temporal discount).
+
+    Within each context block the target slot is fixed; Z learns to encode which slot is
+    authoritative. Between blocks the target slot rotates.
+
+    Trial structure matches seq_len = stride = arrows_duration so each BPTT batch is
+    exactly one complete trial with no overlap.
+    """
+
+    def __init__(self, experiment_to_run='default'):
+        super().__init__()
+        self.dataset_name        = 'flanker_pretrain'
+        self.experiment_to_run   = experiment_to_run
+
+        # ── Trial structure (user-facing names) ───────────────────────────────
+        self.arrows_duration          = 5    # timesteps per trial → sets seq_len & stride
+        self.trials_per_context_block = 2   # trials with the same target slot per block
+        self.n_training_contexts      = 100  # number of context blocks in training
+
+        # ── Task dimensions ───────────────────────────────────────────────────
+        self.input_size  = 6   # 5 noisy slot observations + 1 hidden target direction
+        self.output_size = 6
+        self.hidden_size = 64
+        self.seq_len     = self.arrows_duration   # one batch = one trial
+        self.stride      = self.arrows_duration   # non-overlapping trials
+
+        # ── Input/output masking ──────────────────────────────────────────────
+        self.input_feed_mask      = [1, 1, 1, 1, 1, 0]   # hide dim 5 (true direction)
+        self.output_loss_mask     = [0, 0, 0, 0, 0, 1]   # loss only on dim 5
+        self.predict_first_frame  = True   # t=0 uses zero frame; response window from t=1
+
+        # ── Speed pressure: temporal discount loss (Option A) ─────────────────
+        # temporal_decay_factor=0 → equal weights; larger → concentrate at t=1.
+        self.response_start_timestep = 1
+        self.temporal_decay_factor   = 0.7
+        self._set_temporal_weights()    # populates self.temporal_loss_weights
+
+        # ── Flanker stimulus parameters ───────────────────────────────────────
+        self.n_slots            = 5
+        # p_corr_by_distance[d] = probability companion matches target at distance d
+        self.p_corr_by_distance = [1.0, 0.65, 0.55, 0.25, 0.1]
+        # This is a tight balance. 
+        # Increasing the corr increases congruent trials n and lowers incongruent. 
+        # But this makes the cong trials easier, but the model never learns to respond to context_ids which has the target slot
+        # But lowering the corr increases incongruent trials to the point that the model 
+        # learns to ignore the companion and just respond to the target slot, so no spatial structure is learned.
+
+        # Exponential decay with distance: p_corr = signal_strength * exp(-distance / decay_distance)
+        # self.decay_distance = 1.2 # higher → slower decay, more influence from distant companions; lower → faster decay, focus on near companions
+        self.signal_strength    = 1.0
+        # self.p_corr_by_distance = [self.signal_strength * np.exp(-d / self.decay_distance) for d in range(self.n_slots)]
+        # Example with decay_distance=1.0: [1.0, 0.37, 0.14, 0.05, 0.02]
+        # Example with decay_distance=1.5: [1.0, 0.51, 0.26, 0.13, 0.06]
+        self.arrow_noise_std    = 1.5
+        self.bg_noise_std       = 0.1
+
+        # ── Latent / oracle mode ──────────────────────────────────────────────
+        # 'context_ids': oracle — target slot integer from hlcids fed as one-hot Z (no LU needed)
+        # 'self'  : model learns Z through LU (blind to slot identity at training time)
+        self.what_latent_to_use = 'context_ids'
+        self.latent_dims        = [5]   # Z_dim=5 matches n_slots; softmax → one-hot over slots
+        self.latent_chunks      = 1
+        self.exponential_increase_steepness = [2]
+        self.Z_lr               = 0.3
+        self.Z_decay            = 0.0001
+
+        # ── Derived NeuraGEM internal params (from user-facing names above) ───
+        self.block_size             = self.trials_per_context_block * self.arrows_duration
+        self.no_of_blocks           = self.n_training_contexts
+        self.blocked_phase_length   = self.no_of_blocks * self.block_size
+        self.block_duration_distribution = 'fixed_block_size'
+
+        self.update_export_path()
+        self._validate()
+
+    def _set_temporal_weights(self):
+        """Compute temporal_loss_weights from response_start_timestep and temporal_decay_factor."""
+        weights = [0.0] * self.response_start_timestep
+        n_resp  = self.arrows_duration - self.response_start_timestep
+        weights += [np.exp(-self.temporal_decay_factor * i) for i in range(n_resp)]
+        self.temporal_loss_weights = weights   # length == arrows_duration == seq_len
+
+
+class FlankerTaskStage2Config(FlankerTaskConfig):
+    """
+    Stage 2: frozen weights, self-learned Z on full-flanker congruency blocks.
+    Inherits all stimulus params from FlankerTaskConfig; overrides dataset,
+    latent mode, weight-update count, and block structure.
+    """
+
+    def __init__(self, experiment_to_run='default'):
+        super().__init__(experiment_to_run)
+        self.dataset_name                = 'flanker_stage2'
+        self.what_latent_to_use          = 'self'
+        self.no_of_steps_in_weight_space = 0         # weights frozen throughout
+        self.trials_per_context_block    = 10        # shorter blocks
+        self.block_size                  = self.trials_per_context_block * self.arrows_duration
+        self.n_training_contexts         = 4
+        self.no_of_blocks                = self.n_training_contexts
+        self.blocked_phase_length        = self.no_of_blocks * self.block_size
+
+        self.update_export_path()
+        self._validate()
+
+
+class FlankerTaskStage3Config(FlankerTaskStage2Config):
+    """
+    Stage 3: frozen weights, self-learned Z.
+    4 block types cross distance × congruency (near/far × cong/incong).
+    """
+
+    def __init__(self, experiment_to_run='default'):
+        super().__init__(experiment_to_run)
+        self.dataset_name        = 'flanker_stage3'
+        self.n_training_contexts = 16   # 4 full cycles of the 4 block types
+        self.no_of_blocks        = self.n_training_contexts
+        self.blocked_phase_length = self.no_of_blocks * self.block_size
+
+        self.update_export_path()
+        self._validate()
+
+
+class FlankerTaskStage4Config(FlankerTaskStage2Config):
+    """
+    Stage 4: frozen weights, self-learned Z, fully randomized trials.
+    Each DataLoader batch = 1 trial (block_size = arrows_duration).
+    Used for sequential trial history analysis.
+    """
+
+    def __init__(self, experiment_to_run='default'):
+        super().__init__(experiment_to_run)
+        self.dataset_name         = 'flanker_stage4'
+        self.block_size           = self.arrows_duration   # 1 trial per batch
+        self.n_training_contexts  = 2000                   # total trials
+        self.no_of_blocks         = self.n_training_contexts
+        self.blocked_phase_length = self.no_of_blocks * self.block_size
+
+        self.update_export_path()
+        self._validate()
 
 
 # Backwards-compatibility aliases

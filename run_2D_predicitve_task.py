@@ -53,7 +53,7 @@ config.blocked_phase_length = 1000   # ←
 config.n_miniblocks_per_state_block = 50 // config.n_colors  # 10 
 config.block_size  = config.n_miniblocks_per_state_block * config.n_colors  # 80
 config.test_no_of_blocks   = 4       # ← blocks in Phase 3 test
-# config.what_latent_to_use = 'taskID'
+# config.what_latent_to_use = 'context_ids'
 config.pre_gating = False # the rotating targets task worked not with pre_gating! Such bad interference. 
 config.post_gating = not config.pre_gating
 

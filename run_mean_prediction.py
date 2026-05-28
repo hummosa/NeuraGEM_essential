@@ -36,13 +36,14 @@ from train_and_infer_functions import *
 
 config = MeanPredictionConfig(experiment_to_run='figure')
 
-config.default_std = 0.4          # observation noise (lower = easier; higher = harder)
+config.default_std = 0.3          # observation noise (lower = easier; higher = harder)
 config.save_model  = False
-config.blocked_phase_length = 300
+config.blocked_phase_length = 1000
 config.test_block_size = 20
 config.seq_len = 3
-config.no_of_steps_in_latent_space = 1
-config.seq_len = 4
+config.no_of_steps_in_latent_space = 0
+# config.seq_len = 4
+config.output_loss_mask = [1, 1]
 ##
 # config.LU_optimizer = 'adam'
 # config.Z_decay = 8e-4
@@ -72,8 +73,8 @@ logger, model, config, figs = train_model(
 panel_order = ['behavior', 'latent_2d', 'corrects']
 fig = plot_logger_panels(logger, config, panel_order, x2=None,
                          annotate_phases='behavior', width=5, legends=False, dpi=200)
-
-print(f'Export path: {config.export_path}')
+fig.savefig(config.export_path + 'mean_prediction_results.pdf', bbox_inches='tight')
+print(f'exported to: {config.export_path + "mean_prediction_results.pdf"}')
 
 # ── Quick sanity checks (uncomment to run) ────────────────────────────────────
 # Ablation: set input_feed_mask=[1,1] so model sees the true mean on input dim 1.

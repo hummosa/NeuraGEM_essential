@@ -131,7 +131,7 @@ logger, model, cfg, figs = train_model(cfg, seed=0)
 Pass the true rotation angle directly as Z, bypassing Z optimization:
 
 ```python
-cfg.what_latent_to_use = 'taskID'   # llcid (radians) used as oracle Z
+cfg.what_latent_to_use = 'context_ids'   # llcid (radians) used as oracle Z
 ```
 
 Since `latent_dims=[1]` and `llcid` is a continuous radian angle, the oracle Z is a direct numeric representation of the context — a natural upper bound for learned Z.

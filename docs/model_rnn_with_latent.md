@@ -221,7 +221,7 @@ The `forward()` and gating functions accept a `what_latent` string that controls
 | Value | Source |
 |---|---|
 | `'self'` | Model's own `Z` parameter (standard) |
-| `'taskID'` | One-hot encoding of `taskID` (oracle; bypasses Z optimization) |
+| `'context_ids'` | One-hot encoding of `taskID` (oracle; bypasses Z optimization) |
 | `'uniform'` | All-ones normalized vector (constant; ablation) |
 | `'zeros'` | Zero vector (no context signal) |
 | `'init'` | Same as `'uniform'` |

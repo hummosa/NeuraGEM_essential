@@ -111,7 +111,15 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             line1 = ax.plot(ii_plot[x1:x2, ], '.', alpha=0.6, markersize=3, linewidth=1, color=obs_color, label='Observed')
             if logger.predicted_outputs:
                 oi_plot = _active_dims(oi, output_mask)
-                line2 = ax.plot(oi_plot[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color=preds_color)
+                n_out = oi_plot.shape[-1]
+                if n_out > 1:
+                    pred_colors = plt.cm.magma(np.linspace(0, 0.9, n_out))
+                    line2 = []
+                    for d in range(n_out):
+                        line2 += ax.plot(oi_plot[x1:x2, d], '.', alpha=0.7, markersize=3, linewidth=1,
+                                         label=f'Pred dim {d}', )
+                else:
+                    line2 = ax.plot(oi_plot[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color=preds_color)
             if rasterize:
                 for line in line1 + line2:
                     line.set_rasterized(True)
@@ -164,14 +172,14 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
         if rasterize:
             for l in line:
                 l.set_rasterized(True)
-        ax.set_ylabel('$\partial \epsilon/\partial Z$')
+        ax.set_ylabel(r'$\partial \epsilon/\partial Z$')
         ax.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
 
     def limit_y_values(ax, y_values):
         y_max = np.percentile(y_values, 95)
         ax.set_ylim(top=y_max)
 
-    ll = ll.reshape(-1, 1)
+    ll = ll.reshape(-1, ll.shape[-1])
     hh = hh.reshape(-1,1)
     unique_ll = np.unique(ll)
     ll_cmap = plt.get_cmap('Paired', 1+len(np.unique(ll)))
@@ -222,7 +230,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
         if rasterize:
             for l in line + smoothed_line:
                 l.set_rasterized(True)
-        ax.set_ylabel('$\|\partial \epsilon/\partial W\|$')
+        ax.set_ylabel(r'$\|\partial \epsilon/\partial W\|$')
         if plot_smoothed:
             ax.legend()
 
@@ -323,6 +331,17 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             # ax.text(-0.05, 0.5, 'correctness\nmoving avg', rotation=90, va='center', ha='right', fontsize=6, color='k')
             ax.legend(loc='lower right', fontsize=6)
 
+        elif logger.predicted_outputs and config.dataset_name in ('flanker_pretrain', 'flanker_stage2', 'flanker_stage3'):
+            # correct at t = predicted direction (last output dim) matches sign of true direction (last input dim)
+            correct = (ii[x1:x2, -1] * oi[x1:x2, -1] > 0).astype(float)
+            ma_window = 20
+            ma = np.convolve(correct, np.ones(ma_window) / ma_window, mode='full')[:len(correct)]
+            ax.plot(ma, color='k', linewidth=0.75, alpha=0.9, label=f'MA({ma_window})')
+            ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.3)
+            ax.set_ylim(0.0, 1.1)
+            ax.set_ylabel('Accuracy')
+            ax.legend(loc='lower right', fontsize=6)
+
         else:
             print('No corrects to plot for this dataset')
 
@@ -341,7 +360,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
 
             if 0 <= local_start <= x2 - x1:
                 ax.axvline(local_start, color='tab:green', linestyle='-', linewidth=3, alpha=0.7)
-            y_factor = 1.05 if subplot_height == 4 else 1.8
+            y_factor = 1.05 if subplot_height == 4 else 1.2
             ax.text(phase_midpoint, ax.get_ylim()[1] * y_factor, phase_name, rotation=0, verticalalignment='top', color='tab:green',
              fontsize=6, fontweight='bold', ha='center')
     def plot_latent_2d(ax):
@@ -413,7 +432,8 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             # plot_switches(ax, states, both_starts)
             plot_switches_from_logger(ax, logger, config, use_ll=False, x1=x1, x2=x2)
         elif panel not in  ['task_illustration_and_hierarchies', 'latent', 'latent_chunk_1', 'latent_chunk_2']:
-            plot_switches_from_logger(ax, logger, config, x1=x1, x2=x2)
+            use_ll = True if config.dataset_name in ['flanker_stage2_v1'] else False
+            plot_switches_from_logger(ax, logger, config, use_ll=use_ll, x1=x1, x2=x2)
         
         # annotate_training_phases(ax, config, logger=logger, add_text=True if ax==axes['A'] else False)
         # remove xtick labels except for bottom panel
@@ -755,7 +775,7 @@ def plot_seq_learn_behavior_and_overall_corrects(logger, config, include_gradien
         if config.stride > 1:
             dw_norm = dw_norm.reshape(-1, dw_norm.shape[-1])
         ax.plot(dw_norm, label='Grad Norms', alpha=0.9)
-        ax.set_ylabel('$\delta$ Weight', )
+        ax.set_ylabel(r'$\delta$ Weight')
         
         ax = axes['D']
         gcorr = np.stack(logger.gradients_corrections).squeeze()
@@ -859,7 +879,10 @@ def plot_switches_from_logger(ax, logger, config, use_ll=True, alpha =0.1, alpha
     ll_cmap = plt.get_cmap('Paired', 1+len(np.unique(ll)))
 
     # check at which time steps the task ll changes
-    switches = [ts for ts in range(1, len(ll)) if ll[ts] != ll[ts-1]]
+    if ll.shape[-1] > 1:
+        switches = [ts for ts in range(1, len(ll)) if not np.array_equal(ll[ts], ll[ts-1])]
+    else:   
+        switches = [ts for ts in range(1, len(ll)) if ll[ts] != ll[ts-1]]
     switches = [0] + switches + [len(ll)]
     for isw, switch in enumerate(switches):
         c = cs.contextA if isw%2==0 else cs.contextB

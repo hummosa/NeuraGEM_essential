@@ -143,7 +143,8 @@ class BaseTaskDataset(Dataset, ABC):
 
         # Convert to tensors with explicit shape (seq_len, input_size)
         data_t = torch.tensor(np.array(data), dtype=torch.float32).reshape(self.config.seq_len, self.config.input_size)
-        llcid_t = torch.tensor(np.array(context_ids, dtype=np.float32)).reshape(self.config.seq_len, 1)
+        cid_size = getattr(self.config, 'context_id_size', 1)
+        llcid_t = torch.tensor(np.array(context_ids, dtype=np.float32)).reshape(self.config.seq_len, cid_size)
         hlcid_t = torch.tensor(np.array(hlcids, dtype=np.float32)).reshape(self.config.seq_len, 1)
 
         return data_t, llcid_t, hlcid_t
@@ -492,6 +493,56 @@ class MeanPredictionDataset(BaseTaskDataset):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Flanker Task
+# ──────────────────────────────────────────────────────────────────────────────
+
+class FlankerTaskDataset(BaseTaskDataset):
+    """
+    Flanker task pretraining dataset.
+
+    5 arrow slots: [far_left, near_left, center, near_right, far_right].
+    Each context block has a fixed target slot; companion slot is drawn randomly.
+    Companion direction is correlated with target per config.p_corr_by_distance[distance].
+    Arrow observations are noisy continuous values (positive = right, negative = left),
+    resampled with fresh noise each timestep so evidence accumulates over time.
+
+    Input: 6D augmented vector [5 slot obs | hidden target direction].
+    Context IDs: float(target_slot) — routed to oracle Z via what_latent_to_use='context_ids'.
+    HLCIDs: congruency flag (1.0 congruent, 0.0 incongruent) — for analysis/logging only.
+    """
+
+    def generate_sequences(self):
+        cfg = self.config
+        data_seq, context_ids_seq, hlcid_seq = [], [], []
+
+        for block_idx, blk_size in enumerate(self.block_sizes):
+            target_slot = block_idx % cfg.n_slots   # rotate through slots across blocks
+            n_trials = blk_size // cfg.arrows_duration
+            for _ in range(n_trials):
+                true_direction = self.rng.choice([-1.0, 1.0])
+                companion_slot = int(self.rng.choice(
+                    [s for s in range(cfg.n_slots) if s != target_slot]
+                ))
+                dist      = abs(companion_slot - target_slot)
+                p_corr    = cfg.p_corr_by_distance[dist]
+                companion_dir = (true_direction if self.rng.random() < p_corr
+                                 else -true_direction)
+                congruent = float(companion_dir == true_direction)
+                for _ in range(cfg.arrows_duration):
+                    obs = self.rng.normal(0.0, cfg.bg_noise_std, cfg.n_slots).astype(np.float32)
+                    obs[target_slot]    = float(true_direction  * cfg.signal_strength
+                                                + self.rng.normal(0, cfg.arrow_noise_std))
+                    obs[companion_slot] = float(companion_dir   * cfg.signal_strength
+                                                + self.rng.normal(0, cfg.arrow_noise_std))
+                    full_obs = np.append(obs, np.float32(true_direction))   # dim 5 = hidden
+                    data_seq.append(full_obs)
+                    context_ids_seq.append(float(target_slot))  # slot integer → oracle Z
+                    hlcid_seq.append(congruent)                  # 1.0 congruent, 0.0 incongruent
+
+        return data_seq, context_ids_seq, hlcid_seq
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Registry
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -501,3 +552,149 @@ DATASET_REGISTRY['seq_learn'] = seq_learnDataset
 DATASET_REGISTRY['rotating_targets'] = RotatingTargetsDataset
 DATASET_REGISTRY['rotating_targets_test'] = RotatingTargetsTestDataset
 DATASET_REGISTRY['mean_prediction'] = MeanPredictionDataset
+DATASET_REGISTRY['flanker_pretrain'] = FlankerTaskDataset
+
+
+class FlankerTaskStage2Dataset(BaseTaskDataset):
+    """
+    Stage 2 full-flanker dataset. Target always center (slot 2).
+    All 4 other slots are flankers. Blocks alternate between fully
+    congruent (all flankers = target direction) and fully incongruent
+    (all flankers = opposite direction).
+    context_ids: congruency flag (1.0 / 0.0) for block shading.
+    hlcids: float(target_slot) = 2.0 always.
+    """
+
+    def generate_sequences(self):
+        cfg = self.config
+        data_seq, context_ids_seq, hlcid_seq = [], [], []
+        target_slot = cfg.n_slots // 2   # always center (2)
+
+        for block_idx, blk_size in enumerate(self.block_sizes):
+            is_congruent   = (block_idx % 2 == 0)
+            congruent_flag = 1.0 if is_congruent else 0.0
+
+            n_trials = blk_size // cfg.arrows_duration
+            for _ in range(n_trials):
+                true_direction = self.rng.choice([-1.0, 1.0])
+                flanker_dir    = true_direction if is_congruent else -true_direction
+
+                for _ in range(cfg.arrows_duration):
+                    obs = np.zeros(cfg.n_slots, dtype=np.float32)
+                    for slot in range(cfg.n_slots):
+                        direction = true_direction if slot == target_slot else flanker_dir
+                        obs[slot] = float(direction * cfg.signal_strength
+                                          + self.rng.normal(0, cfg.arrow_noise_std))
+                    full_obs = np.append(obs, np.float32(true_direction))
+                    data_seq.append(full_obs)
+                    context_ids_seq.append(float(target_slot))  # slot integer → oracle Z
+                    hlcid_seq.append(congruent_flag)             # congruency for analysis
+
+        return data_seq, context_ids_seq, hlcid_seq
+
+
+DATASET_REGISTRY['flanker_stage2'] = FlankerTaskStage2Dataset
+
+
+class FlankerTaskStage3Dataset(BaseTaskDataset):
+    """
+    Stage 3: 4 block types crossing distance × congruency.
+    Target always center (slot 2). No no-flanker baseline.
+
+    Block types (block_idx % 4):
+      0 — near-congruent:   slots 1 & 3, flanker = target direction
+      1 — near-incongruent: slots 1 & 3, flanker = opposite direction
+      2 — far-congruent:    slots 0 & 4, flanker = target direction
+      3 — far-incongruent:  slots 0 & 4, flanker = opposite direction
+
+    context_ids: congruency flag (1.0/0.0) for block shading.
+    hlcids: block type (0.0–3.0) for distance × congruency analysis.
+    """
+
+    _BLOCK_TYPES = [
+        ([1, 3], True),   # 0: near-congruent
+        ([1, 3], False),  # 1: near-incongruent
+        ([0, 4], True),   # 2: far-congruent
+        ([0, 4], False),  # 3: far-incongruent
+    ]
+
+    def generate_sequences(self):
+        cfg = self.config
+        data_seq, context_ids_seq, hlcid_seq = [], [], []
+        target_slot = cfg.n_slots // 2   # always center (2)
+
+        for block_idx, blk_size in enumerate(self.block_sizes):
+            block_type                 = block_idx % 4
+            flanker_slots, is_congruent = self._BLOCK_TYPES[block_type]
+            congruent_flag             = 1.0 if is_congruent else 0.0
+
+            n_trials = blk_size // cfg.arrows_duration
+            for _ in range(n_trials):
+                true_direction = self.rng.choice([-1.0, 1.0])
+                flanker_dir    = true_direction if is_congruent else -true_direction
+
+                for _ in range(cfg.arrows_duration):
+                    obs = self.rng.normal(0.0, cfg.bg_noise_std, cfg.n_slots).astype(np.float32)
+                    obs[target_slot] = float(true_direction * cfg.signal_strength
+                                             + self.rng.normal(0, cfg.arrow_noise_std))
+                    for fs in flanker_slots:
+                        obs[fs] = float(flanker_dir * cfg.signal_strength
+                                        + self.rng.normal(0, cfg.arrow_noise_std))
+                    full_obs = np.append(obs, np.float32(true_direction))
+                    data_seq.append(full_obs)
+                    context_ids_seq.append(congruent_flag)   # for block shading
+                    hlcid_seq.append(float(block_type))      # 0–3 for analysis
+
+        return data_seq, context_ids_seq, hlcid_seq
+
+
+DATASET_REGISTRY['flanker_stage3'] = FlankerTaskStage3Dataset
+
+
+class FlankerTaskStage4Dataset(BaseTaskDataset):
+    """
+    Stage 4: fully randomized trials (no blocks).
+    Each trial independently draws one of 4 types (near/far × cong/incong) with equal probability.
+    block_size should equal arrows_duration so each DataLoader batch = 1 trial.
+
+    context_ids: congruency flag (1.0 / 0.0) for block shading.
+    hlcids: trial type (0.0–3.0) — same coding as Stage 3.
+    """
+
+    _TRIAL_TYPES = [
+        ([1, 3], True),   # 0: near-congruent
+        ([1, 3], False),  # 1: near-incongruent
+        ([0, 4], True),   # 2: far-congruent
+        ([0, 4], False),  # 3: far-incongruent
+    ]
+
+    def generate_sequences(self):
+        cfg = self.config
+        data_seq, context_ids_seq, hlcid_seq = [], [], []
+        target_slot = cfg.n_slots // 2   # always center (2)
+
+        for blk_size in self.block_sizes:
+            n_trials = blk_size // cfg.arrows_duration
+            for _ in range(n_trials):
+                trial_type                  = int(self.rng.integers(0, 4))
+                flanker_slots, is_congruent = self._TRIAL_TYPES[trial_type]
+                true_direction              = self.rng.choice([-1.0, 1.0])
+                flanker_dir                 = true_direction if is_congruent else -true_direction
+                congruent_flag              = 1.0 if is_congruent else 0.0
+
+                for _ in range(cfg.arrows_duration):
+                    obs = self.rng.normal(0.0, cfg.bg_noise_std, cfg.n_slots).astype(np.float32)
+                    obs[target_slot] = float(true_direction * cfg.signal_strength
+                                             + self.rng.normal(0, cfg.arrow_noise_std))
+                    for fs in flanker_slots:
+                        obs[fs] = float(flanker_dir * cfg.signal_strength
+                                        + self.rng.normal(0, cfg.arrow_noise_std))
+                    full_obs = np.append(obs, np.float32(true_direction))
+                    data_seq.append(full_obs)
+                    context_ids_seq.append(congruent_flag)
+                    hlcid_seq.append(float(trial_type))
+
+        return data_seq, context_ids_seq, hlcid_seq
+
+
+DATASET_REGISTRY['flanker_stage4'] = FlankerTaskStage4Dataset

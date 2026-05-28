@@ -40,17 +40,24 @@ from datasets import *
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _mask_loss(loss, config):
-    """Zero out output dimensions excluded by config.output_loss_mask.
+    """Zero out output dimensions and/or timesteps excluded by loss masks.
 
-    config.output_loss_mask : list of 0/1 of length output_size, or None (no masking).
-    E.g. [0,0,0,0,0,1,1] keeps only the last two (xy) dims for the rotating-targets task.
-    The returned tensor has the same shape as loss; only the backward signal is affected.
+    config.output_loss_mask    : list of 0/1 of length output_size, or None.
+    config.temporal_loss_weights : list of floats of length seq_len, or None.
+        E.g. [0, 1.0, 0.5, 0.25] discounts later timesteps to create speed pressure.
+    Both masks are applied independently (orthogonal dimensions of the loss tensor).
     """
     mask = getattr(config, 'output_loss_mask', None)
-    if mask is None:
-        return loss
-    t = torch.tensor(mask, dtype=loss.dtype, device=loss.device)
-    return loss * t
+    if mask is not None:
+        t = torch.tensor(mask, dtype=loss.dtype, device=loss.device)
+        loss = loss * t
+
+    tw = getattr(config, 'temporal_loss_weights', None)
+    if tw is not None:
+        t = torch.tensor(tw, dtype=loss.dtype, device=loss.device).view(1, -1, 1)
+        loss = loss * t
+
+    return loss
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -92,7 +99,7 @@ def _prepare_batch_inputs(model, config, raw_inputs, batch_context_ids):
 # Weight Update step
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _weight_update_step(model, config, combined_input, model_inputs, inputs, batch_hlcids, criterion):
+def _weight_update_step(model, config, combined_input, model_inputs, inputs, context_ids, criterion):
     """
     One step of BPTT: forward pass → compute loss → backprop → update weights.
 
@@ -101,20 +108,20 @@ def _weight_update_step(model, config, combined_input, model_inputs, inputs, bat
         full_loss: per-element MSE loss as numpy array (for logging)
         hidden_states: RNN hidden state tuple (for optional logging)
     """
-    if config.pass_previous_latent:
-        model.detach_Z()
-    else:
-        model.reset_Z(batch_size=model_inputs.shape[0], seq_len=model_inputs.shape[1])
+    #if config.pass_latent
+    model.detach_Z() # Should always detach
+    # else: # I do not think this she be here... Seems wrong to reset before needing it for the weight forward.
+        # model.reset_Z(batch_size=model_inputs.shape[0], seq_len=model_inputs.shape[1])
 
     model.W_optimizer.zero_grad()
     model.Z_optimizer.zero_grad()
 
     if config.use_add_gating:
-        outputs, hidden_states = model(combined_input, taskID=batch_hlcids,
+        outputs, hidden_states = model(combined_input, taskID=context_ids,
                                        what_latent=config.what_latent_to_use)
     else:
         # mul_gating applies Z internally during the forward pass
-        outputs, hidden_states = model(model_inputs, taskID=batch_hlcids,
+        outputs, hidden_states = model(model_inputs, taskID=context_ids,
                                        what_latent=config.what_latent_to_use)
 
     outputs = torch.stack(outputs, dim=1)  # (batch, seq_len-1, output_size)
@@ -137,7 +144,7 @@ def _weight_update_step(model, config, combined_input, model_inputs, inputs, bat
 # Latent Update step
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _latent_update_step(model, config, model_inputs, inputs, criterion, logger, batch_hlcids):
+def _latent_update_step(model, config, model_inputs, inputs, criterion, logger, context_ids):
     """
     One round of LU: gradient descent on Z to minimise prediction loss.
 
@@ -161,11 +168,11 @@ def _latent_update_step(model, config, model_inputs, inputs, criterion, logger, 
         model.Z_optimizer.zero_grad()
 
         if model.use_add_gating:
-            cur_input = model.combine_input_with_latent(model_inputs, what_latent="self", taskID=batch_hlcids)
+            cur_input = model.combine_input_with_latent(model_inputs, what_latent="self", taskID=context_ids)
         else:
             cur_input = model_inputs
 
-        outputs, _ = model(cur_input, taskID=batch_hlcids, what_latent="self")
+        outputs, _ = model(cur_input, taskID=context_ids, what_latent="self")
         outputs = torch.stack(outputs, dim=1)
 
         loss = criterion(outputs, inputs) if config.predict_first_frame else criterion(outputs, inputs[:, 1:, :])
@@ -291,7 +298,7 @@ def predictive_learning(logger, config, dataloader, model,
         # ── 3. Latent Update (LU) ─────────────────────────────────────
         if not config.update_latent_before_weights:
             first_full_loss = _latent_update_step(
-                model, config, core_inputs, inputs, criterion, logger, batch_hlcids
+                model, config, core_inputs, inputs, criterion, logger, context_ids
             )
         # ── 4. Log ────────────────────────────────────────────────────
         _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
@@ -313,7 +320,8 @@ def predictive_learning(logger, config, dataloader, model,
 # Full training pipeline
 # ──────────────────────────────────────────────────────────────────────────────
 
-def train_model(config, seed=0, save_models=True, load_models=False, run_test_phase=True):
+def train_model(config, seed=0, save_models=True, load_models=False, run_test_phase=True,
+                pretrained_model=None):
     """
     Orchestrate the full training pipeline across three phases:
 
@@ -340,49 +348,52 @@ def train_model(config, seed=0, save_models=True, load_models=False, run_test_ph
                   f'_exp_{config.experiment_to_run}.pt')
     model_path = os.path.join(model_folder, model_name)
 
-    if load_models and os.path.exists(model_path):
+    if pretrained_model is not None:
+        model = pretrained_model.to(config.device)
+    elif load_models and os.path.exists(model_path):
         model = torch.load(model_path)
         print('Model loaded successfully.')
     else:
         model = RNN_with_latent(config).to(config.device)
 
-        # ── Phase 1: Passive learning (WU only) ────────────────────────────
-        config._allow_latent_updates = False
-        if config.add_passive_learning_phase:
-            logger_train.log_phase('no inference learning')
-            config.no_of_blocks = int(config.passive_phase_length / config.block_size)
-            _, _, dataloader, _ = create_datasets_and_loaders(config)
-            print('Phase 1: Passive learning (weight update only, no latent update)')
-            predictive_learning(logger_train, config, dataloader, model, criterion,
-                                 epochs=getattr(config, 'passive_epochs', 1))
-        logger_train.others['timestep_passive_learning_ended'] = len(logger_train.inputs)
-
-        # ── Phase 2: Active learning (WU + LU) ─────────────────────────────
-        config._allow_latent_updates = True
-        config.no_of_blocks = int(config.blocked_phase_length / config.block_size)
+    # ── Phase 1: Passive learning (WU only) ────────────────────────────
+    config._allow_latent_updates = False
+    if config.add_passive_learning_phase:
+        logger_train.log_phase('no inference learning')
+        config.no_of_blocks = int(config.passive_phase_length / config.block_size)
         _, _, dataloader, _ = create_datasets_and_loaders(config)
-        logger_train.log_phase('Learning and inference')
-        print('Phase 2: Active learning (weight + latent updates)')
-        predictive_learning(logger_train, config, dataloader, model, criterion)
-        logger_train.others['timestep_learning_ended'] = len(logger_train.inputs)
+        print('Phase 1: Passive learning (weight update only, no latent update)')
+        predictive_learning(logger_train, config, dataloader, model, criterion,
+                                epochs=getattr(config, 'passive_epochs', 1))
+    logger_train.others['timestep_passive_learning_ended'] = len(logger_train.inputs)
 
-        # ── Phase 3: Test — inference only ─────────────────────────────────
-        if run_test_phase:
-            config.reconfigure_for_prediction(config.experiment_to_run)
-            _, _, _, dataloader_test = create_datasets_and_loaders(config)
+    # ── Phase 2: Active learning (WU + LU) ─────────────────────────────
+    config._allow_latent_updates = True
+    config.no_of_blocks = int(config.blocked_phase_length / config.block_size)
+    _, _, dataloader, _ = create_datasets_and_loaders(config)
+    logger_train.log_phase('Learning and inference')
+    print('Phase 2: Active learning (weight + latent updates)')
+    predictive_learning(logger_train, config, dataloader, model, criterion)
+    logger_train.others['timestep_learning_ended'] = len(logger_train.inputs)
 
-            # 3a. Latent updates allowed, weights frozen
-            logger_train.log_phase('Inference only')
-            weight_state = 'weights frozen' if config.no_of_steps_in_weight_space == 0 else 'weights plastic'
-            print(f'Phase 3a: Inference with latent adaptation ({weight_state})')
-            predictive_learning(logger_train, config, dataloader_test, model, criterion)
+    # ── Phase 3: Test — inference only ─────────────────────────────────
+    if run_test_phase:
+        config.reconfigure_for_prediction(config.experiment_to_run)
+        _, _, _, dataloader_test = create_datasets_and_loaders(config)
 
-            # 3b. No updates at all — pure feedforward baseline
-            logger_train.log_phase('No inference nor learning')
-            config.no_of_steps_in_latent_space = 0
-            config.no_of_steps_in_weight_space = 0
-            print('Phase 3b: Feedforward baseline (no weight or latent updates)')
-            predictive_learning(logger_train, config, dataloader_test, model, criterion)
+        # 3a. Latent updates allowed, weights frozen
+        logger_train.log_phase('Inference only')
+        weight_state = 'weights frozen' if config.no_of_steps_in_weight_space == 0 else 'weights plastic'
+        print(f'Phase 3a: Inference with latent adaptation ({weight_state})')
+        predictive_learning(logger_train, config, dataloader_test, model, criterion)
+
+        # 3b. No updates at all — pure feedforward baseline
+        logger_train.log_phase('No inference nor learning')
+        config.no_of_steps_in_latent_space = 0
+        config.no_of_steps_in_weight_space = 0
+        model.reset_Z()
+        print('Phase 3b: Feedforward baseline (no weight or latent updates)')
+        predictive_learning(logger_train, config, dataloader_test, model, criterion)
 
     if config.log_end_weights:
         if config.use_mul_gating:

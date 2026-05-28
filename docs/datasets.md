@@ -282,4 +282,4 @@ for inputs, context_ids, hlcids in dataloader:
     # hlcids:  (B=1, seq_len, 1)  — high-level context IDs; logged for analysis
 ```
 
-When `config.what_latent_to_use = 'taskID'`, `context_ids` is used directly as the oracle context label, bypassing Z optimization entirely. This is the oracle baseline.
+When `config.what_latent_to_use = 'context_ids'`, `context_ids` is used directly as the oracle context label, bypassing Z optimization entirely. This is the oracle baseline.

@@ -121,7 +121,7 @@ def make_base_config():
 COMPARISONS = [
     ('NeuraGEM',  dict(no_of_steps_in_latent_space=1, what_latent_to_use='self')),
     ('RNN',       dict(no_of_steps_in_latent_space=0, what_latent_to_use='self',)), # WU_lr=0.01)), Can increase lr to give it more realisdtic adaptation time.
-    # ('Oracle Z',  dict(no_of_steps_in_latent_space=0, what_latent_to_use='taskID')),
+    # ('Oracle Z',  dict(no_of_steps_in_latent_space=0, what_latent_to_use='context_ids')),
 ]
 
 

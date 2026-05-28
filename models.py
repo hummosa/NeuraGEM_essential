@@ -51,7 +51,8 @@ class RNN_with_latent(nn.Module):
         self.use_add_gating = bool(config.use_add_gating)
         self.use_mul_gating = bool(config.use_mul_gating)
 
-        self.input_layer = nn.Linear(config.input_size, self.hidden_size)
+        model_input_size = config.input_size + (self.Z_dim if self.use_add_gating else 0)
+        self.input_layer = nn.Linear(model_input_size, self.hidden_size)
         self.rnn_cell = self._build_recurrent_cell(config.rnn_type)
         self.output_layer = nn.Linear(self.hidden_size, config.output_size)
 
@@ -243,9 +244,9 @@ class RNN_with_latent(nn.Module):
             raw = torch.zeros(batch_size, self.Z_dim, device=self.device)
             return self.latent_activation_function(raw)
 
-        if what_latent == "taskID":
+        if what_latent == "context_ids":
             if taskID is None:
-                raise ValueError("taskID must be provided when what_latent='taskID'.")
+                raise ValueError("taskID must be provided when what_latent='context_ids'.")
             ids = taskID.to(self.device)
             ids = ids.long() if ids.dim() == 1 else ids[:, seq_step].long()
             latent = torch.zeros(batch_size, self.Z_dim, device=self.device)
@@ -273,9 +274,9 @@ class RNN_with_latent(nn.Module):
             raw = torch.zeros(batch_size, seq_len, self.Z_dim, device=self.device)
             return self.latent_activation_function(raw)
 
-        if what_latent == "taskID":
+        if what_latent == "context_ids":
             if taskID is None:
-                raise ValueError("taskID must be provided when what_latent='taskID'.")
+                raise ValueError("taskID must be provided when what_latent='context_ids'.")
             ids = taskID.to(self.device)
             if ids.dim() == 1:
                 ids = ids.unsqueeze(1).expand(-1, seq_len)
@@ -358,8 +359,8 @@ class RNN_with_latent(nn.Module):
 
         Args:
             input:      (batch, seq_len, input_size) — 
-            taskID:     (batch, seq_len) or (batch,) — only needed when what_latent='taskID'.
-            what_latent: which latent source to use for gating ('self', 'taskID', 'uniform', 'zeros').
+            taskID:     (batch, seq_len) or (batch,) — only needed when what_latent='context_ids'.
+            what_latent: which latent source to use for gating ('self', 'context_ids', 'uniform', 'zeros').
 
         Returns:
             outputs:    list of (batch, output_size) tensors, one per timestep.
