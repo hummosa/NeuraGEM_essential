@@ -443,6 +443,25 @@ class MeanPredictionConfig(ContextualSwitchingTaskConfig):
         self.update_export_path()
 
 
+class GradualMeanPredictionConfig(MeanPredictionConfig):
+    """
+    Mean prediction task where the generative mean ramps linearly at morph_rate
+    per timestep — starting from 0.5 for the first block, then from the previous
+    block's target onward.
+
+    Minimum block size to fully reach the target:
+        ceil(|target - start| / morph_rate)
+    With default means [0.2, 0.8] and morph_rate=0.05 this is 12 timesteps.
+    """
+
+    def __init__(self, experiment_to_run='figure'):
+        super().__init__(experiment_to_run)
+        self.dataset_name    = 'mean_prediction_gradual'
+        self.morph_rate      = 0.05
+        self.first_block_mean = None  # set to 0.2 or 0.8 to fix the first block; None = random
+        self.update_export_path()
+
+
 class FlankerTaskConfig(Config):
     """
     Flanker task pretraining configuration.
@@ -497,15 +516,21 @@ class FlankerTaskConfig(Config):
         # But this makes the cong trials easier, but the model never learns to respond to context_ids which has the target slot
         # But lowering the corr increases incongruent trials to the point that the model 
         # learns to ignore the companion and just respond to the target slot, so no spatial structure is learned.
+        
+        # Power law: fast drop at d=1, then slower tail. p(d) = 1 / (1+d)^α
+        # α=1 → [1.0, 0.50, 0.33, 0.25, 0.20]  (gentle, 1/n)
+        # α=1.5 → [1.0, 0.35, 0.19, 0.13, 0.09]  (sharper initial, slower tail)
+        # α=2 → [1.0, 0.25, 0.11, 0.06, 0.04]  (very sharp at d=1)
+        # self.correlation_lambda = lambda alpha: [1 / (1 + d) ** alpha for d in range(5)]
+        # self.p_corr_by_distance = self.correlation_lambda(.5)
+        # if self.p_corr_by_distance[2] <= 0.5:
+        #     print(f"Warning: p_corr_by_distance[2] = {self.p_corr_by_distance[2]:.3f} is not > 0.5. Consider increasing correlation_lambda to strengthen the congruent/incongruent effect.")
 
-        # Exponential decay with distance: p_corr = signal_strength * exp(-distance / decay_distance)
-        # self.decay_distance = 1.2 # higher → slower decay, more influence from distant companions; lower → faster decay, focus on near companions
-        self.signal_strength    = 1.0
-        # self.p_corr_by_distance = [self.signal_strength * np.exp(-d / self.decay_distance) for d in range(self.n_slots)]
-        # Example with decay_distance=1.0: [1.0, 0.37, 0.14, 0.05, 0.02]
-        # Example with decay_distance=1.5: [1.0, 0.51, 0.26, 0.13, 0.06]
-        self.arrow_noise_std    = 1.5
+
+
+        self.arrow_noise_std    = 1.3
         self.bg_noise_std       = 0.1
+        self.signal_strength    = 1.0
 
         # ── Latent / oracle mode ──────────────────────────────────────────────
         # 'context_ids': oracle — target slot integer from hlcids fed as one-hot Z (no LU needed)
@@ -584,9 +609,10 @@ class FlankerTaskStage4Config(FlankerTaskStage2Config):
         super().__init__(experiment_to_run)
         self.dataset_name         = 'flanker_stage4'
         self.block_size           = self.arrows_duration   # 1 trial per batch
-        self.n_training_contexts  = 2000                   # total trials
+        self.n_training_contexts  = 4000                   # total trials
         self.no_of_blocks         = self.n_training_contexts
         self.blocked_phase_length = self.no_of_blocks * self.block_size
+        self.p_congruent          = 0.5  # fraction of congruent trials; near/far split equally within each
 
         self.update_export_path()
         self._validate()

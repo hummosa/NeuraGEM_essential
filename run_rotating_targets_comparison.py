@@ -42,6 +42,7 @@ from rotating_targets_analysis import (
     analyze_block_switch_adaptation,
     analyze_novel_rotation_test,
     analyze_rotation_sweep,
+    analyze_z_color_modulation,
     analyze_z_trajectory,
     get_phase3a_range,
     plot_adaptation_comparison,
@@ -72,14 +73,15 @@ test contexts that are not rotations, but randomly sampled shield targets for ea
 
 def make_base_config():
     cfg = RotatingTargetsConfig()
-    cfg.train_rotations = [0.0, 70.0, 115.0]  
+    # cfg.train_rotations = [0.0, 70.0, 115.0]  
+    cfg.train_rotations = [0.0, 120.0, 215.0]  # if more than two, need ot increase blocksize.
     # cfg.train_rotations = [0.0, 90.0]  
 
     cfg.add_passive_learning_phase = True
     cfg.passive_phase_length  = PASSIVE_PHASE_LENGTH
     cfg.blocked_phase_length  = BLOCKED_PHASE_LENGTH
 
-    cfg.n_miniblocks_per_state_block = 7  # USING DOUBLE BECAUSE RNN UNABLE TO SWITCH FULLY
+    cfg.n_miniblocks_per_state_block = 14 #7  # USING DOUBLE BECAUSE RNN UNABLE TO SWITCH FULLY
     # The paper uses 6-8 miniblocks per state block
     # total timesteps= 7*n_colors*2 (for cue and outcome) = 60 per block
     cfg.block_size = cfg.n_miniblocks_per_state_block * cfg.n_colors * 2 # 120
@@ -96,7 +98,6 @@ def make_base_config():
     else:
         cfg.Z_lr    = 0.5
         cfg.Z_decay  = 0.000_1
-
 
     # Novel rotation test (Phase 3a) — run immediately after Phase 2
     # reconfigure_for_prediction uses these to set up Phase 3:
@@ -173,13 +174,13 @@ panel_order = ['rotating_targets_behavior', 'loss', 'latent_2d']
 for label, res in results.items():
     log   = res['logger']
     cfg_m = res['cfg']
-    fig = plot_logger_panels(log, cfg_m, panel_order, x2=None, annotate_phases='latent_2d', width= 6)
+    fig = plot_logger_panels(log, cfg_m, panel_order, x2=None, annotate_phases='latent_2d', width= 6, dpi = 200)
     fig.suptitle(f'{label} — training behavior', fontsize=9, y=1.02)
     plt.show()
 
 
 # ── P1–P4: Main comparison figure (trained rotations) ─────────────────────────
-#%%
+
 cfg_ref = list(results.values())[-1]['cfg']
 
 fig = plot_adaptation_comparison(
@@ -196,7 +197,6 @@ print(f'Figure saved as: {os.path.join(cfg_ref.export_path, fig_name)}')
 
 
 # ── P3b: Normalized error learning curve (trained rotations) ──────────────────
-#%%
 fig_norm = plot_miniblock_norm_comparison(
     results, cfg_ref,
     title='Normalized error — mini-block learning curve (trained rotations)',
@@ -205,7 +205,6 @@ plt.show()
 
 
 # ── P5/P6: Novel rotation comparison ──────────────────────────────────────────
-#%%
 fig_novel = plot_novel_rotation_comparison(
     {k: v for k, v in novel_results.items() if v is not None},
     cfg_ref,
@@ -216,7 +215,6 @@ plt.show()
 
 
 # ── P7: Arena plots — last two blocks per model (trained rotations) ────────────
-#%%
 fig_arena, axes = plt.subplots(3, 2, figsize=(5, 6))
 for row, (label, res) in enumerate(results.items()):
     log   = res['logger']
@@ -235,7 +233,6 @@ fig_arena.savefig(os.path.join(cfg_ref.export_path, f'arena_plots_trained_rotati
 print(f'Figure saved as: {os.path.join(cfg_ref.export_path, f"arena_plots_trained_rotations_seed{SEED}.png")}')
 
 # ── P8: Arena plots — novel rotations (Phase 3a) ──────────────────────────────
-#%%
 n_models = len(results)
 fig_arena_novel, axes_novel = plt.subplots(n_models, 2, figsize=(5., 2. * n_models))
 if n_models == 1:
@@ -279,8 +276,23 @@ print(f'Figure saved as: {os.path.join(cfg_ref.export_path, f"rotation_sweep_see
 neuragm_logger = results['NeuraGEM']['logger']
 neuragm_cfg    = results['NeuraGEM']['cfg']
 
-fig_z = plot_z_by_rotation(neuragm_logger, neuragm_cfg)
+fig_z = plot_z_by_rotation(neuragm_logger, neuragm_cfg, )
 plt.show()
+
+
+# ── Z color-modulation analysis (NeuraGEM) ────────────────────────────────────
+#%%
+z_color_res, fig_zc = analyze_z_color_modulation(neuragm_logger, neuragm_cfg, phase='phase2')
+fig_zc.suptitle('Z color modulation — Phase 2 (trained rotations)', fontsize=9, y=1.02)
+plt.show()
+print(f'  rotation R²:       {z_color_res["rotation_r2"]}')
+print(f'  within-color R²:   {z_color_res["within_color_r2"]}')
+print(f'  cue samples:       {z_color_res["n_cue_samples"]}')
+
+if get_phase3a_range(neuragm_logger)[0] is not None:
+    z_color_res3, fig_zc3 = analyze_z_color_modulation(neuragm_logger, neuragm_cfg, phase='phase3a')
+    fig_zc3.suptitle('Z color modulation — Phase 3a (novel rotations)', fontsize=9, y=1.02)
+    plt.show()
 
 
 # ── Summary statistics ─────────────────────────────────────────────────────────

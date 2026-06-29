@@ -105,3 +105,6 @@ def set_plot_style():
 
     # Set the line width
     mpl.rcParams['lines.linewidth'] = 0.7
+
+    # Set the dpi 
+    mpl.rcParams['figure.dpi'] = 300

@@ -290,7 +290,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             ax.plot(smoothed, linewidth=1, color='k', label='|pred − mean|')
             ax.set_ylabel('|pred − mean|')
 
-        elif logger.predicted_outputs and config.dataset_name == 'mean_prediction':
+        elif logger.predicted_outputs and 'mean_prediction' in config.dataset_name:
             import plot_style
             cs = plot_style.Color_scheme()
             rng_scatter = np.random.default_rng(42)
@@ -331,7 +331,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             # ax.text(-0.05, 0.5, 'correctness\nmoving avg', rotation=90, va='center', ha='right', fontsize=6, color='k')
             ax.legend(loc='lower right', fontsize=6)
 
-        elif logger.predicted_outputs and config.dataset_name in ('flanker_pretrain', 'flanker_stage2', 'flanker_stage3'):
+        elif logger.predicted_outputs and config.dataset_name in ('flanker_pretrain', 'flanker_stage2', 'flanker_stage3', 'flanker_stage4'):
             # correct at t = predicted direction (last output dim) matches sign of true direction (last input dim)
             correct = (ii[x1:x2, -1] * oi[x1:x2, -1] > 0).astype(float)
             ma_window = 20
@@ -432,7 +432,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             # plot_switches(ax, states, both_starts)
             plot_switches_from_logger(ax, logger, config, use_ll=False, x1=x1, x2=x2)
         elif panel not in  ['task_illustration_and_hierarchies', 'latent', 'latent_chunk_1', 'latent_chunk_2']:
-            use_ll = True if config.dataset_name in ['flanker_stage2_v1'] else False
+            use_ll = True if config.dataset_name in ['flanker_stage2_v1', 'mean_prediction','mean_prediction_gradual' ] else False
             plot_switches_from_logger(ax, logger, config, use_ll=use_ll, x1=x1, x2=x2)
         
         # annotate_training_phases(ax, config, logger=logger, add_text=True if ax==axes['A'] else False)

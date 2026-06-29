@@ -211,14 +211,18 @@ def _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
         for i in range(config.seq_len):
             logger.log_input(np.expand_dims(inputs[:, i, :].cpu().detach().numpy(), axis=0))
             logger.log_predicted_output(np.expand_dims(outputs.cpu().detach().numpy()[:, i, :], axis=0))
+            logger.context_ids.append(np.expand_dims(context_ids[:, i].cpu().detach().numpy(), axis=0))
+            logger.hlcids.append(np.expand_dims(hlcids[:, i].cpu().detach().numpy(), axis=0))
+            logger.log_latent_value(np.expand_dims(model.Z.clone()[:, i, :].cpu().detach().numpy(), axis=0))
     else:
         logger.log_input(inputs[:, -stride:, :].cpu().detach().numpy())
         logger.log_predicted_output(outputs.cpu().detach().numpy()[:, -stride:, :])
+        logger.context_ids.append(context_ids[:, -stride:].cpu().detach().numpy())
+        logger.hlcids.append(hlcids[:, -stride:].cpu().detach().numpy())
+        logger.log_latent_value(model.Z.clone()[:, -stride:, :].cpu().detach().numpy())
 
     logger.log_training_batch(combined_input.cpu().detach().numpy()[:, -stride:, :])
     logger.log_training_loss(full_loss[:, -stride:, :])
-    logger.context_ids.append(context_ids[:, -stride:].cpu().detach().numpy())
-    logger.hlcids.append(hlcids[:, -stride:].cpu().detach().numpy())
 
     if config.log_hidden_states:
         logger.log_hidden_states(hidden_states)
@@ -232,7 +236,6 @@ def _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
     if first_full_loss is not None:
         logger.log_training_loss_before_latent_optimization(first_full_loss[:, -stride:, :])
 
-    logger.log_latent_value(model.Z.clone()[:, -stride:, :].cpu().detach().numpy())
 
     _log_effective_lr(model, config, logger)
 

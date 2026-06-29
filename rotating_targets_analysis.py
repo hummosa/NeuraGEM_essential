@@ -441,7 +441,7 @@ def plot_adaptation_comparison(results, config, title=None, include_title_in_pan
     if include_title_in_panel:
         ax.set_title('P1: Trial-level error\n(Phase 2, trained rotations)', fontsize=8)
     ax.set_xticks(x_trial)
-    ax.legend(fontsize=7, framealpha=0.7)
+    ax.legend( framealpha=0.7)
 
     ax = axes[1]
     for label, res in results.items():
@@ -511,7 +511,7 @@ def plot_miniblock_norm_comparison(results, config, title=None):
     ax.set_ylabel('Normalized state error')
     if title:
         ax.set_title(title, fontsize=9)
-    ax.legend(fontsize=7)
+    ax.legend()
     plt.tight_layout()
     return fig
 
@@ -543,7 +543,7 @@ def plot_novel_rotation_comparison(novel_results, config, title=None):
     ax.set_ylabel('Normalized state error')
     ax.set_title('Novel rotation — trial-level\n(0=correct, 0.5=chance, 1=wrong)', fontsize=8)
     ax.set_xticks(x_trial)
-    ax.legend(fontsize=7)
+    ax.legend()
 
     ax = axes[1]
     for label, res in novel_results.items():
@@ -621,11 +621,14 @@ def plot_z_by_rotation(logger, config, time_window=None):
     test_rots  = list(config.test_rotations) if config.test_rotations else []
     all_rots   = train_rots + [r for r in test_rots if r not in train_rots]
 
-    _cmap = plt.get_cmap('tab10', len(all_rots))
-    rot_color  = {deg: _cmap(i) for i, deg in enumerate(all_rots)}
-    rot_marker = {deg: ('o' if deg in train_rots else '^') for deg in all_rots}
-    rot_label  = {deg: (f'{deg:.0f}° (train)' if deg in train_rots else f'{deg:.0f}° (novel)')
-                  for deg in all_rots}
+    # Circular HSV colormap: 0° and 360° share the same hue
+    angle_cmap = plt.get_cmap('hsv')
+
+    def _rot_color(deg):
+        return angle_cmap(deg / 360.0)
+
+    train_set  = set(train_rots)
+    all_rots_s = sorted(all_rots)
 
     # Use second half of Phase 2 as "settled" training representation
     phase2_mid = phase2_start + (phase2_end - phase2_start) // 2
@@ -644,15 +647,16 @@ def plot_z_by_rotation(logger, config, time_window=None):
     t_idx   = np.arange(t0, t1)
     z_win   = li[t0:t1]
     l_win   = ll[t0:t1]
-    context = _softmax2(z_win)[:, 0]   # "context-0 probability"
+    context = _softmax2(z_win)[:, 0]
 
-    for deg in all_rots:
+    # Background shaded by rotation angle — no per-angle legend entries
+    for deg in all_rots_s:
         rot_rad = np.radians(deg)
         mask = np.abs(l_win - rot_rad) < 1e-5
         ax.fill_between(t_idx, 0, 1, where=mask,
-                        alpha=0.25, color=rot_color[deg], label=f'{deg:.0f}°')
+                        alpha=0.3, color=_rot_color(deg))
 
-    ax.plot(t_idx, context, lw=0.8, color='k', alpha=0.8)
+    ax.plot(t_idx, context, lw=0.8, color='k', alpha=0.8, label='softmax(Z)[0]')
 
     if p3a_start is not None and t0 <= p3a_start <= t1:
         ax.axvline(p3a_start, color='k', lw=1.5, ls='--', label='↳ novel rotations')
@@ -661,19 +665,26 @@ def plot_z_by_rotation(logger, config, time_window=None):
         if ll[t_] != ll[t_ - 1]:
             ax.axvline(t_, color='grey', lw=0.5, alpha=0.35)
 
+    # Colorbar replaces the per-angle legend
+    sm = plt.cm.ScalarMappable(cmap=angle_cmap, norm=plt.Normalize(0, 360))
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label='Rotation (°)', fraction=0.04, pad=0.02,
+                 ticks=[0, 90, 180, 270, 360])
+
     ax.set_ylim(-0.05, 1.05)
     ax.set_xlabel('Timestep')
     ax.set_ylabel('softmax(Z)[0]')
-    ax.legend( loc='upper right', ncol=2)
+    ax.legend(loc='upper right', fontsize=6)
+
 
     # ── Panel B: tuning curve ─────────────────────────────────────────────
     ax = axes[1]
-    angles   = sorted(all_rots)
+    angles   = all_rots_s
     rot_mean, rot_std = [], []
 
     for deg in angles:
         rot_rad = np.radians(deg)
-        if deg in train_rots:
+        if deg in train_set:
             z_src = li[phase2_mid:phase2_end]
             l_src = ll[phase2_mid:phase2_end]
         else:
@@ -696,26 +707,33 @@ def plot_z_by_rotation(logger, config, time_window=None):
     rot_mean = np.array(rot_mean)
     rot_std  = np.array(rot_std)
 
+    # Track whether we've already added the generic "Trained" / "Novel" legend entry
+    _seen = {'train': False, 'novel': False}
     for i, deg in enumerate(angles):
         if np.isnan(rot_mean[i]):
             continue
+        is_train = deg in train_set
+        key      = 'train' if is_train else 'novel'
+        leg      = ('Trained' if not _seen['train'] else '_nolegend_') if is_train \
+                   else ('Novel'   if not _seen['novel'] else '_nolegend_')
+        _seen[key] = True
         ax.errorbar(deg, rot_mean[i], yerr=rot_std[i],
-                    fmt=rot_marker[deg], color=rot_color[deg],
-                    ms=9, capsize=4, elinewidth=1.2,
-                    markeredgecolor='k', markeredgewidth=0.5,
-                    label=rot_label[deg])
+                    fmt='o' if is_train else '^',
+                    color=_rot_color(deg),
+                    ms=9 if is_train else 5,
+                    capsize=3, elinewidth=1.0,
+                    markeredgecolor='k', markeredgewidth=0.8 if is_train else 0.3,
+                    label=leg)
 
-    ax.axhline(0.5, color='k', lw=0.8, ls='--', alpha=0.4, label='0.5 boundary')
+    ax.axhline(0.5, color='k', lw=0.8, ls='--', alpha=0.4, label='Chance (0.5)')
     ax.set_ylim(-0.05, 1.05)
     ax.set_xlim(-15, max(angles) + 15)
-    ax.set_xticks(angles)
-    ax.set_xticklabels([f'{a:.0f}°' for a in angles])
-    ax.set_xlabel('Rotation angle (degrees)')
+    ax.set_xticks([a for a in angles if a % 90 == 0])
+    ax.set_xlabel('Rotation angle (°)')
     ax.set_ylabel('softmax(Z)[0]  ± std')
-    # ax.set_title('C: Context tuning curve\n(how each rotation maps to Z)', fontsize=9)
-    ax.legend(fontsize=6)
+    ax.legend()
 
-    # plt.tight_layout()
+    plt.tight_layout()
     return fig
 
 
@@ -754,7 +772,7 @@ def plot_rotation_angle_sweep(sweep_results, config, block_range_label=None):
     ax.set_ylabel(ylabel)
     ax.set_xticks([a for a in sorted(set(sweep_results[labels[0]].keys()))
                    if a % 45 == 0])
-    ax.legend(fontsize=7)
+    ax.legend()
     plt.tight_layout()
     return fig
 

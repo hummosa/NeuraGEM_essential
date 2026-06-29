@@ -552,6 +552,62 @@ DATASET_REGISTRY['seq_learn'] = seq_learnDataset
 DATASET_REGISTRY['rotating_targets'] = RotatingTargetsDataset
 DATASET_REGISTRY['rotating_targets_test'] = RotatingTargetsTestDataset
 DATASET_REGISTRY['mean_prediction'] = MeanPredictionDataset
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Gradual Mean Prediction Task
+# ──────────────────────────────────────────────────────────────────────────────
+
+class GradualMeanPredictionDataset(BaseTaskDataset):
+    """
+    Mean prediction task with linearly ramped context transitions.
+
+    Instead of abrupt switches, the generative mean steps toward the block's
+    target at config.morph_rate per timestep, starting from 0.5 at t=0.
+    The label (dim 1) at each timestep is the *instantaneous* ramping mean,
+    so the model must track the current mean throughout the ramp.
+
+    Minimum block size to fully reach the target:
+        ceil(|target - current| / morph_rate)
+    With default means [0.2, 0.8] and morph_rate=0.05 this is 12 timesteps.
+    """
+
+    def generate_sequences(self):
+        latent_values = self.config.training_data_means
+        morph_rate = getattr(self.config, 'morph_rate', 0.05)
+        data_rng = np.random.default_rng(self.config.env_seed)
+
+        first_block_mean = getattr(self.config, 'first_block_mean', None)
+        if first_block_mean is not None:
+            target_mean = float(first_block_mean)
+        elif self.config.start_always_on_the_same_block:
+            target_mean = min(latent_values)
+        else:
+            target_mean = self.rng.choice(latent_values)
+
+        data_seq, llcid_seq, hlcid_seq = [], [], []
+        current_mean = 0.5  # always begin at the midpoint
+
+        for i, block_size in enumerate(self.block_sizes):
+            if i > 0:
+                options = [v for v in latent_values if v != target_mean]
+                target_mean = self.rng.choice(options) if options else target_mean
+
+            for _ in range(block_size):
+                # Step current_mean one morph_rate increment toward target
+                diff = target_mean - current_mean
+                step = np.sign(diff) * min(morph_rate, abs(diff))
+                current_mean = current_mean + step
+
+                obs = data_rng.normal(current_mean, self.config.default_std)
+                data_seq.append([obs, target_mean])
+                llcid_seq.append(float(target_mean))
+                hlcid_seq.append(0.0)
+
+        return data_seq, llcid_seq, hlcid_seq
+
+
+DATASET_REGISTRY['mean_prediction_gradual'] = GradualMeanPredictionDataset
 DATASET_REGISTRY['flanker_pretrain'] = FlankerTaskDataset
 
 
@@ -673,11 +729,15 @@ class FlankerTaskStage4Dataset(BaseTaskDataset):
         data_seq, context_ids_seq, hlcid_seq = [], [], []
         target_slot = cfg.n_slots // 2   # always center (2)
 
+        p_congruent = getattr(cfg, 'p_congruent', 0.5)
+
         for blk_size in self.block_sizes:
             n_trials = blk_size // cfg.arrows_duration
             for _ in range(n_trials):
-                trial_type                  = int(self.rng.integers(0, 4))
-                flanker_slots, is_congruent = self._TRIAL_TYPES[trial_type]
+                is_congruent = self.rng.random() < p_congruent
+                # near (slots 1,3) vs. far (slots 0,4) sampled with equal probability within each congruency
+                trial_type   = int(self.rng.choice([0, 2] if is_congruent else [1, 3]))
+                flanker_slots, _ = self._TRIAL_TYPES[trial_type]
                 true_direction              = self.rng.choice([-1.0, 1.0])
                 flanker_dir                 = true_direction if is_congruent else -true_direction
                 congruent_flag              = 1.0 if is_congruent else 0.0

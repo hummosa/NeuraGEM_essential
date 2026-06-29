@@ -161,26 +161,41 @@ ax_out.spines['right'].set_visible(False)
 plt.tight_layout()
 plt.show()
 
+#%%
 # ── Correlation structure ──────────────────────────────────────────────────────
 try:
-    p_corr = list(model.config.p_corr_by_distance)  # noqa: F821
+    _current = list(model.config.p_corr_by_distance)  # noqa: F821
 except Exception:
-    p_corr = [1.0, 0.60, 0.40, 0.25, 0.1]
+    _current = [1.0, 0.60, 0.40, 0.25, 0.1]
 
-distances = np.arange(len(p_corr))
+correlation_lambda = lambda alpha: [1 / (1 + d) ** alpha for d in range(5)]
+p_corr_by_distance = correlation_lambda(1.5)
+corr_arrays = {
+    # 'Current':          _current,
+    'Power law (α=1.5)': p_corr_by_distance,
+    'alpha=1.0':        correlation_lambda(1.0),
+    'alpha=2.0':        correlation_lambda(2.0),
+    'alpha=0.5':        correlation_lambda(0.5),
 
-# Exponential fit: log(p) ~ a + b*d  →  p ~ exp(a) * exp(b*d)
-coeffs = np.polyfit(distances, np.log(np.array(p_corr, dtype=float)), 1)
-d_fine = np.linspace(0, len(p_corr) - 1, 300)
-p_fit  = np.exp(np.polyval(coeffs, d_fine))
+}
+colors = ['#4393c3', '#d6604d', '#74c476', '#9467bd', '#8c564b']
 
-fig_corr, ax_corr = plt.subplots(figsize=(2.2, 1.8))
-ax_corr.plot(d_fine, p_fit, color='#4393c3', linewidth=1.5)
-ax_corr.scatter(distances, p_corr, color='k', zorder=3, s=18)
+fig_corr, ax_corr = plt.subplots(figsize=(2.8, 2.0))
+for (name, p_corr), color in zip(corr_arrays.items(), colors):
+    vals      = np.array(p_corr, dtype=float)
+    distances = np.arange(len(vals))
+    coeffs    = np.polyfit(distances, np.log(np.clip(vals, 1e-9, None)), 1)
+    d_fine    = np.linspace(0, len(vals) - 1, 300)
+    p_fit     = np.exp(np.polyval(coeffs, d_fine))
+    ax_corr.plot(d_fine, p_fit, color=color, linewidth=1.5, label=name)
+    ax_corr.scatter(distances, vals, color=color, zorder=3, s=18)
+
+ax_corr.hlines(0.5, 0, 4, color='k', linewidth=0.4, linestyle='--', alpha=0.5)
 ax_corr.set_xlabel('Slot distance from target')
 ax_corr.set_ylabel('P(congruent)')
 ax_corr.set_ylim(0, 1.05)
 ax_corr.set_xticks(distances)
+ax_corr.legend(fontsize=5)
 ax_corr.spines['top'].set_visible(False)
 ax_corr.spines['right'].set_visible(False)
 fig_corr.tight_layout()
