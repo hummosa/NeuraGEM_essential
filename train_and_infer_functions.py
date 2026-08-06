@@ -391,12 +391,13 @@ def train_model(config, seed=0, save_models=True, load_models=False, run_test_ph
         predictive_learning(logger_train, config, dataloader_test, model, criterion)
 
         # 3b. No updates at all — pure feedforward baseline
-        logger_train.log_phase('No inference nor learning')
-        config.no_of_steps_in_latent_space = 0
-        config.no_of_steps_in_weight_space = 0
-        model.reset_Z()
-        print('Phase 3b: Feedforward baseline (no weight or latent updates)')
-        predictive_learning(logger_train, config, dataloader_test, model, criterion)
+        if run_phase_3b := getattr(config, 'run_no_updates', False):
+            logger_train.log_phase('No inference nor learning')
+            config.no_of_steps_in_latent_space = 0
+            config.no_of_steps_in_weight_space = 0
+            model.reset_Z()
+            print('Phase 3b: Feedforward baseline (no weight or latent updates)')
+            predictive_learning(logger_train, config, dataloader_test, model, criterion)
 
     if config.log_end_weights:
         if config.use_mul_gating:

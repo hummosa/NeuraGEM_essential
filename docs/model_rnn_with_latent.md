@@ -221,10 +221,26 @@ The `forward()` and gating functions accept a `what_latent` string that controls
 | Value | Source |
 |---|---|
 | `'self'` | Model's own `Z` parameter (standard) |
-| `'context_ids'` | One-hot encoding of `taskID` (oracle; bypasses Z optimization) |
+| `'context_ids'` | `taskID` encoded per `config.oracle_context_encoding` (oracle; bypasses Z optimization) |
 | `'uniform'` | All-ones normalized vector (constant; ablation) |
 | `'zeros'` | Zero vector (no context signal) |
 | `'init'` | Same as `'uniform'` |
+
+### Oracle encodings (`what_latent='context_ids'`)
+
+The dataset's `context_ids` carry the value of whatever experimental variable defines the context. `_encode_context_ids()` turns that value into a Z vector; the task picks the encoding and supplies the one field it needs.
+
+| `oracle_context_encoding` | Needs | `Z_dim` | Z |
+|---|---|---|---|
+| `'one_hot'` (default) | `oracle_context_values` — ordered table of context values | ≥ `len(table)` | 1.0 in the slot of the nearest table entry |
+| `'normalized'` | `oracle_context_range = (lo, hi)` | 1 | `(value − lo) / (hi − lo)` |
+| `'circular'` | `oracle_context_range` spanning one period | 2 | `[(1+cos θ)/2, (1+sin θ)/2]`, `θ = 2π·unit` |
+
+With `oracle_context_values=None`, `'one_hot'` uses the raw id as the slot index — correct only when `context_ids` are already `0..Z_dim-1` class labels.
+
+Mismatches are caught in `_validate_oracle_encoding()` at construction, not mid-training.
+
+Only `'one_hot'` passes through `latent_activation_function()`. The continuous encodings are already in the activated range, and a softmax would flatten them — over a single dimension it returns a constant `1.0`, erasing the signal. For the same reason, a model trained with `'normalized'` should set `latent_activation='none'` so its self-inferred Z stays meaningful at test time.
 
 ---
 

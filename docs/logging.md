@@ -53,8 +53,17 @@ Shape convention per entry: `(batch_size, stride, var_dim)` — *except* the fir
 
 | Attribute | Shape per Entry | Description |
 |---|---|---|
-| `hidden_states` | `(B, stride, hidden_size)` | RNN hidden state (if `log_hidden_states=True`) |
+| `hidden_states` | `(B, hidden_size)` | Final RNN hidden state of the batch (if `log_hidden_states=True`) |
 | `input_attention_weights` | `(B, stride, input_size)` | If `use_input_attention=True` |
+
+> **`hidden_states` is one state per batch, not per timestep.** `model.forward()` returns
+> only the final `(h, c)` of the sequence and `_log_batch` logs it without stride slicing.
+> That final `h` is the state whose readout produced the batch's logged prediction, so it
+> still aligns 1:1 with `inputs` / `predicted_outputs` / `latent_values` — provided
+> `stride=1` and `log_initial_burn_in_timesteps=False`. Under burn-in logging the first
+> batch contributes `seq_len` input entries but only one hidden state, which offsets
+> everything after it. `rotation_decoding_analysis.flatten_hidden_states` checks this and
+> raises rather than silently misaligning.
 
 #### Phase Markers
 

@@ -8,19 +8,87 @@ import matplotlib as mpl
 # relevant axis by the number of panels when calling plt.subplots().
 # See docs/figure_style.md for guidance.
 
-class FigSize:
-    """Standard single-panel figure sizes (width × height, inches)."""
-    small  = (1.5, 1.5)   # compact square: summary stats, small insets
-    large  = (2.0, 2.0)   # full square: main result panels
-    wide   = (2.0, 1.5)   # landscape: time-series, learning curves
-    narrow = (1.5, 2.0)   # portrait: distributions, bar charts
-    tall   = (2.0, 1.5)   # alias for narrow-ish portrait
-    # add 0.5 inch to height to make room for titles:
-    # small = (small[0], small[1] + 1)
-    # large = (large[0], large[1] + 1)
-    # wide  = (wide[0], wide[1] + 1)
-    # narrow = (narrow[0], narrow[1] + 1)
-    # tall   = (tall[0], tall[1] + 1)
+class _FigSizeMeta(type):
+    """
+    Lets the FigSize presets respond to `FigSize.set_scale()` with no call-site changes.
+
+    The presets are metaclass properties rather than plain class attributes so that
+    `FigSize.small` is recomputed on every access. Without this, a scale switch would only
+    affect `row()`/`grid()` and silently miss every direct `figsize=FigSize.small`.
+    """
+    _scale = 1.0
+    _BASE = {
+        'small':  (1.5, 1.5),   # compact square: summary stats, small insets
+        'large':  (2.0, 2.0),   # full square: main result panels
+        'wide':   (2.0, 1.5),   # landscape: time-series, learning curves
+        'narrow': (1.5, 2.0),   # portrait: distributions, bar charts
+        'tall':   (2.0, 1.5),   # alias for narrow-ish portrait
+    }
+
+    def __getattr__(cls, name):
+        # Only reached when normal attribute lookup fails, so the presets must NOT also
+        # be defined as class attributes on FigSize.
+        if name in _FigSizeMeta._BASE:
+            w, h = _FigSizeMeta._BASE[name]
+            return (w * _FigSizeMeta._scale, h * _FigSizeMeta._scale)
+        raise AttributeError(name)
+
+
+class FigSize(metaclass=_FigSizeMeta):
+    """
+    Standard single-panel figure sizes (width × height, inches).
+
+    Presets — `small`, `large`, `wide`, `narrow`, `tall` — are PAPER-READY dimensions,
+    sized for a panel in a multi-panel figure. They are deliberately tiny. Do not enlarge
+    a figure because the text looks small in a notebook; zoom the notebook instead.
+
+    For development and exploration, call `FigSize.dev()` once at the top of a script to
+    double every preset. Everything stays laid out identically, just legible on screen.
+    Switch back with `FigSize.paper()` before exporting.
+
+        import plot_style
+        plot_style.set_plot_style()
+        plot_style.FigSize.dev()      # 2x, for working on screen
+
+    A figure that genuinely summarises a lot of data may be larger, but reach for
+    `row()`/`grid()` first — and note that both grow linearly with panel count, so a
+    per-model panel is usually the wrong structure. Prefer one panel with one line per
+    model (coloured via `Color_scheme.get_model_color`) over N panels side by side.
+    """
+
+    #: Scale applied to every preset. 1.0 = paper-ready; 2.0 = comfortable on screen.
+    DEV_SCALE = 2.0
+
+    @staticmethod
+    def set_scale(scale):
+        """Set the global multiplier applied to every preset."""
+        _FigSizeMeta._scale = float(scale)
+
+    @staticmethod
+    def get_scale():
+        return _FigSizeMeta._scale
+
+    @staticmethod
+    def dev():
+        """Enlarge all presets for on-screen exploration (does not change layout)."""
+        FigSize.set_scale(FigSize.DEV_SCALE)
+
+    @staticmethod
+    def paper():
+        """Restore paper-ready preset sizes."""
+        FigSize.set_scale(1.0)
+
+    @staticmethod
+    def custom(width, height):
+        """
+        Scale-aware arbitrary size, in paper-ready inches.
+
+        Use only when no preset fits — typically a width that must grow with the number of
+        groups in a bar chart. Going through this instead of a literal `figsize=` keeps the
+        dev/paper switch working.
+        """
+        s = _FigSizeMeta._scale
+        return (width * s, height * s)
 
     @staticmethod
     def row(n, panel=None):
@@ -33,6 +101,61 @@ class FigSize:
         """Return figsize for a rows×cols grid (default panel = large)."""
         pw, ph = panel or FigSize.large
         return (pw * cols, ph * rows)
+
+
+# ── Model → colour registry ───────────────────────────────────────────────────
+# Keyed by normalised label (lowercased, punctuation stripped, whitespace collapsed) so
+# that the display names used in run scripts — 'Oracle Z (one-hot)', 'NeuraGEM' — resolve
+# without the caller having to know about normalisation. Add a row here when you add a
+# model condition; every figure then picks the colour up automatically.
+MODEL_COLORS = {
+    'neuragem':            'tab:blue',
+    'neuragem additive':   'tab:cyan',
+    'rnn':                 'tab:green',
+    'short horizon rnn':   'tab:green',
+    'long horizon rnn':    'tab:red',
+    'mrnn':                'tab:red',
+    # Oracle family — distinct hues, since they are compared against each other directly.
+    'oracle z':            'tab:orange',
+    'oracle z one hot':    'tab:orange',
+    'oracle z norm':       'tab:red',
+    'oracle z cont':       'tab:purple',
+    'bayesian':            'tab:brown',
+    'naive':               'tab:purple',
+}
+
+# Assigned in order to labels not in MODEL_COLORS, so an unregistered condition still gets
+# a stable colour instead of an error.
+_FALLBACK_COLORS = ['tab:gray', 'tab:olive', 'tab:pink', 'tab:brown', 'tab:cyan']
+_assigned_fallbacks = {}
+
+
+def normalize_model_name(name):
+    """'Oracle Z (one-hot)' → 'oracle z one hot'. Lowercase, depunctuate, collapse spaces."""
+    s = ''.join(c if (c.isalnum() or c.isspace()) else ' ' for c in str(name).lower())
+    return ' '.join(s.split())
+
+
+def get_model_color(name):
+    """
+    Resolve a model label to its colour.
+
+    Exact match on the normalised name first, then the longest registered prefix (so
+    'NeuraGEM_10' inherits NeuraGEM's colour), then a stable fallback. Never raises — a
+    missing entry should not stop a figure from being drawn.
+    """
+    key = normalize_model_name(name)
+    if key in MODEL_COLORS:
+        return MODEL_COLORS[key]
+
+    prefixes = [k for k in MODEL_COLORS if key.startswith(k)]
+    if prefixes:
+        return MODEL_COLORS[max(prefixes, key=len)]
+
+    if key not in _assigned_fallbacks:
+        _assigned_fallbacks[key] = _FALLBACK_COLORS[
+            len(_assigned_fallbacks) % len(_FALLBACK_COLORS)]
+    return _assigned_fallbacks[key]
 
 
 class Color_scheme:
@@ -58,14 +181,8 @@ class Color_scheme:
         self.alpha_shaded_regions = 0.3
 
     def get_model_color(self, model_name):
-        if model_name in ['short_horizon_rnn', 'long_horizon_rnn', 'neuragem']:
-            return getattr(self, model_name)
-        elif model_name in ['rnn', 'mrnn']:
-            converted_name = 'short_horizon_rnn' if 'rnn' in model_name else 'long_horizon_rnn'
-            return getattr(self, converted_name)
-        else:
-            print(f'ERROR: Model name {model_name} not found in color scheme.')
-            return 'tab:gray'
+        """Resolve a model label to its colour — see the module-level MODEL_COLORS."""
+        return get_model_color(model_name)
 def set_plot_style():
     # sns.set(font_scale=0.8)  # Adjust font scale
     # sns.set_style('white', {'axes.linewidth': 0.5})  # Remove grid
@@ -99,6 +216,12 @@ def set_plot_style():
     # Set the fone size for the x and y tick labels
     mpl.rcParams['xtick.labelsize'] = 6
     mpl.rcParams['ytick.labelsize'] = 6
+
+    # Shared figure-level labels (fig.supxlabel / fig.supylabel) and titles. Without
+    # these they fall back to the matplotlib defaults (~12pt) and tower over a 6pt panel.
+    mpl.rcParams['figure.labelsize'] = 6
+    mpl.rcParams['axes.titlesize'] = 7
+    mpl.rcParams['figure.titlesize'] = 8
     
     # Makes text appear as text and not as paths
     mpl.rcParams['pdf.fonttype'] = 42

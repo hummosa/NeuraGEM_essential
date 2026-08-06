@@ -1171,9 +1171,14 @@ class Logger:
     - hlcids: List[(batch, stride, 1)] - High-level context IDs (hierarchical latent indicators)
     
     Model Internal States:
-    - hidden_states: List[(batch, seq_len, hidden_size)] - RNN/LSTM hidden states (h, c)
+    - hidden_states: List[(batch, hidden_size)] - RNN/LSTM hidden state h
              Only logged if config.log_hidden_states=True
              For LSTM: tuple of (h, c), Logger extracts h via hidden_states[0]
+             model.forward returns only the FINAL (h, c) of the sequence, and _log_batch
+             logs it unsliced — so this is one state per batch, not one per timestep.
+             That final h is the state whose readout produced the logged prediction for
+             the same batch, so it aligns 1:1 with inputs/predicted_outputs/latent_values
+             when stride=1 and log_initial_burn_in_timesteps=False.
     - input_attention_weights: List - Attention weights if using input attention
     
     Training Phases:
