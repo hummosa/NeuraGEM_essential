@@ -5,7 +5,7 @@
 
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Usage: $0 <MAX_TASK_ID> <EXPERIMENT_NAME>"
-    echo "EXPERIMENT_NAME: learning | generalization_tests"
+    echo "EXPERIMENT_NAME: learning | generalization_tests | mean_prediction | rotation_slips"
     exit 1
 fi
 
@@ -19,13 +19,27 @@ elif [ "$EXPERIMENT_NAME" = "generalization_tests" ]; then
     PYTHON_FILE="cst_run_generalization.py"
 elif [ "$EXPERIMENT_NAME" = "mean_prediction" ]; then
     PYTHON_FILE="mean_prediction_sweep.py"
+elif [ "$EXPERIMENT_NAME" = "rotation_slips" ]; then
+    PYTHON_FILE="rotation_slips_perseveration_sweep.py"
 else
     echo "Invalid experiment name: $EXPERIMENT_NAME"
-    echo "Valid options: learning | generalization_tests | mean_prediction"
+    echo "Valid options: learning | generalization_tests | mean_prediction | rotation_slips"
     exit 1
 fi
 
-mkdir -p ./slurm
+# SLURM cancels a task at 0 seconds if it cannot open its --output file, and reports only
+# ExitCode 0:53 with no log to explain it. `mkdir -p ./slurm` does NOT cover that case: when
+# ./slurm is a symlink to a missing directory it fails with "File exists" and, with no set -e,
+# the script would happily submit an array that is guaranteed to die. Resolve the link and
+# verify the target is writable before submitting anything.
+LOG_DIR="$(readlink -f ./slurm 2>/dev/null || echo ./slurm)"
+mkdir -p "$LOG_DIR"
+if [ ! -w "$LOG_DIR" ]; then
+    echo "ERROR: SLURM log directory '$LOG_DIR' does not exist or is not writable."
+    echo "       (./slurm resolves there; a dangling symlink makes every array task fail"
+    echo "        instantly with ExitCode 0:53 and no log file.)"
+    exit 1
+fi
 
 sbatch --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
 #!/bin/bash

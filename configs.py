@@ -50,6 +50,18 @@ class Config:
         self.LU_Adam_betas = (0.6, 0.7)   # For faster dynamics (0.9, 0.999)
         self.LU_momentum = 0.0            # only used when LU_optimizer='SGD'
         self.Z_decay = 0.0001                  # L2 regularization weight on Z (weight decay)
+        # Which code path applies Z_decay. There are two, and historically BOTH ran:
+        #   'grad'      — added to the gradient in RNN_with_latent._apply_chunk_lr_and_decay, and
+        #                 the Z optimizer is built with weight_decay=0. Honours chunk_l2_losses,
+        #                 and behaves identically under Adam / AdamW / SGD. Prefer this.
+        #   'optimizer' — the Z optimizer's own weight_decay, manual term skipped. Coupled for
+        #                 Adam, decoupled for AdamW, so the meaning of Z_decay changes with
+        #                 LU_optimizer. Offered for completeness.
+        #   'both'      — DEPRECATED, and the default only so that existing runs stay
+        #                 reproducible. Under Adam both paths add decay*Z to the gradient, so the
+        #                 effective decay is 2 * Z_decay and every tuned Z_decay on disk means
+        #                 half what it says. New experiments should set 'grad' explicitly.
+        self.Z_decay_mode = 'both'
         self.loss_reduction_LU = 'mean'    # how to reduce per-element loss before backward: 'sum' or 'mean'
         # Gradient aggregation across the time dimension of Z before each LU optimizer step.
         # Options: 'exponential_increase' (recent steps weighted more), 'average', 'last', 'none'.
@@ -410,8 +422,19 @@ class RotatingTargetsConfig(Config):
 
         # ── Block structure ───────────────────────────────────────────────
         self.block_size  = self.n_miniblocks_per_state_block * self.n_colors  # 80
-        # self.no_of_blocks = 40 # does not do anything 
+        # self.no_of_blocks = 40 # does not do anything
         self.block_duration_distribution = 'fixed'  # 'fixed' or 'geometric'; geometric adds variability to block lengths
+        # Which rotation each state-block gets. 'cyclic' walks train_rotations in order (and is
+        # seed-independent, so the schedule is fully predictable); 'random_no_repeat' draws one
+        # per block, never repeating the previous. With only two rotations the two are the same
+        # thing — the flag earns its keep from three rotations up.
+        self.rotation_block_order = 'cyclic'  # 'cyclic' or 'random_no_repeat'
+
+        # ── Context-belief output (off by default) ────────────────────────
+        # See enable_context_output(): appends dims carrying the rotation, hidden from the model
+        # input but supervised at the loss, so the network reports its context belief directly.
+        self.context_output_encoding = None   # None, 'circular' or 'one_hot'
+        self.context_output_dims     = 0
 
         # ── Oracle latent ─────────────────────────────────────────────────
         # Context variable = rotation angle (radians), so a full period is the range.
@@ -466,6 +489,63 @@ class RotatingTargetsConfig(Config):
     @oracle_context_values.setter
     def oracle_context_values(self, values):
         self._oracle_context_values = values
+
+    def enable_context_output(self, encoding='circular', loss_weight=1.0):
+        """Make the network report its context belief directly, via the augmented-input trick.
+
+        Same mechanism MeanPredictionConfig uses ([1,0] / [0,1]): the rotation is appended to the
+        observation, zeroed out by input_feed_mask before the forward pass so the model cannot
+        read it, and re-opened by output_loss_mask so the model is trained to *emit* it.
+
+        Observation layout becomes:
+            [ color_onehot(n_colors) | context(C) | attack_x, attack_y ]
+        The context sits *before* the coordinates on purpose — every rotating-targets analysis
+        reads the attack as [-2:] (rotating_targets_analysis._analyze_adaptation,
+        analyze_rotation_sweep, run_2D_predicitve_task.plot_arena_trials), and appending at the
+        end would silently point all of them at the context dims instead.
+
+        Encodings:
+            'circular' — C=2, target_radius * [cos θ, sin θ]. Same scale as the coordinates, so
+                         the two loss terms are balanced, and no wraparound seam. Decode with
+                         atan2(out[nc+1], out[nc]).
+            'one_hot'  — C=len(train_rotations), one slot per trained rotation. No metric between
+                         contexts and no valid target for an unseen angle.
+
+        Call this *after* train_rotations is final; 'one_hot' sizes itself from it.
+
+        loss_weight scales the context term. output_loss_mask is applied as a plain elementwise
+        multiply in train_and_infer_functions._mask_loss, so a float entry works as a weight with
+        no further machinery; 0.0 keeps the dims present but unsupervised.
+        """
+        if encoding == 'circular':
+            C = 2
+        elif encoding == 'one_hot':
+            C = len(self.train_rotations)
+        else:
+            raise ValueError(f"Unknown context_output_encoding '{encoding}'. "
+                             "Choose 'circular' or 'one_hot'.")
+
+        base = self.n_colors + 2
+        self.context_output_encoding = encoding
+        self.context_output_dims     = C
+        self.input_size  = base + C
+        self.output_size = base + C
+        self.input_feed_mask  = [1] * self.n_colors + [0] * C + [1, 1]
+        self.output_loss_mask = [0] * self.n_colors + [loss_weight] * C + [1, 1]
+
+        assert len(self.input_feed_mask) == self.input_size, (
+            f'input_feed_mask has {len(self.input_feed_mask)} entries for '
+            f'input_size={self.input_size}.')
+        assert len(self.output_loss_mask) == self.output_size, (
+            f'output_loss_mask has {len(self.output_loss_mask)} entries for '
+            f'output_size={self.output_size}.')
+
+    @property
+    def context_output_slice(self):
+        """Column slice of the context dims in an (T, input_size) array, or None if disabled."""
+        if not self.context_output_dims:
+            return None
+        return slice(self.n_colors, self.n_colors + self.context_output_dims)
 
     def reconfigure_for_prediction(self, experiment_to_run):
         """Switch to test/inference mode: freeze weights, adjust dataset size.

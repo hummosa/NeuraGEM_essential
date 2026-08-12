@@ -214,15 +214,27 @@ class RNN_with_latent(nn.Module):
             return torch.optim.SGD(params, lr=lr, momentum=float(self.config.WU_momentum), weight_decay=weight_decay)
         raise ValueError(f"Unsupported WU_optimizer '{self.config.WU_optimizer}'.")
 
+    def _z_decay_mode(self) -> str:
+        """Which path applies Z_decay. See Config.Z_decay_mode; defaults to the legacy 'both'."""
+        mode = str(getattr(self.config, "Z_decay_mode", "both"))
+        if mode not in ("grad", "optimizer", "both"):
+            raise ValueError(f"Unsupported Z_decay_mode '{mode}'. "
+                             "Choose 'grad', 'optimizer' or 'both'.")
+        return mode
+
     def _build_Z_optimizer(self):
         lr = float(self.config.Z_lr)
         opt_name = self.config.LU_optimizer.lower()
+        # Under 'grad' the decay is added to the gradient in _apply_chunk_lr_and_decay instead;
+        # passing it here as well is what made the effective decay 2 * Z_decay.
+        decay = (float(self.config.Z_decay or 0.0)
+                 if self._z_decay_mode() in ("optimizer", "both") else 0.0)
         if opt_name in ("adam", "adamw"):
             betas = self.config.LU_Adam_betas
             cls = torch.optim.Adam if opt_name == "adam" else torch.optim.AdamW
-            return cls([self.Z], lr=lr, betas=betas, weight_decay=float(self.config.Z_decay or 0.0))
+            return cls([self.Z], lr=lr, betas=betas, weight_decay=decay)
         if opt_name == "sgd":
-            return torch.optim.SGD([self.Z], lr=lr, momentum=float(self.config.LU_momentum), weight_decay=float(self.config.Z_decay or 0.0))
+            return torch.optim.SGD([self.Z], lr=lr, momentum=float(self.config.LU_momentum), weight_decay=decay)
         raise ValueError(f"Unsupported LU_optimizer '{self.config.LU_optimizer}'.")
 
     # ── Latent activation ──────────────────────────────────────────────────────

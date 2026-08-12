@@ -98,10 +98,32 @@ cfg = RotatingTargetsConfig()
 | `n_miniblocks_per_state_block` | `50` | Sets `block_size`; the realised mini-block count is half this — see Block Structure |
 | `noise_std` | `0.04` | Std of attack Gaussian (units of target radius) |
 | `target_radius` | `0.5` | Circle radius for base targets |
-| `train_rotations` | `[0.0, 90.0]` | Rotation angles (°) cycling across training blocks |
+| `train_rotations` | `[0.0, 90.0]` | Rotation angles (°) across training blocks |
 | `test_rotations` | `[]` | Novel rotation angles (°) for transfer test; empty → uses train_rotations |
+| `rotation_block_order` | `'cyclic'` | `'cyclic'` walks `train_rotations` in order (deterministic, seed-independent); `'random_no_repeat'` redraws per block, never repeating the previous angle |
+| `context_output_encoding` | `None` | `'circular'` / `'one_hot'` append masked context dims — see below |
+| `block_duration_distribution` | `'fixed'` | `'geometric'` varies block length, making switch timing unpredictable |
 | `dataset_name` | `'rotating_targets'` | Train dataset key |
 | `test_dataset_name` | `'rotating_targets_test'` | Test dataset key |
+
+### Context-belief output — `enable_context_output()`
+
+Off by default. When enabled, the rotation is appended to every observation, hidden from the
+model by `input_feed_mask` and supervised by `output_loss_mask`, so the network reports its
+context belief directly — the same trick `MeanPredictionConfig` uses for the latent mean:
+
+```python
+cfg.train_rotations = [0.0, 60.0]
+cfg.enable_context_output('circular', loss_weight=1.0)   # call AFTER train_rotations
+# input_size = output_size = n_colors + 2 + C
+# [ color_onehot(n_colors) | context(C) | attack_x, attack_y ]
+belief_rad = np.arctan2(oi[:, n_colors + 1], oi[:, n_colors])
+```
+
+The context dims sit **before** `x, y` so the `[-2:]` slice used throughout
+`rotating_targets_analysis.py` and `plot_arena_trials` keeps meaning the attack coordinates.
+`'circular'` gives `C=2`, `target_radius · [cos θ, sin θ]`; `'one_hot'` gives one slot per
+trained rotation. See [rotation_slips_perseveration.md](rotation_slips_perseveration.md).
 
 ### Derived / architecture fields
 
@@ -191,6 +213,7 @@ After the first observation of any color under the new rotation, Z should update
 
 ## See Also
 
+- [rotation_slips_perseveration.md](rotation_slips_perseveration.md) — perseveration and context slips, read off an explicit context-belief output
 - [rotation_decoding.md](rotation_decoding.md) — decoding the rotation angle from Z vs. hidden activity
 - [rotation_geometry.md](rotation_geometry.md) — what *kind* of rotation code it is (RSA)
 - [datasets.md](datasets.md) — `BaseTaskDataset` template, `DATASET_REGISTRY`, and `create_datasets_and_loaders`
