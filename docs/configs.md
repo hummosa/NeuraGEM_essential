@@ -67,13 +67,32 @@ A task may expose `oracle_context_values` as a property so it tracks a run scrip
 | `LU_optimizer` | `'Adam'` | `'Adam'`, `'AdamW'`, or `'SGD'` |
 | `LU_Adam_betas` | `(0.9, 0.999)` | Adam beta parameters |
 | `LU_momentum` | 0.0 | SGD momentum (only used when `LU_optimizer='SGD'`) |
-| `l2_loss` | 0 | L2 regularization weight on Z |
+| `l2_loss` | 0 | L2 regularization weight on Z (alias for `Z_decay`; `LU_lr` likewise aliases `Z_lr`) |
+| `Z_decay_mode` | `'both'` | Which code path applies `Z_decay` — see below |
 | `loss_reduction_LU` | `'sum'` | How to reduce per-element loss before backward: `'sum'` or `'mean'` |
 | `latent_aggregation_op` | `'exponential_increase'` | Gradient aggregation across the time dimension before each LU step. Options: `'exponential_increase'`, `'average'`, `'last'`, `'none'` |
 | `exponential_increase_steepness` | `[2] * latent_chunks` | Per-chunk recency bias. `steepness=0` → uniform weight (same as `'average'`); `steepness=2` → mild recency bias; `steepness=40` → focus on last few steps. **Must be one value per chunk.** |
 | `exponential_increase_multipliers` | `[1] * latent_chunks` | Per-chunk scale applied after filter normalization |
 
 > **Coupling rule:** `len(exponential_increase_steepness)` and `len(exponential_increase_multipliers)` must both equal `latent_chunks`. `_validate()` raises an `AssertionError` if they don't. Defaults auto-size, so if you set `latent_chunks = 2`, just update these lists to length 2.
+
+> **`Z_decay` has two code paths, and historically both ran.** The Z optimizer's own
+> `weight_decay` (`models._build_Z_optimizer`) and a gradient term in
+> `models._apply_chunk_lr_and_decay`, which fires unconditionally from the end of
+> `adjust_Z_grads`. Under Adam both add `decay * Z` to the gradient, so the realised decay was
+> exactly `2 * Z_decay` — every `Z_decay` tuned before this flag existed means half what it says.
+>
+> | `Z_decay_mode` | optimizer `weight_decay` | manual grad term | |
+> |---|---|---|---|
+> | `'grad'` | `0.0` | applied | Prefer this. Honours `chunk_l2_losses`, and means the same thing under Adam / AdamW / SGD |
+> | `'optimizer'` | `Z_decay` | skipped | Coupled for Adam, decoupled for AdamW — the meaning changes with `LU_optimizer` |
+> | `'both'` | `Z_decay` | applied | The historical behaviour, and still the default so existing results stay reproducible. Deprecated |
+>
+> The default is deliberately left at `'both'`: flipping it globally would silently change every
+> experiment in the repo. New experiments should set `'grad'` explicitly and state the *effective*
+> decay they intend — see [rotation_curriculum.md](rotation_curriculum.md), which halves the
+> slips sweep's `1e-3 * lr^2` field value into `2e-3 * lr^2` applied once, and reproduces the
+> older run exactly.
 
 ### Weight Optimizer (WU)
 

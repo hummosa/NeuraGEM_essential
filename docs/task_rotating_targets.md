@@ -214,6 +214,7 @@ After the first observation of any color under the new rotation, Z should update
 ## See Also
 
 - [rotation_slips_perseveration.md](rotation_slips_perseveration.md) — perseveration and context slips, read off an explicit context-belief output
+- [rotation_curriculum.md](rotation_curriculum.md) — three-stage curriculum: uncued → cued context (oracle Z) → uncued with frozen weights
 - [rotation_decoding.md](rotation_decoding.md) — decoding the rotation angle from Z vs. hidden activity
 - [rotation_geometry.md](rotation_geometry.md) — what *kind* of rotation code it is (RSA)
 - [datasets.md](datasets.md) — `BaseTaskDataset` template, `DATASET_REGISTRY`, and `create_datasets_and_loaders`

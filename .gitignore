@@ -11,6 +11,11 @@ __pycache__/
 .claude/
 slurm/
 exports/
+./slurm/
+./exports/
+slurm
+exports
+
 
 # C extensions
 *.so

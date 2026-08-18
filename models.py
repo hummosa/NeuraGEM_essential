@@ -614,9 +614,14 @@ class RNN_with_latent(nn.Module):
 
     def _apply_chunk_lr_and_decay(self) -> None:
         """
-        Optionally scale gradients and add L2 decay per chunk.
-        Active only if config.chunk_LU_lrs or config.chunk_l2_losses are set.
-        In standard runs these attributes don't exist, so this is effectively a no-op.
+        Optionally scale gradients per chunk, and add the L2 decay on Z as a gradient term.
+
+        The per-chunk LR scaling is inert unless config.chunk_LU_lrs is set. The **decay is
+        not**: `base_decay` falls back to config.Z_decay, so this runs on every standard LU step
+        whenever Z_decay is non-zero. (An earlier docstring claimed the whole method was a no-op
+        in standard runs — it never was, which is how Z_decay came to be applied twice.)
+
+        config.Z_decay_mode selects which path owns the decay; see Config.Z_decay_mode.
         """
         if self.Z.grad is None:
             return
@@ -624,8 +629,9 @@ class RNN_with_latent(nn.Module):
         grad = self.Z.grad
         base_lr = float(self.config.Z_lr) or 1.0
         chunk_lrs = getattr(self.config, "chunk_LU_lrs", None)
-        base_decay = float(self.config.Z_decay or 0.0)
-        chunk_decays = getattr(self.config, "chunk_l2_losses", None)
+        apply_decay = self._z_decay_mode() in ("grad", "both")
+        base_decay = float(self.config.Z_decay or 0.0) if apply_decay else 0.0
+        chunk_decays = getattr(self.config, "chunk_l2_losses", None) if apply_decay else None
         chunk_size = self.Z_dim // self.Z_chunks
 
         for idx in range(self.Z_chunks):
@@ -680,6 +686,11 @@ class RNN_with_latent(nn.Module):
         if id(self) in memo:
             return memo[id(self)]
         new_model = self.__class__(copy.deepcopy(self.config, memo)).to(self.device)
+        # The fresh model allocates Z at (batch_size, config.seq_len, Z_dim), but a model that
+        # has run LU had Z resized by _ensure_Z_shape to the sequence length the forward pass
+        # actually uses — seq_len - 1 whenever predict_first_frame=False. Match the live shape
+        # first, or load_state_dict(strict=True) raises on Z and its `latent` alias.
+        new_model._ensure_Z_shape(int(self.Z.shape[0]), int(self.Z.shape[1]))
         new_model.load_state_dict({k: v.clone() for k, v in self.state_dict().items()}, strict=True)
         memo[id(self)] = new_model
         return new_model

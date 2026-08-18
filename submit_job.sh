@@ -3,15 +3,22 @@
 # Usage: ./submit_job.sh <MAX_TASK_ID> <EXPERIMENT_NAME>
 # Example: ./submit_job.sh 599 learning
 
+VALID="learning | generalization_tests | mean_prediction | rotation_slips | curriculum"
+
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Usage: $0 <MAX_TASK_ID> <EXPERIMENT_NAME>"
-    echo "EXPERIMENT_NAME: learning | generalization_tests | mean_prediction | rotation_slips"
+    echo "EXPERIMENT_NAME: $VALID"
     exit 1
 fi
 
 MAX_TASK_ID=$1
 EXPERIMENT_NAME=$2
 MAX_PARALLEL=100  # Max concurrent jobs
+
+# Per-experiment wall clock: one task of most sweeps is a single ~3 min training run, but a
+# curriculum task runs a whole 19-run stage tree (~25 min). Keep the short limit for the others
+# rather than raising it globally — a longer request queues behind more.
+TIME_LIMIT="0-00:20:00"
 
 if [ "$EXPERIMENT_NAME" = "learning" ]; then
     PYTHON_FILE="cst_correlated_noise_sweep.py"
@@ -21,9 +28,12 @@ elif [ "$EXPERIMENT_NAME" = "mean_prediction" ]; then
     PYTHON_FILE="mean_prediction_sweep.py"
 elif [ "$EXPERIMENT_NAME" = "rotation_slips" ]; then
     PYTHON_FILE="rotation_slips_perseveration_sweep.py"
+elif [ "$EXPERIMENT_NAME" = "curriculum" ]; then
+    PYTHON_FILE="rotation_curriculum_sweep.py"
+    # TIME_LIMIT="0-02:00:00"
 else
     echo "Invalid experiment name: $EXPERIMENT_NAME"
-    echo "Valid options: learning | generalization_tests | mean_prediction | rotation_slips"
+    echo "Valid options: $VALID"
     exit 1
 fi
 
@@ -48,7 +58,7 @@ sbatch --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
 #SBATCH --partition=batch
 #SBATCH --output=./slurm/slurm-%A_%a.out
 #SBATCH --error=./slurm/slurm-%A_%a.err
-#SBATCH --time=0-00:20:00
+#SBATCH --time=$TIME_LIMIT
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=hummosa@live.com
 
