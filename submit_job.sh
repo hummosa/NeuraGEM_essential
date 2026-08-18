@@ -5,7 +5,11 @@
 
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Usage: $0 <MAX_TASK_ID> <EXPERIMENT_NAME>"
-    echo "EXPERIMENT_NAME: learning | generalization_tests"
+    echo "EXPERIMENT_NAME: learning | generalization_tests | mean_prediction | flanker_pretrain | flanker"
+    echo ""
+    echo "Flanker sweep, in this order:"
+    echo "  ./submit_job.sh 39 flanker_pretrain   # train the model sets first"
+    echo "  ./submit_job.sh 99 flanker            # then the test sessions"
     exit 1
 fi
 
@@ -19,9 +23,14 @@ elif [ "$EXPERIMENT_NAME" = "generalization_tests" ]; then
     PYTHON_FILE="cst_run_generalization.py"
 elif [ "$EXPERIMENT_NAME" = "mean_prediction" ]; then
     PYTHON_FILE="mean_prediction_sweep.py"
+elif [ "$EXPERIMENT_NAME" = "flanker_pretrain" ]; then
+    PYTHON_FILE="flanker_sweep.py"
+    PYTHON_ARGS="pretrain"
+elif [ "$EXPERIMENT_NAME" = "flanker" ]; then
+    PYTHON_FILE="flanker_sweep.py"
 else
     echo "Invalid experiment name: $EXPERIMENT_NAME"
-    echo "Valid options: learning | generalization_tests | mean_prediction"
+    echo "Valid options: learning | generalization_tests | mean_prediction | flanker_pretrain | flanker"
     exit 1
 fi
 
@@ -41,7 +50,7 @@ sbatch --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
 # Activate env and run
 source $HOME/load_python_venv.sh
 
-python $PYTHON_FILE
+python $PYTHON_FILE $PYTHON_ARGS
 EOF
 
 echo "Submitted array jobs 0..$MAX_TASK_ID for '$EXPERIMENT_NAME' with max parallelism $MAX_PARALLEL."

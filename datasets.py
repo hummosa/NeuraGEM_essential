@@ -707,14 +707,17 @@ class FlankerTaskStage3Dataset(BaseTaskDataset):
 DATASET_REGISTRY['flanker_stage3'] = FlankerTaskStage3Dataset
 
 
-class FlankerTaskStage4Dataset(BaseTaskDataset):
+class FlankerRandomTrialsDataset(BaseTaskDataset):
     """
-    Stage 4: fully randomized trials (no blocks).
-    Each trial independently draws one of 4 types (near/far × cong/incong) with equal probability.
-    block_size should equal arrows_duration so each DataLoader batch = 1 trial.
+    Fully randomized trials (no blocks) — the design humans actually perform.
+
+    Each trial independently draws one of 4 types (near/far × cong/incong):
+    congruency with probability cfg.p_congruent, and near-vs-far with probability
+    cfg.p_near within each congruency. block_size should equal arrows_duration so
+    each DataLoader batch = 1 trial.
 
     context_ids: congruency flag (1.0 / 0.0) for block shading.
-    hlcids: trial type (0.0–3.0) — same coding as Stage 3.
+    hlcids: trial type (0.0–3.0) — 0 near-cong, 1 near-incong, 2 far-cong, 3 far-incong.
     """
 
     _TRIAL_TYPES = [
@@ -730,13 +733,15 @@ class FlankerTaskStage4Dataset(BaseTaskDataset):
         target_slot = cfg.n_slots // 2   # always center (2)
 
         p_congruent = getattr(cfg, 'p_congruent', 0.5)
+        p_near      = getattr(cfg, 'p_near', 0.5)
 
         for blk_size in self.block_sizes:
             n_trials = blk_size // cfg.arrows_duration
             for _ in range(n_trials):
                 is_congruent = self.rng.random() < p_congruent
-                # near (slots 1,3) vs. far (slots 0,4) sampled with equal probability within each congruency
-                trial_type   = int(self.rng.choice([0, 2] if is_congruent else [1, 3]))
+                is_near      = self.rng.random() < p_near
+                # 0 near-cong, 1 near-incong, 2 far-cong, 3 far-incong
+                trial_type   = (0 if is_near else 2) + (0 if is_congruent else 1)
                 flanker_slots, _ = self._TRIAL_TYPES[trial_type]
                 true_direction              = self.rng.choice([-1.0, 1.0])
                 flanker_dir                 = true_direction if is_congruent else -true_direction
@@ -757,4 +762,8 @@ class FlankerTaskStage4Dataset(BaseTaskDataset):
         return data_seq, context_ids_seq, hlcid_seq
 
 
-DATASET_REGISTRY['flanker_stage4'] = FlankerTaskStage4Dataset
+DATASET_REGISTRY['flanker_random'] = FlankerRandomTrialsDataset
+
+# Deprecated names, kept so the archived blocked-stage script still runs.
+DATASET_REGISTRY['flanker_stage4'] = FlankerRandomTrialsDataset
+FlankerTaskStage4Dataset = FlankerRandomTrialsDataset
