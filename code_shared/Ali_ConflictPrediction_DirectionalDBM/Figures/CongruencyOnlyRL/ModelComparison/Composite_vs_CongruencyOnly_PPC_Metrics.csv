@@ -1,0 +1,9 @@
+Outcome,Model,CurrentCongruence,Correlation,RMSE,PredictiveCoverage,NCells
+RT,ConflictHistoryRL,Congruent,0.997825956808459,3.49456411784696,25,8
+RT,ConflictHistoryRL,Incongruent,0.981721711974866,2.43832192991987,37.5,8
+RT,CongruencyOnlyRL,Congruent,0.9918020797116,3.10175957527925,37.5,8
+RT,CongruencyOnlyRL,Incongruent,0.972345511683538,2.14353571385881,25,8
+Error,ConflictHistoryRL,Congruent,-0.906544571636329,0.599556070839984,0,8
+Error,ConflictHistoryRL,Incongruent,0.98830547747057,0.780354804619028,0,8
+Error,CongruencyOnlyRL,Congruent,0.0792759925700617,0.502759459882807,25,8
+Error,CongruencyOnlyRL,Incongruent,0.978394893926328,0.684352958699859,12.5,8
