@@ -438,24 +438,35 @@ def _aggregate_per_block_curves(
     return x, mean_curve, sem_curve
 
 
-def _asymptote_panel(ax, asym_pts, ylabel, n_last):
-    """Shared helper: draw the asymptotic summary dots-and-line panel."""
+def _asymptote_panel(ax, asym_pts, ylabel, n_last, condition_info=None, note=None):
+    """Shared helper: draw the asymptotic summary dots-and-line panel.
+
+    condition_info defaults to this module's CONDITION_INFO; pass another mapping of
+    {condition_name: ConditionInfo} to reuse the panel from a different sweep
+    (rotation_slips_perseveration_analysis does).
+
+    note overrides the "(last N groups)" line under the y-label, for callers that summarise
+    over a different window (e.g. the mean of the whole curve rather than its tail).
+    """
     if not asym_pts:
         return
+    info_map = CONDITION_INFO if condition_info is None else condition_info
     a_conds, a_means, a_sems = zip(*asym_pts)
     xs = np.arange(len(a_conds))
     ax.plot(xs, a_means, color='0.65', linewidth=1.0, zorder=1)
     for i, (cond_name, mean_val, sem_val) in enumerate(asym_pts):
-        info = CONDITION_INFO.get(cond_name, ConditionInfo(label=cond_name, color='grey'))
+        info = info_map.get(cond_name, ConditionInfo(label=cond_name, color='grey'))
         ax.errorbar(xs[i], mean_val, yerr=sem_val, fmt='o',
                     color=info.color, capsize=3, linewidth=1.5, markersize=6, zorder=2)
     ax.set_xticks(xs[::2]) # show every other label to avoid crowding
     ax.set_xticklabels(
-        [CONDITION_INFO.get(c, ConditionInfo(label=c, color='grey')).label for c in a_conds][::2],
+        [info_map.get(c, ConditionInfo(label=c, color='grey')).label for c in a_conds][::2],
         rotation=45, ha='right',
     )
-    group_word = 'group' if n_last == 1 else 'groups'
-    ax.set_ylabel(f'{ylabel}\n(last {n_last} {group_word})')
+    if note is None:
+        group_word = 'group' if n_last == 1 else 'groups'
+        note = f'last {n_last} {group_word}'
+    ax.set_ylabel(f'{ylabel}\n({note})')
 
 
 def plot_perseveration_and_slips(

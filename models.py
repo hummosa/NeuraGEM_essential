@@ -51,6 +51,19 @@ class RNN_with_latent(nn.Module):
         self.use_add_gating = bool(config.use_add_gating)
         self.use_mul_gating = bool(config.use_mul_gating)
 
+        # Oracle latent (what_latent='context_ids'): how a raw context-id value becomes Z.
+        self.oracle_context_encoding = str(getattr(config, "oracle_context_encoding", "one_hot"))
+        oracle_values = getattr(config, "oracle_context_values", None)
+        self.oracle_context_values = (
+            None if oracle_values is None
+            else torch.as_tensor(np.asarray(oracle_values, dtype=np.float32), device=self.device)
+        )
+        oracle_range = getattr(config, "oracle_context_range", None)
+        self.oracle_context_range = (
+            None if oracle_range is None else (float(oracle_range[0]), float(oracle_range[1]))
+        )
+        self._validate_oracle_encoding(config)
+
         model_input_size = config.input_size + (self.Z_dim if self.use_add_gating else 0)
         self.input_layer = nn.Linear(model_input_size, self.hidden_size)
         self.rnn_cell = self._build_recurrent_cell(config.rnn_type)
@@ -116,7 +129,12 @@ class RNN_with_latent(nn.Module):
     # ── Latent variable Z lifecycle ────────────────────────────────────────────
 
     def init_Z(self, batch_size: Optional[int] = None, seq_len: Optional[int] = None) -> torch.Tensor:
-        """Allocate Z as zeros and rebuild the Z optimizer."""
+        """Allocate Z as zeros and rebuild the Z optimizer.
+
+        Note: with latent_activation='none', Z=0 makes the multiplicative gate zero, which
+        silences the hidden state until LU moves Z away — a batch or two with Adam, but forever
+        for a condition that runs with LU off.
+        """
         batch_size = batch_size or int(self.config.batch_size)
         seq_len = seq_len or int(self.config.seq_len)
         self._set_Z_parameter(torch.zeros(batch_size, seq_len, self.Z_dim, device=self.device))
@@ -196,15 +214,27 @@ class RNN_with_latent(nn.Module):
             return torch.optim.SGD(params, lr=lr, momentum=float(self.config.WU_momentum), weight_decay=weight_decay)
         raise ValueError(f"Unsupported WU_optimizer '{self.config.WU_optimizer}'.")
 
+    def _z_decay_mode(self) -> str:
+        """Which path applies Z_decay. See Config.Z_decay_mode; defaults to the legacy 'both'."""
+        mode = str(getattr(self.config, "Z_decay_mode", "both"))
+        if mode not in ("grad", "optimizer", "both"):
+            raise ValueError(f"Unsupported Z_decay_mode '{mode}'. "
+                             "Choose 'grad', 'optimizer' or 'both'.")
+        return mode
+
     def _build_Z_optimizer(self):
         lr = float(self.config.Z_lr)
         opt_name = self.config.LU_optimizer.lower()
+        # Under 'grad' the decay is added to the gradient in _apply_chunk_lr_and_decay instead;
+        # passing it here as well is what made the effective decay 2 * Z_decay.
+        decay = (float(self.config.Z_decay or 0.0)
+                 if self._z_decay_mode() in ("optimizer", "both") else 0.0)
         if opt_name in ("adam", "adamw"):
             betas = self.config.LU_Adam_betas
             cls = torch.optim.Adam if opt_name == "adam" else torch.optim.AdamW
-            return cls([self.Z], lr=lr, betas=betas, weight_decay=float(self.config.Z_decay or 0.0))
+            return cls([self.Z], lr=lr, betas=betas, weight_decay=decay)
         if opt_name == "sgd":
-            return torch.optim.SGD([self.Z], lr=lr, momentum=float(self.config.LU_momentum), weight_decay=float(self.config.Z_decay or 0.0))
+            return torch.optim.SGD([self.Z], lr=lr, momentum=float(self.config.LU_momentum), weight_decay=decay)
         raise ValueError(f"Unsupported LU_optimizer '{self.config.LU_optimizer}'.")
 
     # ── Latent activation ──────────────────────────────────────────────────────
@@ -229,8 +259,10 @@ class RNN_with_latent(nn.Module):
     def _get_Z_slice(self, seq_step: int, batch_size: int, what_latent: str,
                      taskID: Optional[torch.Tensor]) -> torch.Tensor:
         """
-        Return the activated latent vector for timestep seq_step. Shape: (batch, Z_dim).
-        Activation is applied here so all downstream consumers receive activated values.
+        Return the ready-to-use latent vector for timestep seq_step. Shape: (batch, Z_dim).
+        Activation is applied here so all downstream consumers receive activated values —
+        except the continuous oracle encodings, which are already in the activated range
+        (see _encode_context_ids).
         """
         if what_latent == "self":
             return self.latent_activation_function(self.Z[:, seq_step, :])
@@ -248,10 +280,10 @@ class RNN_with_latent(nn.Module):
             if taskID is None:
                 raise ValueError("taskID must be provided when what_latent='context_ids'.")
             ids = taskID.to(self.device)
-            ids = ids.long() if ids.dim() == 1 else ids[:, seq_step].long()
-            latent = torch.zeros(batch_size, self.Z_dim, device=self.device)
-            latent.scatter_(dim=1, index=ids, value=1.0)
-            return self.latent_activation_function(latent)
+            ids = ids if ids.dim() == 1 else ids[:, seq_step]
+            if ids.dim() == 1:
+                ids = ids.unsqueeze(-1)          # (batch, 1)
+            return self._encode_context_ids(ids)
 
         raise ValueError(f"Unsupported what_latent '{what_latent}'.")
 
@@ -280,11 +312,101 @@ class RNN_with_latent(nn.Module):
             ids = taskID.to(self.device)
             if ids.dim() == 1:
                 ids = ids.unsqueeze(1).expand(-1, seq_len)
-            latent = torch.zeros(batch_size, seq_len, self.Z_dim, device=self.device)
-            latent.scatter_(dim=2, index=ids.long(), value=1.0) # .unsqueeze(-1) this awas applied to ids for some reason..
-            return self.latent_activation_function(latent)
+            if ids.dim() == 2:
+                ids = ids.unsqueeze(-1)          # (batch, seq_len, 1)
+            return self._encode_context_ids(ids)
 
         raise ValueError(f"Unsupported what_latent '{what_latent}'.")
+
+    def _validate_oracle_encoding(self, config) -> None:
+        """Check the oracle encoding against Z_dim at construction, not mid-training."""
+        if getattr(config, "what_latent_to_use", "self") != "context_ids":
+            return
+        enc = self.oracle_context_encoding
+        if enc == "one_hot":
+            n = self.Z_dim if self.oracle_context_values is None else len(self.oracle_context_values)
+            if n > self.Z_dim:
+                raise ValueError(
+                    f"oracle_context_encoding='one_hot' needs one Z slot per context: "
+                    f"{n} values in config.oracle_context_values but Z_dim={self.Z_dim}. "
+                    f"Set config.latent_dims=[{n}]."
+                )
+        elif enc in ("normalized", "circular"):
+            expected = 1 if enc == "normalized" else 2
+            if self.Z_dim != expected:
+                raise ValueError(
+                    f"oracle_context_encoding='{enc}' produces a {expected}-dim latent but "
+                    f"Z_dim={self.Z_dim}. Set config.latent_dims=[{expected}]."
+                )
+            if self.oracle_context_range is None:
+                raise ValueError(
+                    f"oracle_context_encoding='{enc}' needs config.oracle_context_range=(lo, hi) "
+                    f"giving the span of the context variable."
+                )
+            lo, hi = self.oracle_context_range
+            if hi <= lo:
+                raise ValueError(f"config.oracle_context_range must have hi > lo, got {(lo, hi)}.")
+        else:
+            raise ValueError(
+                f"Unsupported oracle_context_encoding '{enc}'. "
+                f"Choose from 'one_hot', 'normalized', 'circular'."
+            )
+
+    def _encode_context_ids(self, ids: torch.Tensor) -> torch.Tensor:
+        """
+        Encode raw context-id values as an oracle latent: (..., 1) values → (..., Z_dim).
+
+        'one_hot' gives each context its own slot and carries identity only. The continuous
+        encodings instead preserve the metric of the context variable, so contexts the model
+        never saw still land in the right place — the point of comparing them.
+
+        Only 'one_hot' passes through latent_activation_function. The continuous encodings are
+        already in the model's post-activation range and a softmax would flatten them (over one
+        dim it returns a constant 1.0, erasing the signal entirely).
+        """
+        enc = self.oracle_context_encoding
+
+        if enc == "one_hot":
+            slots = self._context_ids_to_slots(ids)
+            latent = torch.zeros(*ids.shape[:-1], self.Z_dim, device=self.device)
+            latent.scatter_(dim=-1, index=slots, value=1.0)
+            return self.latent_activation_function(latent)
+
+        lo, hi = self.oracle_context_range
+        unit = (ids - lo) / (hi - lo)            # (..., 1): lo → 0, hi → 1
+
+        if enc == "normalized":
+            return unit
+        if enc == "circular":
+            theta = 2 * np.pi * unit
+            return torch.cat([(1 + torch.cos(theta)) / 2, (1 + torch.sin(theta)) / 2], dim=-1)
+
+        raise ValueError(f"Unsupported oracle_context_encoding '{enc}'.")
+
+    def _context_ids_to_slots(self, ids: torch.Tensor) -> torch.Tensor:
+        """
+        Map raw context-id values to one-hot slot indices in [0, Z_dim). Shape is preserved.
+
+        With config.oracle_context_values set, each id is matched to the nearest entry in that
+        table and takes that entry's position as its slot — this is what continuous context_ids
+        (e.g. rotation angles in radians) need. Without a table, the id is truncated to an int,
+        which is only correct when context_ids are already 0..Z_dim-1 class labels.
+        """
+        table = self.oracle_context_values
+        if table is None:
+            slots = ids.long()
+        else:
+            slots = (ids.unsqueeze(-1) - table).abs().argmin(dim=-1)
+
+        if slots.numel() and (int(slots.min()) < 0 or int(slots.max()) >= self.Z_dim):
+            hint = (f"{len(table)} oracle_context_values are defined" if table is not None else
+                    "no config.oracle_context_values table is set, so raw context_ids are used as "
+                    "slot indices (correct only for integer class labels)")
+            raise ValueError(
+                f"what_latent='context_ids' produced slot index {int(slots.max())} but Z_dim="
+                f"{self.Z_dim} ({hint}). Set config.latent_dims so Z_dim covers every context."
+            )
+        return slots
 
 
     def combine_input_with_latent(self, input: torch.Tensor, what_latent: str = "self",

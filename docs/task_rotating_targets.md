@@ -50,10 +50,16 @@ attack_c = rotated_target_c + noise_std * N(0, I₂)
 | Concept | Value (defaults) |
 |---|---|
 | Mini-block | One random permutation of all `n_colors` colors; each color → 2 timesteps |
-| State-block | `n_miniblocks_per_state_block` mini-blocks at a fixed rotation |
-| `block_size` | `n_miniblocks_per_state_block × n_colors × 2 = 8 × 5 × 2 = 80` timesteps |
+| State-block | `block_size // (n_colors × 2)` mini-blocks at a fixed rotation |
+| `block_size` | `n_miniblocks_per_state_block × n_colors = 50 × 5 = 250` timesteps |
 
 Rotations cycle through `config.train_rotations` across state-blocks. E.g., with `train_rotations=[0.0, 90.0]`, blocks alternate between 0° and 90°.
+
+> **`n_miniblocks_per_state_block` is not the mini-block count.** The config computes `block_size` without the ×2 that two-timesteps-per-trial requires, while the dataset derives the actual count as `block_size // (n_colors × 2)`. At defaults that is 25 mini-blocks, not 50. A run script that wants the field to mean what it says must recompute:
+> ```python
+> cfg.block_size = cfg.n_miniblocks_per_state_block * cfg.n_colors * 2
+> ```
+> `run_rotating_targets_comparison.py` does exactly this.
 
 ### Context IDs
 
@@ -89,13 +95,35 @@ cfg = RotatingTargetsConfig()
 | Field | Default | Description |
 |---|---|---|
 | `n_colors` | `5` | Number of shield colors |
-| `n_miniblocks_per_state_block` | `8` | Mini-blocks per state-block |
+| `n_miniblocks_per_state_block` | `50` | Sets `block_size`; the realised mini-block count is half this — see Block Structure |
 | `noise_std` | `0.04` | Std of attack Gaussian (units of target radius) |
 | `target_radius` | `0.5` | Circle radius for base targets |
-| `train_rotations` | `[0.0, 90.0]` | Rotation angles (°) cycling across training blocks |
+| `train_rotations` | `[0.0, 90.0]` | Rotation angles (°) across training blocks |
 | `test_rotations` | `[]` | Novel rotation angles (°) for transfer test; empty → uses train_rotations |
+| `rotation_block_order` | `'cyclic'` | `'cyclic'` walks `train_rotations` in order (deterministic, seed-independent); `'random_no_repeat'` redraws per block, never repeating the previous angle |
+| `context_output_encoding` | `None` | `'circular'` / `'one_hot'` append masked context dims — see below |
+| `block_duration_distribution` | `'fixed'` | `'geometric'` varies block length, making switch timing unpredictable |
 | `dataset_name` | `'rotating_targets'` | Train dataset key |
 | `test_dataset_name` | `'rotating_targets_test'` | Test dataset key |
+
+### Context-belief output — `enable_context_output()`
+
+Off by default. When enabled, the rotation is appended to every observation, hidden from the
+model by `input_feed_mask` and supervised by `output_loss_mask`, so the network reports its
+context belief directly — the same trick `MeanPredictionConfig` uses for the latent mean:
+
+```python
+cfg.train_rotations = [0.0, 60.0]
+cfg.enable_context_output('circular', loss_weight=1.0)   # call AFTER train_rotations
+# input_size = output_size = n_colors + 2 + C
+# [ color_onehot(n_colors) | context(C) | attack_x, attack_y ]
+belief_rad = np.arctan2(oi[:, n_colors + 1], oi[:, n_colors])
+```
+
+The context dims sit **before** `x, y` so the `[-2:]` slice used throughout
+`rotating_targets_analysis.py` and `plot_arena_trials` keeps meaning the attack coordinates.
+`'circular'` gives `C=2`, `target_radius · [cos θ, sin θ]`; `'one_hot'` gives one slot per
+trained rotation. See [rotation_slips_perseveration.md](rotation_slips_perseveration.md).
 
 ### Derived / architecture fields
 
@@ -103,9 +131,11 @@ cfg = RotatingTargetsConfig()
 |---|---|---|
 | `input_size` | `7` | `n_colors + 2` |
 | `output_size` | `7` | `n_colors + 2` |
-| `block_size` | `80` | `n_miniblocks × n_colors × 2` |
-| `seq_len` | `10` | `n_colors × 2` (one full mini-block) |
-| `latent_dims` | `[1]` | Scalar Z; matches continuous radian llcid |
+| `hidden_size` | `64` | — |
+| `block_size` | `250` | `n_miniblocks_per_state_block × n_colors` |
+| `seq_len` | `5` | Half a mini-block; a full one would be `n_colors × 2` |
+| `output_loss_mask` | `[0,0,0,0,0,1,1]` | Loss on the `(x, y)` attack coords only, not the color one-hot |
+| `latent_dims` | `[2]` | `Z_dim`; must be ≥ `len(train_rotations)` when using oracle Z |
 | `predict_first_frame` | `False` | Cue → attack frame prediction |
 | `pass_previous_latent` | `True` | Carry Z across batches |
 
@@ -126,15 +156,40 @@ cfg.test_rotations  = [45.0, 135.0, 225.0, 315.0]
 logger, model, cfg, figs = train_model(cfg, seed=0)
 ```
 
-### Oracle Z baseline (upper bound)
+### Oracle Z baselines (upper bounds)
 
-Pass the true rotation angle directly as Z, bypassing Z optimization:
+`what_latent_to_use='context_ids'` feeds the true rotation in as Z and bypasses Z optimization. The context variable here is the rotation angle, which the dataset emits as `llcid` in radians; `config.oracle_context_encoding` chooses how that value becomes a Z vector. The two encodings answer different questions:
 
 ```python
-cfg.what_latent_to_use = 'context_ids'   # llcid (radians) used as oracle Z
+# Identity oracle — one slot per trained rotation
+cfg.what_latent_to_use       = 'context_ids'
+cfg.oracle_context_encoding  = 'one_hot'
+cfg.latent_dims              = [len(cfg.train_rotations)]
+
+# Metric oracle — 0 rad → 0, 360° → 1
+cfg.what_latent_to_use       = 'context_ids'
+cfg.oracle_context_encoding  = 'normalized'
+cfg.latent_dims              = [1]
+cfg.latent_activation        = 'none'   # softmax over 1 dim is a constant
 ```
 
-Since `latent_dims=[1]` and `llcid` is a continuous radian angle, the oracle Z is a direct numeric representation of the context — a natural upper bound for learned Z.
+| Encoding | Z | Carries | Trained rotations `[0, 120, 215]`, novel 45° |
+|---|---|---|---|
+| `one_hot` | `Z_dim = len(train_rotations)` | Identity only | 45° collapses onto 0°'s slot — no distance between contexts |
+| `normalized` | `Z_dim = 1`, `(θ−lo)/(hi−lo)` | Angle magnitude | 45° → 0.125, between 0° (0.0) and 120° (0.333) |
+| `circular` | `Z_dim = 2`, `[(1+cos θ)/2, (1+sin θ)/2]` | Angle on a ring | Same, and 359° stays adjacent to 0° |
+
+`one_hot` matches each `llcid` to the nearest entry of `config.oracle_context_values` — a property defaulting to `deg2rad(train_rotations)`, so it tracks a run script's override. `normalized` and `circular` use `config.oracle_context_range`, here `(0, 2π)`. Mismatched `Z_dim` raises at model construction with the value to use.
+
+Two caveats when reading the results:
+
+> **`normalized` is discontinuous at the wrap.** 359° → 0.997 and 0° → 0.0 are maximally far apart in Z despite being the same context. `circular` has no such seam.
+>
+> **`normalized` puts Z = 0 at θ = 0.** The gate is multiplicative, so a 0° block zeroes the hidden state for its full duration. Prefer `circular`, or exclude 0.0 from `train_rotations`, if 0° blocks look anomalous.
+
+Phase 3 forces `what_latent_to_use='self'` for every condition, so an oracle's Phase-3 advantage lies entirely in the weights it learned under ground-truth labels. That switch only produces inference because `test_no_of_steps_in_latent_space=1` also re-enables LU — an oracle trains with `no_of_steps_in_latent_space=0`, so without it Phase 3 would run with Z pinned at its initial zeros.
+
+Tasks whose `context_ids` are already integer class labels (e.g. flanker slots `0.0`–`4.0`) need no table — with `oracle_context_values=None` the raw id is used directly as the slot index.
 
 ### Zero-shot transfer evaluation
 
@@ -158,6 +213,9 @@ After the first observation of any color under the new rotation, Z should update
 
 ## See Also
 
+- [rotation_slips_perseveration.md](rotation_slips_perseveration.md) — perseveration and context slips, read off an explicit context-belief output
+- [rotation_decoding.md](rotation_decoding.md) — decoding the rotation angle from Z vs. hidden activity
+- [rotation_geometry.md](rotation_geometry.md) — what *kind* of rotation code it is (RSA)
 - [datasets.md](datasets.md) — `BaseTaskDataset` template, `DATASET_REGISTRY`, and `create_datasets_and_loaders`
 - [configs.md](configs.md) — Base `Config` class fields and `_validate()`
 - [algorithm_predictive_learning.md](algorithm_predictive_learning.md) — Training loop, Z optimization, latent carryover

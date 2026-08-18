@@ -14,6 +14,9 @@ class Config:
         self.epochs = 1
         self.no_of_steps_in_weight_space = 1  # WU gradient steps per batch
         self.no_of_steps_in_latent_space = 1  # LU gradient steps per batch
+        # LU steps during the test phase; None keeps the training value. Set to 1 for a condition
+        # that trained with LU off (an oracle) but should infer Z at test, 0 to keep Z frozen.
+        self.test_no_of_steps_in_latent_space = None
         self.predict_first_frame = True  # if True, predict input at t=0; else start from t=1 and predict next frame
         self.update_latent_before_weights = False  # if True, run LU before WU each batch; else run WU first
         # ── Latent Variable (Z) ────────────────────────────────────────────────
@@ -25,12 +28,40 @@ class Config:
         self.pass_previous_latent = True  # carry Z across batches so LU warm-starts from prior context
         self.what_latent_to_use = 'self'  # 'self' (learn Z), 'context_ids' (oracle), 'uniform', or 'zeros'
 
+        # ── Oracle latent (only read when what_latent_to_use='context_ids') ────
+        # The dataset's context_ids carry the value of whichever experimental variable defines
+        # the context (a mean, a rotation angle, a slot index). These three fields say how that
+        # value becomes a Z vector; a task sets the one its encoding needs.
+        #   'one_hot'    — context identity. Needs oracle_context_values: the ordered table of
+        #                  possible values. Each id takes the slot of its nearest entry, so
+        #                  Z_dim >= len(table). No metric between contexts.
+        #   'normalized' — context magnitude. Needs oracle_context_range (lo, hi); Z_dim == 1.
+        #                  Z = (value - lo) / (hi - lo), so lo → 0 and hi → 1.
+        #   'circular'   — context magnitude on a ring. Needs oracle_context_range spanning one
+        #                  full period; Z_dim == 2. Z = [(1+cos θ)/2, (1+sin θ)/2], no wraparound
+        #                  discontinuity between hi and lo.
+        self.oracle_context_encoding = 'one_hot'
+        self.oracle_context_values = None   # list/array of context values, in slot order
+        self.oracle_context_range = None    # (lo, hi) of the context variable
+
         # ── Latent Optimizer (LU) ──────────────────────────────────────────────
         self.Z_lr = 0.4
         self.LU_optimizer = 'Adam'        # 'Adam', 'AdamW', or 'SGD'
         self.LU_Adam_betas = (0.6, 0.7)   # For faster dynamics (0.9, 0.999)
         self.LU_momentum = 0.0            # only used when LU_optimizer='SGD'
         self.Z_decay = 0.0001                  # L2 regularization weight on Z (weight decay)
+        # Which code path applies Z_decay. There are two, and historically BOTH ran:
+        #   'grad'      — added to the gradient in RNN_with_latent._apply_chunk_lr_and_decay, and
+        #                 the Z optimizer is built with weight_decay=0. Honours chunk_l2_losses,
+        #                 and behaves identically under Adam / AdamW / SGD. Prefer this.
+        #   'optimizer' — the Z optimizer's own weight_decay, manual term skipped. Coupled for
+        #                 Adam, decoupled for AdamW, so the meaning of Z_decay changes with
+        #                 LU_optimizer. Offered for completeness.
+        #   'both'      — DEPRECATED, and the default only so that existing runs stay
+        #                 reproducible. Under Adam both paths add decay*Z to the gradient, so the
+        #                 effective decay is 2 * Z_decay and every tuned Z_decay on disk means
+        #                 half what it says. New experiments should set 'grad' explicitly.
+        self.Z_decay_mode = 'both'
         self.loss_reduction_LU = 'mean'    # how to reduce per-element loss before backward: 'sum' or 'mean'
         # Gradient aggregation across the time dimension of Z before each LU optimizer step.
         # Options: 'exponential_increase' (recent steps weighted more), 'average', 'last', 'none'.
@@ -138,9 +169,16 @@ class Config:
         Defaults to 4 blocks × 200 timesteps. Override either dimension before calling:
             config.test_no_of_blocks = 8   # more blocks, block_size stays 200
             config.test_block_size   = 500  # longer blocks, no_of_blocks stays 4
+
+        Switching to what_latent_to_use='self' only lets Z be inferred if LU steps are enabled.
+        A condition that trained with no_of_steps_in_latent_space=0 (an oracle, or a frozen-Z
+        control) keeps LU off here unless test_no_of_steps_in_latent_space says otherwise.
         """
         self.what_latent_to_use = 'self'
         self.no_of_steps_in_weight_space = 0
+        test_LU = getattr(self, 'test_no_of_steps_in_latent_space', None)
+        if test_LU is not None:                      # None → keep the training value
+            self.no_of_steps_in_latent_space = test_LU
         self.block_size  = getattr(self, 'test_block_size',   self.block_size)
         self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)
         self.update_export_path()
@@ -384,11 +422,29 @@ class RotatingTargetsConfig(Config):
 
         # ── Block structure ───────────────────────────────────────────────
         self.block_size  = self.n_miniblocks_per_state_block * self.n_colors  # 80
-        # self.no_of_blocks = 40 # does not do anything 
+        # self.no_of_blocks = 40 # does not do anything
         self.block_duration_distribution = 'fixed'  # 'fixed' or 'geometric'; geometric adds variability to block lengths
+        # Which rotation each state-block gets. 'cyclic' walks train_rotations in order (and is
+        # seed-independent, so the schedule is fully predictable); 'random_no_repeat' draws one
+        # per block, never repeating the previous. With only two rotations the two are the same
+        # thing — the flag earns its keep from three rotations up.
+        self.rotation_block_order = 'cyclic'  # 'cyclic' or 'random_no_repeat'
+
+        # ── Context-belief output (off by default) ────────────────────────
+        # See enable_context_output(): appends dims carrying the rotation, hidden from the model
+        # input but supervised at the loss, so the network reports its context belief directly.
+        self.context_output_encoding = None   # None, 'circular' or 'one_hot'
+        self.context_output_dims     = 0
+
+        # ── Oracle latent ─────────────────────────────────────────────────
+        # Context variable = rotation angle (radians), so a full period is the range.
+        # 'one_hot' needs Z_dim >= len(train_rotations); 'normalized' needs Z_dim=1;
+        # 'circular' needs Z_dim=2. See the oracle block in Config.__init__.
+        self.oracle_context_encoding = 'one_hot'
+        self.oracle_context_range = (0.0, 2 * np.pi)
 
         # ── Latent variable ───────────────────────────────────────────────
-        self.latent_dims = [2]   # scalar Z = rotation angle in radians
+        self.latent_dims = [2]
         self.Z_lr = 0.2
         self.Z_decay = 0.0001
         self.latent_chunks = 1
@@ -410,14 +466,98 @@ class RotatingTargetsConfig(Config):
         # Set test_no_of_steps_in_weight_space=1 to keep WU active during Phase 3.
         self.test_no_of_steps_in_weight_space = 0   # 0 = freeze weights (standard test)
         self.test_no_of_blocks = 6                 # blocks to run in Phase 3
+        # Phase 3 is a self-inference test on novel rotations, so LU is on even for conditions
+        # that trained with it off (the oracles). Set to 0 for a deliberately frozen-Z control.
+        self.test_no_of_steps_in_latent_space = 1
 
         self.update_export_path()
         self._validate()
 
+    @property
+    def oracle_context_values(self):
+        """
+        Context values the 'one_hot' oracle encoding gives slots to, in slot order.
+
+        The context variable here is the rotation angle, and the dataset emits it in radians.
+        Defaults to the trained rotations rather than a fixed list, so it stays correct when a
+        run script overrides train_rotations after construction. Assign to pin an explicit table.
+        """
+        if self._oracle_context_values is not None:
+            return self._oracle_context_values
+        return np.deg2rad(self.train_rotations)
+
+    @oracle_context_values.setter
+    def oracle_context_values(self, values):
+        self._oracle_context_values = values
+
+    def enable_context_output(self, encoding='circular', loss_weight=1.0):
+        """Make the network report its context belief directly, via the augmented-input trick.
+
+        Same mechanism MeanPredictionConfig uses ([1,0] / [0,1]): the rotation is appended to the
+        observation, zeroed out by input_feed_mask before the forward pass so the model cannot
+        read it, and re-opened by output_loss_mask so the model is trained to *emit* it.
+
+        Observation layout becomes:
+            [ color_onehot(n_colors) | context(C) | attack_x, attack_y ]
+        The context sits *before* the coordinates on purpose — every rotating-targets analysis
+        reads the attack as [-2:] (rotating_targets_analysis._analyze_adaptation,
+        analyze_rotation_sweep, run_2D_predicitve_task.plot_arena_trials), and appending at the
+        end would silently point all of them at the context dims instead.
+
+        Encodings:
+            'circular' — C=2, target_radius * [cos θ, sin θ]. Same scale as the coordinates, so
+                         the two loss terms are balanced, and no wraparound seam. Decode with
+                         atan2(out[nc+1], out[nc]).
+            'one_hot'  — C=len(train_rotations), one slot per trained rotation. No metric between
+                         contexts and no valid target for an unseen angle.
+
+        Call this *after* train_rotations is final; 'one_hot' sizes itself from it.
+
+        loss_weight scales the context term. output_loss_mask is applied as a plain elementwise
+        multiply in train_and_infer_functions._mask_loss, so a float entry works as a weight with
+        no further machinery; 0.0 keeps the dims present but unsupervised.
+        """
+        if encoding == 'circular':
+            C = 2
+        elif encoding == 'one_hot':
+            C = len(self.train_rotations)
+        else:
+            raise ValueError(f"Unknown context_output_encoding '{encoding}'. "
+                             "Choose 'circular' or 'one_hot'.")
+
+        base = self.n_colors + 2
+        self.context_output_encoding = encoding
+        self.context_output_dims     = C
+        self.input_size  = base + C
+        self.output_size = base + C
+        self.input_feed_mask  = [1] * self.n_colors + [0] * C + [1, 1]
+        self.output_loss_mask = [0] * self.n_colors + [loss_weight] * C + [1, 1]
+
+        assert len(self.input_feed_mask) == self.input_size, (
+            f'input_feed_mask has {len(self.input_feed_mask)} entries for '
+            f'input_size={self.input_size}.')
+        assert len(self.output_loss_mask) == self.output_size, (
+            f'output_loss_mask has {len(self.output_loss_mask)} entries for '
+            f'output_size={self.output_size}.')
+
+    @property
+    def context_output_slice(self):
+        """Column slice of the context dims in an (T, input_size) array, or None if disabled."""
+        if not self.context_output_dims:
+            return None
+        return slice(self.n_colors, self.n_colors + self.context_output_dims)
+
     def reconfigure_for_prediction(self, experiment_to_run):
-        """Switch to test/inference mode: freeze weights, adjust dataset size."""
+        """Switch to test/inference mode: freeze weights, adjust dataset size.
+
+        what_latent_to_use='self' alone does not make Z adapt — LU steps have to be enabled too,
+        which the oracle conditions turn off during training. See test_no_of_steps_in_latent_space.
+        """
         self.what_latent_to_use = 'self'
         self.no_of_steps_in_weight_space = getattr(self, 'test_no_of_steps_in_weight_space', 0)
+        test_LU = getattr(self, 'test_no_of_steps_in_latent_space', None)
+        if test_LU is not None:                      # None → keep the training value
+            self.no_of_steps_in_latent_space = test_LU
         # fall back to the training block_size so mini-block structure is consistent
         self.block_size   = getattr(self, 'test_block_size',   self.block_size)
         self.no_of_blocks = getattr(self, 'test_no_of_blocks', 4)

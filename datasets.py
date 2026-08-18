@@ -426,12 +426,17 @@ class RotatingTargetsDataset(BaseTaskDataset):
             [np.cos(angles_0), np.sin(angles_0)], axis=1)  # (n_colors, 2)
 
         data_seq, llcid_seq, hlcid_seq = [], [], []
+        self._prev_rotation_deg = None
         for block_idx, block_size in enumerate(self.block_sizes):
-            rotation_deg = rotations[block_idx % len(rotations)]
+            rotation_deg = self._rotation_for_block(block_idx, rotations)
             rotation_rad = np.deg2rad(rotation_deg)
             c, s = np.cos(rotation_rad), np.sin(rotation_rad)
             R = np.array([[c, -s], [s, c]])
             rotated_targets = (R @ base_targets.T).T  # (n_colors, 2)
+            # Empty unless config.enable_context_output() was called, in which case these dims
+            # carry the rotation for the model to report back — hidden from its input by
+            # input_feed_mask, supervised by output_loss_mask.
+            ctx = self._context_vector(rotation_deg, rotation_rad)
             n_miniblocks = block_size // (n_colors * 2)
             for _ in range(n_miniblocks):
                 color_order = self.rng.permutation(n_colors)
@@ -439,8 +444,8 @@ class RotatingTargetsDataset(BaseTaskDataset):
                     attack = rotated_targets[color] + noise_std * self.rng.standard_normal(2)
                     color_onehot = np.zeros(n_colors)
                     color_onehot[color] = 1.0
-                    cue_obs     = np.concatenate([color_onehot, [0.0, 0.0]])
-                    outcome_obs = np.concatenate([np.zeros(n_colors), attack])
+                    cue_obs     = np.concatenate([color_onehot, ctx, [0.0, 0.0]])
+                    outcome_obs = np.concatenate([np.zeros(n_colors), ctx, attack])
                     data_seq.extend([cue_obs, outcome_obs])
                     llcid_seq.extend([rotation_rad, rotation_rad])
                     hlcid_seq.extend([float(block_idx), float(block_idx)])
@@ -448,6 +453,46 @@ class RotatingTargetsDataset(BaseTaskDataset):
 
     def _get_rotations(self):
         return self.config.train_rotations
+
+    def _rotation_for_block(self, block_idx, rotations):
+        """Rotation (degrees) for one state-block.
+
+        'cyclic' (the default) walks the list in order — deterministic and seed-independent, so
+        the schedule is predictable. 'random_no_repeat' redraws each block, excluding the previous
+        one so llcid always changes at a boundary (get_block_switches keys on the rotation value,
+        not the block index, and would merge two same-angle blocks).
+        """
+        order = getattr(self.config, 'rotation_block_order', 'cyclic')
+        if order == 'cyclic':
+            return rotations[block_idx % len(rotations)]
+        if order != 'random_no_repeat':
+            raise ValueError(f"Unknown rotation_block_order '{order}'. "
+                             "Choose 'cyclic' or 'random_no_repeat'.")
+        choices = [r for r in rotations if r != self._prev_rotation_deg]
+        if not choices:                      # single rotation configured — nothing to alternate
+            choices = list(rotations)
+        rotation_deg = float(self.rng.choice(choices))
+        self._prev_rotation_deg = rotation_deg
+        return rotation_deg
+
+    def _context_vector(self, rotation_deg, rotation_rad):
+        """Context dims appended to every observation, or an empty array when disabled.
+
+        See RotatingTargetsConfig.enable_context_output for the layout and the encodings.
+        """
+        encoding = getattr(self.config, 'context_output_encoding', None)
+        if encoding is None:
+            return np.empty(0)
+        if encoding == 'circular':
+            r = self.config.target_radius
+            return np.array([r * np.cos(rotation_rad), r * np.sin(rotation_rad)])
+        if encoding == 'one_hot':
+            rotations = self._get_rotations()
+            vec = np.zeros(len(rotations))
+            vec[int(np.argmin(np.abs(np.asarray(rotations) - rotation_deg)))] = 1.0
+            return vec
+        raise ValueError(f"Unknown context_output_encoding '{encoding}'. "
+                         "Choose 'circular' or 'one_hot'.")
 
 
 class RotatingTargetsTestDataset(RotatingTargetsDataset):

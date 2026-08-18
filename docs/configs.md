@@ -45,7 +45,19 @@ Z has shape `(batch, seq_len, Z_dim)` where `Z_dim = product(latent_dims)`.
 | `latent_activation` | `'none'` | Applied to Z before it is used. Options: `'softmax'`, `'sigmoid'`, `'none'` |
 | `softmax_temp` | 1 | Temperature for softmax (higher → more uniform) |
 | `pass_previous_latent` | `True` | Carry Z across batches (warm-start LU from prior context). Set `False` to reset Z to zeros each batch |
-| `what_latent_to_use` | `'self'` | Which latent to use: `'self'` (learn Z), `'context_ids'` (oracle one-hot), `'uniform'` (constant), `'zeros'` |
+| `what_latent_to_use` | `'self'` | Which latent to use: `'self'` (learn Z), `'context_ids'` (oracle), `'uniform'` (constant), `'zeros'` |
+
+### Oracle Latent
+
+Read only when `what_latent_to_use='context_ids'`. The dataset's `context_ids` carry the value of whichever experimental variable defines the context; these fields say how that value becomes Z. A task sets the one its encoding needs.
+
+| Field | Default | Description |
+|---|---|---|
+| `oracle_context_encoding` | `'one_hot'` | `'one_hot'` (identity), `'normalized'` (magnitude, `Z_dim=1`), `'circular'` (magnitude on a ring, `Z_dim=2`) |
+| `oracle_context_values` | `None` | Ordered table of context values, one Z slot each. `'one_hot'` only; `Z_dim` must be ≥ its length. `None` → the raw id is the slot index |
+| `oracle_context_range` | `None` | `(lo, hi)` span of the context variable. Required by `'normalized'` and `'circular'` |
+
+A task may expose `oracle_context_values` as a property so it tracks a run script's later overrides — `RotatingTargetsConfig` returns `deg2rad(train_rotations)` unless explicitly assigned. See [model_rnn_with_latent.md](model_rnn_with_latent.md) for the encodings.
 
 ### Latent Optimizer (LU)
 
@@ -160,7 +172,15 @@ These are kept for backward compatibility or niche experiments and can be ignore
 
 `_validate()` — asserts that `exponential_increase_steepness` and `exponential_increase_multipliers` each have length `latent_chunks`, and that `Z_dim % latent_chunks == 0`. Called at end of subclass `__init__`.
 
-`reconfigure_for_prediction(experiment_to_run)` — switches to inference mode: freezes weights (`no_of_steps_in_weight_space = 0`), adjusts `no_of_blocks`. Called by `train_model()` at the start of the test phase.
+`reconfigure_for_prediction(experiment_to_run)` — switches to inference mode: sets `what_latent_to_use='self'`, freezes weights (`no_of_steps_in_weight_space = 0`), adjusts `no_of_blocks`. Called by `train_model()` at the start of the test phase.
+
+> **`what_latent_to_use='self'` alone does not make Z adapt** — `no_of_steps_in_latent_space` must also be > 0, and `reconfigure_for_prediction` carries the training value over by default. A condition that trained with LU off (an oracle, or a frozen-Z control) therefore runs the test phase with Z pinned at its initial zeros unless `test_no_of_steps_in_latent_space` says otherwise.
+>
+> | `test_no_of_steps_in_latent_space` | Test-phase LU |
+> |---|---|
+> | `None` (base default) | keep the training value |
+> | `1` (`RotatingTargetsConfig`) | on — oracles switch to real self-inference |
+> | `0` | off — Z stays frozen, for a deliberate no-inference control |
 
 ---
 

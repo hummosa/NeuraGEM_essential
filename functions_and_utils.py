@@ -365,6 +365,36 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
              fontsize=6, fontweight='bold', ha='center')
     def plot_latent_2d(ax):
         plot_latent(ax, force_2d=True)
+
+    def plot_context_belief(ax):
+        """Reported context belief vs. the true context, for a task with a context output head.
+
+        Needs config.enable_context_output() (rotating targets). oi[t] is the prediction of
+        frame ii[t] and logger.context_ids[t] is that same frame's context, so belief and truth
+        are already index-aligned. Wrong-side judgements are marked so perseveration after a
+        switch and slips within a block are visible directly on the time axis.
+        """
+        sl = getattr(config, 'context_output_slice', None)
+        if sl is None or not logger.predicted_outputs:
+            ax.set_ylabel('Belief')
+            return
+        belief = np.arctan2(oi[x1:x2, sl][:, 1], oi[x1:x2, sl][:, 0])
+        true   = ll.reshape(-1)[x1:x2]
+        rots   = np.deg2rad(np.asarray(config.train_rotations, dtype=float))
+        d      = np.abs(np.arctan2(np.sin(belief[:, None] - rots[None, :]),
+                                   np.cos(belief[:, None] - rots[None, :])))
+        ok = np.argmin(d, axis=1) == np.argmin(
+            np.abs(np.arctan2(np.sin(true[:, None] - rots[None, :]),
+                              np.cos(true[:, None] - rots[None, :]))), axis=1)
+        t = np.arange(len(belief))
+        ax.plot(t, np.degrees(true), '-', color='0.7', linewidth=0.8, zorder=1)
+        ax.scatter(t[ok],  np.degrees(belief[ok]),  s=1.0, color='tab:blue',
+                   alpha=0.6, linewidths=0, zorder=3)
+        ax.scatter(t[~ok], np.degrees(belief[~ok]), s=2.0, color='tab:red',
+                   alpha=0.9, linewidths=0, zorder=4)
+        ax.axhline(float(np.degrees(rots.mean())), color='k', linewidth=0.6,
+                   linestyle=':', alpha=0.4, zorder=2)
+        ax.set_ylabel('Belief (deg)')
     def plot_latent_chunk_1(ax):
         plot_latent(ax, chunk_no=0)
     def plot_latent_chunk_2(ax):
@@ -409,6 +439,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
         'latent': plot_latent,
         'latent_effective_lr': plot_effective_lr,
         'latent_2d': plot_latent_2d,
+        'context_belief': plot_context_belief,
         'latent_2D': plot_latent_2d,
         'latent2D': plot_latent_2d,
         'latent_chunk_1': plot_latent_chunk_1,
@@ -1171,9 +1202,14 @@ class Logger:
     - hlcids: List[(batch, stride, 1)] - High-level context IDs (hierarchical latent indicators)
     
     Model Internal States:
-    - hidden_states: List[(batch, seq_len, hidden_size)] - RNN/LSTM hidden states (h, c)
+    - hidden_states: List[(batch, hidden_size)] - RNN/LSTM hidden state h
              Only logged if config.log_hidden_states=True
              For LSTM: tuple of (h, c), Logger extracts h via hidden_states[0]
+             model.forward returns only the FINAL (h, c) of the sequence, and _log_batch
+             logs it unsliced — so this is one state per batch, not one per timestep.
+             That final h is the state whose readout produced the logged prediction for
+             the same batch, so it aligns 1:1 with inputs/predicted_outputs/latent_values
+             when stride=1 and log_initial_burn_in_timesteps=False.
     - input_attention_weights: List - Attention weights if using input attention
     
     Training Phases:

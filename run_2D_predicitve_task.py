@@ -81,7 +81,7 @@ else:
 config.WU_lr = 0.001
 config.what_latent_to_use = 'self'
 
-over_segment = True
+over_segment = False
 if over_segment: # trying out changing params to make ng oversegment to shields
     config.latent_dims = [10]    # e.g. [4] for Z_dim=4; [2, 2] for Z_dim=4 split into 2 chunks of 2
     config.latent_chunks = 5    # number of independently-activated sub-vectors within Z
