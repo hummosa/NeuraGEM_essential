@@ -354,7 +354,9 @@ def train_model(config, seed=0, save_models=True, load_models=False, run_test_ph
     if pretrained_model is not None:
         model = pretrained_model.to(config.device)
     elif load_models and os.path.exists(model_path):
-        model = torch.load(model_path)
+        # weights_only=False is required: these checkpoints are whole pickled models,
+        # not state dicts, and torch >= 2.6 defaults weights_only to True.
+        model = torch.load(model_path, weights_only=False)
         print('Model loaded successfully.')
     else:
         model = RNN_with_latent(config).to(config.device)

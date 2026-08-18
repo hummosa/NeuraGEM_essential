@@ -738,24 +738,54 @@ class FlankerTaskStage3Config(FlankerTaskStage2Config):
         self._validate()
 
 
-class FlankerTaskStage4Config(FlankerTaskStage2Config):
+class FlankerRandomTrialsConfig(FlankerTaskConfig):
     """
-    Stage 4: frozen weights, self-learned Z, fully randomized trials.
-    Each DataLoader batch = 1 trial (block_size = arrows_duration).
-    Used for sequential trial history analysis.
+    Test stage: frozen weights, self-inferred Z, fully randomized trials.
+
+    This is the only stage that gets analyzed. Trials are drawn i.i.d. from the four
+    near/far x congruent/incongruent types, matching the randomly interleaved design
+    humans perform. Blocked presentation confounds condition with time-in-block and
+    with adaptation-to-switch, so every condition effect is instead obtained by
+    masking this single random session.
+
+    block_size = arrows_duration, so each DataLoader batch is exactly one trial and
+    Z receives exactly one LU update per trial.
     """
 
     def __init__(self, experiment_to_run='default'):
         super().__init__(experiment_to_run)
-        self.dataset_name         = 'flanker_stage4'
+        self.dataset_name = 'flanker_random'
+
+        # Weights frozen; Z is the only thing that adapts.
+        self.what_latent_to_use          = 'self'
+        self.no_of_steps_in_weight_space = 0
+
+        self.n_trials             = 5000
         self.block_size           = self.arrows_duration   # 1 trial per batch
-        self.n_training_contexts  = 4000                   # total trials
-        self.no_of_blocks         = self.n_training_contexts
-        self.blocked_phase_length = self.no_of_blocks * self.block_size
-        self.p_congruent          = 0.5  # fraction of congruent trials; near/far split equally within each
+        self.n_training_contexts  = self.n_trials
+        self.no_of_blocks         = self.n_trials
+        self.blocked_phase_length = self.n_trials * self.arrows_duration
+
+        # Trial-type proportions. 0.5 congruent matches the human task; the sweep
+        # varies it to test the list-wide proportion-congruent prediction.
+        self.p_congruent = 0.5
+        self.p_near      = 0.5
 
         self.update_export_path()
         self._validate()
+
+    def set_n_trials(self, n_trials):
+        """Set session length in trials and keep the derived block counts consistent."""
+        self.n_trials             = int(n_trials)
+        self.n_training_contexts  = self.n_trials
+        self.no_of_blocks         = self.n_trials
+        self.blocked_phase_length = self.n_trials * self.arrows_duration
+        return self
+
+
+class FlankerTaskStage4Config(FlankerRandomTrialsConfig):
+    """Deprecated name for FlankerRandomTrialsConfig. Kept so the archived
+    blocked-stage script and older notebooks still import."""
 
 
 # Backwards-compatibility aliases
