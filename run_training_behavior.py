@@ -101,19 +101,19 @@ if __name__ == "__main__":
         },
         {
             "model_name": "RNN^{short}",
-            "overrides": {"LU_lr": 0.0},
+            "overrides": {"Z_lr": 0.0},
             "panel_order": COMPACT_PANELS_BASELINE,
             "title_color": cs.short_horizon_rnn,
         },
         {
             "model_name": "RNN^{long}",
-            "overrides": {"LU_lr": 0.0, "seq_len": 50},
+            "overrides": {"Z_lr": 0.0, "seq_len": 50},
             "panel_order": COMPACT_PANELS_BASELINE,
             "title_color": cs.long_horizon_rnn,
         },
         {
             "model_name": "NeuraGEM (no Z decay)",
-            "overrides": {"l2_loss": 0.0},
+            "overrides": {"Z_decay": 0.0},
             "panel_order": COMPACT_PANELS,
             "title_color": cs.neuragem,
         },

@@ -46,7 +46,7 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
     model.init_hidden(batch_size)           # h ← 10/hidden_size, c ← 0
 
     for epoch in range(epochs):
-        for inputs, llcids, hlcids in dataloader:
+        for inputs, context_ids, hlcids in dataloader:
             # ── inputs: (B, seq_len, input_size) ──────────────────────────
 
             # 1. WEIGHT UPDATE
@@ -56,7 +56,7 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
                 combined = combine_input_with_latent(inputs, 'self')  # (B, seq, in+Z)
                 outputs, _ = model.forward(combined)
             else:
-                outputs, _ = model.forward(inputs, taskID=llcids, what_latent='self')
+                outputs, _ = model.forward(inputs, taskID=context_ids, what_latent='self')
 
             loss = criterion(outputs, targets)    # (B, seq, out), MSE unreduced
             loss.sum().backward()
@@ -69,7 +69,7 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
                 model.reset_Z(B, seq_len)  # Z ← zeros
 
             if no_of_steps_in_latent_space > 0:
-                before_loss = model.update_Z(inputs, criterion, logger, llcids,
+                before_loss = model.update_Z(inputs, criterion, logger, context_ids,
                                              no_of_steps=no_of_steps_in_latent_space)
 
             # 3. LOG
@@ -77,7 +77,7 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
             logger.log_predicted_output(outputs)
             logger.log_latent_value(model.Z)
             logger.log_gradients_corrections(model.Z.grad)
-            logger.log_llcid(llcids)
+            logger.log_llcid(context_ids)
             logger.log_hlcid(hlcids)
 ```
 
@@ -218,6 +218,47 @@ When `False`:
 ## Noise Injection (`add_noise_to_input`)
 
 If `config.add_noise_to_input=True`, Gaussian noise `N(0, noise_std)` is added to the input batch before both WU and LU. This is applied at the batch-preparation stage, not inside the model, so the target remains the clean signal.
+
+---
+
+## Input Feed Masking (`input_feed_mask`)
+
+`input_feed_mask` is a list of 0/1 with length `input_size` (or `None` to disable). When set, it is applied to the input tensor **before the model forward pass** — both during WU and LU — by element-wise multiplication along the feature dimension.
+
+```python
+# In _prepare_batch_inputs():
+input_feed_mask = getattr(config, 'input_feed_mask', None)
+if input_feed_mask is not None:
+    m = torch.tensor(input_feed_mask, dtype=inputs.dtype, device=inputs.device)
+    gated_inputs = gated_inputs * m   # applied after noise injection, before model sees input
+```
+
+**Primary use case — augmented-input trick:** embed a supervision signal (e.g., the ground-truth mean) as an extra input dimension. Hide it from the model with `input_feed_mask` and select it as the only loss signal with `output_loss_mask`. This lets you train on a target that is not the next observation without modifying the loss pipeline.
+
+```
+input  dim 0: observation  → mask = 1  (model sees this)
+input  dim 1: target_mean  → mask = 0  (zeroed out; model cannot cheat)
+output dim 0: (unused)     → output_loss_mask = 0
+output dim 1: mean estimate→ output_loss_mask = 1  (loss computed here)
+```
+
+Note that the **full unmasked input** is still used as the loss target. For `predict_first_frame=False`, the target is `inputs[:, 1:, :]` including both dimensions, and `output_loss_mask` then selects which dimension(s) contribute to the gradient.
+
+---
+
+## Output Loss Masking (`output_loss_mask`)
+
+`output_loss_mask` is a list of 0/1 with length `output_size` (or `None` to use all dims). It is applied **after** the per-element loss is computed and **before** `.backward()`, zeroing out the gradient contribution of unwanted output dimensions.
+
+```python
+# In _mask_loss():
+t = torch.tensor(mask, dtype=loss.dtype, device=loss.device)
+return loss * t
+```
+
+Examples:
+- `RotatingTargetsConfig`: `[0,0,0,0,0,1,1]` — trains only on the `(x, y)` attack coordinates, suppressing loss on the 5-color one-hot prefix.
+- `MeanPredictionConfig`: `[0,1]` — trains only on dim 1 (mean estimate), leaving dim 0 (observation prediction) unconstrained.
 
 ---
 

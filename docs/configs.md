@@ -1,6 +1,6 @@
 # Configuration Objects
 
-`configs.py` — classes: `Config`, `ContextualSwitchingTaskConfig`, `SeqLearnConfig`
+`configs.py` — classes: `Config`, `ContextualSwitchingTaskConfig`, `SeqLearnConfig`, `RotatingTargetsConfig`, `MeanPredictionConfig`
 
 Abbreviations used throughout the codebase: **LU** = Latent Update (Z optimization) | **WU** = Weight Update (standard BPTT)
 
@@ -11,7 +11,9 @@ Abbreviations used throughout the codebase: **LU** = Latent Update (Z optimizati
 ```
 Config  (base — all shared parameters)
 ├── ContextualSwitchingTaskConfig   (1D Gaussian context switching)
-└── SeqLearnConfig                  (Beukers et al. sequence learning)
+│   └── MeanPredictionConfig        (predict latent mean instead of next observation)
+├── SeqLearnConfig                  (Beukers et al. sequence learning)
+└── RotatingTargetsConfig           (Yu et al. rotating targets)
 ```
 
 `Config.__init__` sets every parameter that is shared across tasks. Subclasses call `super().__init__()`, set their task-specific fields, then call `self._validate()` at the end to catch misconfigured coupled parameters.
@@ -43,7 +45,19 @@ Z has shape `(batch, seq_len, Z_dim)` where `Z_dim = product(latent_dims)`.
 | `latent_activation` | `'none'` | Applied to Z before it is used. Options: `'softmax'`, `'sigmoid'`, `'none'` |
 | `softmax_temp` | 1 | Temperature for softmax (higher → more uniform) |
 | `pass_previous_latent` | `True` | Carry Z across batches (warm-start LU from prior context). Set `False` to reset Z to zeros each batch |
-| `what_latent_to_use` | `'self'` | Which latent to use: `'self'` (learn Z), `'taskID'` (oracle one-hot), `'uniform'` (constant), `'zeros'` |
+| `what_latent_to_use` | `'self'` | Which latent to use: `'self'` (learn Z), `'context_ids'` (oracle), `'uniform'` (constant), `'zeros'` |
+
+### Oracle Latent
+
+Read only when `what_latent_to_use='context_ids'`. The dataset's `context_ids` carry the value of whichever experimental variable defines the context; these fields say how that value becomes Z. A task sets the one its encoding needs.
+
+| Field | Default | Description |
+|---|---|---|
+| `oracle_context_encoding` | `'one_hot'` | `'one_hot'` (identity), `'normalized'` (magnitude, `Z_dim=1`), `'circular'` (magnitude on a ring, `Z_dim=2`) |
+| `oracle_context_values` | `None` | Ordered table of context values, one Z slot each. `'one_hot'` only; `Z_dim` must be ≥ its length. `None` → the raw id is the slot index |
+| `oracle_context_range` | `None` | `(lo, hi)` span of the context variable. Required by `'normalized'` and `'circular'` |
+
+A task may expose `oracle_context_values` as a property so it tracks a run script's later overrides — `RotatingTargetsConfig` returns `deg2rad(train_rotations)` unless explicitly assigned. See [model_rnn_with_latent.md](model_rnn_with_latent.md) for the encodings.
 
 ### Latent Optimizer (LU)
 
@@ -53,13 +67,32 @@ Z has shape `(batch, seq_len, Z_dim)` where `Z_dim = product(latent_dims)`.
 | `LU_optimizer` | `'Adam'` | `'Adam'`, `'AdamW'`, or `'SGD'` |
 | `LU_Adam_betas` | `(0.9, 0.999)` | Adam beta parameters |
 | `LU_momentum` | 0.0 | SGD momentum (only used when `LU_optimizer='SGD'`) |
-| `l2_loss` | 0 | L2 regularization weight on Z |
+| `l2_loss` | 0 | L2 regularization weight on Z (alias for `Z_decay`; `LU_lr` likewise aliases `Z_lr`) |
+| `Z_decay_mode` | `'both'` | Which code path applies `Z_decay` — see below |
 | `loss_reduction_LU` | `'sum'` | How to reduce per-element loss before backward: `'sum'` or `'mean'` |
 | `latent_aggregation_op` | `'exponential_increase'` | Gradient aggregation across the time dimension before each LU step. Options: `'exponential_increase'`, `'average'`, `'last'`, `'none'` |
 | `exponential_increase_steepness` | `[2] * latent_chunks` | Per-chunk recency bias. `steepness=0` → uniform weight (same as `'average'`); `steepness=2` → mild recency bias; `steepness=40` → focus on last few steps. **Must be one value per chunk.** |
 | `exponential_increase_multipliers` | `[1] * latent_chunks` | Per-chunk scale applied after filter normalization |
 
 > **Coupling rule:** `len(exponential_increase_steepness)` and `len(exponential_increase_multipliers)` must both equal `latent_chunks`. `_validate()` raises an `AssertionError` if they don't. Defaults auto-size, so if you set `latent_chunks = 2`, just update these lists to length 2.
+
+> **`Z_decay` has two code paths, and historically both ran.** The Z optimizer's own
+> `weight_decay` (`models._build_Z_optimizer`) and a gradient term in
+> `models._apply_chunk_lr_and_decay`, which fires unconditionally from the end of
+> `adjust_Z_grads`. Under Adam both add `decay * Z` to the gradient, so the realised decay was
+> exactly `2 * Z_decay` — every `Z_decay` tuned before this flag existed means half what it says.
+>
+> | `Z_decay_mode` | optimizer `weight_decay` | manual grad term | |
+> |---|---|---|---|
+> | `'grad'` | `0.0` | applied | Prefer this. Honours `chunk_l2_losses`, and means the same thing under Adam / AdamW / SGD |
+> | `'optimizer'` | `Z_decay` | skipped | Coupled for Adam, decoupled for AdamW — the meaning changes with `LU_optimizer` |
+> | `'both'` | `Z_decay` | applied | The historical behaviour, and still the default so existing results stay reproducible. Deprecated |
+>
+> The default is deliberately left at `'both'`: flipping it globally would silently change every
+> experiment in the repo. New experiments should set `'grad'` explicitly and state the *effective*
+> decay they intend — see [rotation_curriculum.md](rotation_curriculum.md), which halves the
+> slips sweep's `1e-3 * lr^2` field value into `2e-3 * lr^2` applied once, and reproduces the
+> older run exactly.
 
 ### Weight Optimizer (WU)
 
@@ -98,6 +131,19 @@ Z has shape `(batch, seq_len, Z_dim)` where `Z_dim = product(latent_dims)`.
 | `shuffle_or_interleave` | `'interleave'` | Task ordering in the interleaved phase |
 | `random_transition_shuffle_or_interleave` | `'shuffle'` | Low-level transition ordering |
 | `start_always_on_the_same_block` | `False` | Always begin with context A (the minimum mean) |
+
+### Loss and Input Masking
+
+Two complementary masks control which dimensions participate in learning. Both are lists of 0/1 with length equal to `output_size` / `input_size` respectively, or `None` to use all dimensions.
+
+| Field | Default | Description |
+|---|---|---|
+| `output_loss_mask` | `None` | Per-output-dimension loss weight. `[0,0,0,0,0,1,1]` trains only on the last two dims. Applied after loss computation, before `.backward()`. |
+| `input_feed_mask` | `None` | Per-input-dimension zeroing mask applied before the model forward pass. `[1,0]` hides dim 1 from the model so it cannot read a target that is embedded in the input vector. |
+
+These two masks work together for the **augmented-input trick**: embed the ground-truth target as an extra input dimension, hide it from the model with `input_feed_mask`, and select it as the only loss signal with `output_loss_mask`. See `MeanPredictionConfig` for a concrete example.
+
+`output_loss_mask` is used in `RotatingTargetsConfig` (`[0,0,0,0,0,1,1]`) to suppress loss on the color one-hot input and train only on the `(x, y)` attack coordinates.
 
 ### Noise Injection
 
@@ -145,7 +191,15 @@ These are kept for backward compatibility or niche experiments and can be ignore
 
 `_validate()` — asserts that `exponential_increase_steepness` and `exponential_increase_multipliers` each have length `latent_chunks`, and that `Z_dim % latent_chunks == 0`. Called at end of subclass `__init__`.
 
-`reconfigure_for_prediction(experiment_to_run)` — switches to inference mode: freezes weights (`no_of_steps_in_weight_space = 0`), adjusts `no_of_blocks`. Called by `train_model()` at the start of the test phase.
+`reconfigure_for_prediction(experiment_to_run)` — switches to inference mode: sets `what_latent_to_use='self'`, freezes weights (`no_of_steps_in_weight_space = 0`), adjusts `no_of_blocks`. Called by `train_model()` at the start of the test phase.
+
+> **`what_latent_to_use='self'` alone does not make Z adapt** — `no_of_steps_in_latent_space` must also be > 0, and `reconfigure_for_prediction` carries the training value over by default. A condition that trained with LU off (an oracle, or a frozen-Z control) therefore runs the test phase with Z pinned at its initial zeros unless `test_no_of_steps_in_latent_space` says otherwise.
+>
+> | `test_no_of_steps_in_latent_space` | Test-phase LU |
+> |---|---|
+> | `None` (base default) | keep the training value |
+> | `1` (`RotatingTargetsConfig`) | on — oracles switch to real self-inference |
+> | `0` | off — Z stays frozen, for a deliberate no-inference control |
 
 ---
 
@@ -261,7 +315,7 @@ Beukers et al. (2024) blocked sequence-learning task. Two task types, each with 
 config = ContextualSwitchingTaskConfig()
 
 # Override any parameter after construction
-config.LU_lr = 0.5
+config.Z_lr = 0.5
 config.hidden_size = 64
 config.latent_dims = [4]
 config.latent_chunks = 2
@@ -284,6 +338,62 @@ export_path = f"{export_folder}/{dataset_name}/{run_name}/"
 Example: `./exports/contextual_switching_task/my_experiment/`
 
 The directory is created automatically when `run_name` is assigned or `update_export_path()` is called.
+
+---
+
+## `MeanPredictionConfig(ContextualSwitchingTaskConfig)`
+
+**`dataset_name = 'mean_prediction'`**
+
+A direct subclass of `ContextualSwitchingTaskConfig` where the network is trained to predict the **latent mean** (the context value) rather than the next observation. The task uses the same two-context Gaussian setup but trains a different learning signal.
+
+### How the augmented-input trick works
+
+Each dataset timestep is 2D: `[observation, ground_truth_mean]`. Two masks split the roles:
+
+```
+input  dim 0: observation  → seen by model (input_feed_mask = 1)
+input  dim 1: mean         → zeroed out before forward pass (input_feed_mask = 0)
+output dim 0: (unused)     → no loss gradient (output_loss_mask = 0)
+output dim 1: mean estimate→ trained via MSE against the true mean (output_loss_mask = 1)
+```
+
+The model must infer the mean from noisy observations. Z (the latent variable) adapts to help maintain the context estimate across timesteps.
+
+### Overridden fields
+
+| Field | Value | Inherited default |
+|---|---|---|
+| `dataset_name` | `'mean_prediction'` | `'contextual_switching_task'` |
+| `input_size` | `2` | `1` |
+| `output_size` | `2` | `1` |
+| `input_feed_mask` | `[1, 0]` | `None` |
+| `output_loss_mask` | `[0, 1]` | `None` |
+
+All other parameters (training schedule, latent optimizer, gating architecture) are inherited unchanged from `ContextualSwitchingTaskConfig`.
+
+### Usage
+
+```python
+config = MeanPredictionConfig(experiment_to_run='figure')
+config.default_std = 0.1   # harder task at low noise (less info per observation)
+
+logger, model, config, figs = train_model(config, seed=0)
+
+# After training, logger.outputs[:, :, 1] should track logger.context_ids
+# (model's mean estimate should match the ground-truth context mean)
+```
+
+### Timing: predict_first_frame=False
+
+With `predict_first_frame=False` (inherited from `ContextualSwitchingTaskConfig`), the model at step `t` predicts what happens at `t+1`. Since the mean is constant within a block, `mean[t+1] == mean[t]`, so the one-step shift causes no ambiguity.
+
+### Ablation (confirming the mask)
+
+```python
+config.input_feed_mask = [1, 1]   # let model see the true mean on input dim 1
+# → model can copy it directly; near-zero loss immediately confirms mask is the blocker
+```
 
 ---
 

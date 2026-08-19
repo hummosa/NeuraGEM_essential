@@ -55,7 +55,16 @@ def stats(var, var_name=None):
 import matplotlib.pyplot as plt
 import numpy as np
 
-def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_height=1.4, width=3, annotate_phases=None, rasterize=False):
+
+def _active_dims(arr, mask):
+    """Return only the columns of arr where mask[i]==1. Pass-through if mask is None."""
+    if mask is None:
+        return arr
+    idx = [i for i, m in enumerate(mask) if m]
+    return arr[:, idx]
+
+
+def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subplot_height=1.4, width=3, annotate_phases=None, rasterize=False, legends=False):
     # Panel layout, adjust based on panel_order length
     fig, axes = plt.subplot_mosaic(
         [[panel] for panel in panel_order], 
@@ -81,30 +90,44 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
     if logger.predicted_outputs:
         oi = np.concatenate(logger.predicted_outputs, axis=0)
         oi = oi.reshape(-1, oi.shape[-1])
-    ll = np.concatenate(logger.llcids, axis=0)
+    ll = np.concatenate(logger.context_ids, axis=0)
     hh = np.concatenate(logger.hlcids, axis=0)
 
     if x2 is None:
-        x1, x2 = 0, ii.shape[0]
+        x1, x2 = x1, ii.shape[0]
     else:
-        x1, x2 = 0, x2
+        x1, x2 = x1, x2
 
     # Helper functions to plot specific panels
     def plot_behavior(ax):
-        if ii.shape[-1] > 1:
-            im = ax.imshow(ii[x1:x2, ].T, aspect='auto', cmap='viridis', interpolation='none')
+        input_mask  = getattr(config, 'input_feed_mask',  None)
+        output_mask = getattr(config, 'output_loss_mask', None)
+        ii_plot = _active_dims(ii, input_mask)
+        if ii_plot.shape[-1] > 2:
+            im = ax.imshow(ii_plot[x1:x2, ].T, aspect='auto', cmap='viridis', interpolation='none')
             if rasterize:
                 im.set_rasterized(True)
         else:
-            line1 = ax.plot(ii[x1:x2, ], '.', alpha=0.6, markersize=3, linewidth=1, color=obs_color, label='Observed')
+            line1 = ax.plot(ii_plot[x1:x2, ], '.', alpha=0.6, markersize=3, linewidth=1, color=obs_color, label='Observed')
             if logger.predicted_outputs:
-                line2 = ax.plot(oi[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color=preds_color)
+                oi_plot = _active_dims(oi, output_mask)
+                n_out = oi_plot.shape[-1]
+                if n_out > 1:
+                    pred_colors = plt.cm.magma(np.linspace(0, 0.9, n_out))
+                    line2 = []
+                    for d in range(n_out):
+                        line2 += ax.plot(oi_plot[x1:x2, d], '.', alpha=0.7, markersize=3, linewidth=1,
+                                         label=f'Pred dim {d}', )
+                else:
+                    line2 = ax.plot(oi_plot[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color=preds_color)
             if rasterize:
                 for line in line1 + line2:
                     line.set_rasterized(True)
-            legend = ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0))
-            for lh in legend.legend_handles:
-                lh.set_alpha(1.0)
+            if legends:
+                # legend = ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0))
+                legend = ax.legend(loc='upper center',bbox_to_anchor=(.4, 1.16))
+                for lh in legend.legend_handles:
+                    lh.set_alpha(1.0)
         ax.set_ylabel('Observed value')
 
     def plot_latent(ax, force_2d=False, chunk_no=None):
@@ -132,8 +155,9 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
         else:
             prediction_losses = np.concatenate(logger.training_losses, axis=0)
         prediction_losses = prediction_losses.reshape(-1, prediction_losses.shape[-1])
-        line1 = ax.plot(prediction_losses.mean(axis=-1), linewidth=0.5, alpha=0.9, color='grey')
-        line2 = ax.plot(np.convolve(prediction_losses.mean(axis=-1), np.ones(10)/10, mode='full'), linewidth=1, color='black')
+        pl = prediction_losses.mean(axis=-1)[x1:x2]
+        line1 = ax.plot(pl, linewidth=0.5, alpha=0.9, color='grey')
+        line2 = ax.plot(np.convolve(pl, np.ones(10)/10, mode='full'), linewidth=1, color='black')
         if rasterize:
             for line in line1 + line2:
                 line.set_rasterized(True)
@@ -144,18 +168,18 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
         gradients = np.stack(logger.gradients_corrections).squeeze()
         if gradients.shape[1] > 1: # stride is more than one
             gradients = gradients.reshape(-1, gradients.shape[-1])
-        line = ax.plot(gradients, label='Corrections', alpha=0.9, linewidth=1)
+        line = ax.plot(gradients[x1:x2], label='Corrections', alpha=0.9, linewidth=1)
         if rasterize:
             for l in line:
                 l.set_rasterized(True)
-        ax.set_ylabel('$\partial \epsilon/\partial Z$')
+        ax.set_ylabel(r'$\partial \epsilon/\partial Z$')
         ax.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
 
     def limit_y_values(ax, y_values):
         y_max = np.percentile(y_values, 95)
         ax.set_ylim(top=y_max)
 
-    ll = ll.reshape(-1, 1)
+    ll = ll.reshape(-1, ll.shape[-1])
     hh = hh.reshape(-1,1)
     unique_ll = np.unique(ll)
     ll_cmap = plt.get_cmap('Paired', 1+len(np.unique(ll)))
@@ -206,7 +230,7 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
         if rasterize:
             for l in line + smoothed_line:
                 l.set_rasterized(True)
-        ax.set_ylabel('$\|\partial \epsilon/\partial W\|$')
+        ax.set_ylabel(r'$\|\partial \epsilon/\partial W\|$')
         if plot_smoothed:
             ax.legend()
 
@@ -258,38 +282,164 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
             ax.set_xlabel('Time Step')
             ax.set_ylim(0, 1.1)
 
+        elif logger.predicted_outputs and config.dataset_name in ['contextual_switching_task', 'contextual_switching_task_2D']:
+            # abs distance of predictions from the underlying block mean (context_ids store the true mean)
+            abs_dist = np.abs(oi[x1:x2] - ll[x1:x2])
+            smoothed = np.convolve(abs_dist[:, 0], np.ones(20) / 20, mode='same')
+            # ax.plot(abs_dist[:, 0], '.', alpha=0.3, markersize=2, color='grey')
+            ax.plot(smoothed, linewidth=1, color='k', label='|pred − mean|')
+            ax.set_ylabel('|pred − mean|')
+
+        elif logger.predicted_outputs and 'mean_prediction' in config.dataset_name:
+            import plot_style
+            cs = plot_style.Color_scheme()
+            rng_scatter = np.random.default_rng(42)
+
+            # oi[:, 1] = predicted mean; ll[:, 0] = true context mean
+            pred_mean = oi[x1:x2, 1]
+            true_mean = ll[x1:x2, 0]
+            midpoint = np.mean(config.training_data_means)
+
+            # Correct = predicted mean is on the same side of midpoint as the true context
+            correct = (pred_mean - midpoint) * (true_mean - midpoint) > 0
+
+            # Scatter with y-jitter: correct trials cluster near y=1, wrong near y=0
+            jitter = rng_scatter.uniform(-0.08, 0.08, size=len(correct))
+            correct_y = correct.astype(float) + jitter
+            x_ts = np.arange(len(correct))
+
+            wrong_mask = ~correct
+            ax.scatter(x_ts[wrong_mask],  correct_y[wrong_mask],
+                       s=8, color='tab:gray', alpha=0.45, edgecolors='none', zorder=2)
+            ax.scatter(x_ts[~wrong_mask], correct_y[~wrong_mask],
+                       s=8, color=cs.neuragem, alpha=0.45, edgecolors='none', zorder=2)
+
+            # Causal moving average: at time t, averages only correct[t-window+1 : t+1]
+            ma_window = 5
+            kernel = np.ones(ma_window) / ma_window
+            ma = np.convolve(correct.astype(float), kernel, mode='full')[:len(correct)]
+            ax.plot(0.15 + 0.70 * ma, color='k', linewidth=0.75, alpha=0.9, zorder=3,
+                    label=f'MA({ma_window})')
+
+            # Asymptote reference lines: where MA saturates at all-wrong (0.15) and all-correct (0.85)
+            ax.axhline(0.85, color='k', linewidth=0.5, linestyle='--', alpha=0.25, zorder=1)
+            ax.axhline(0.15, color='k', linewidth=0.5, linestyle='--', alpha=0.25, zorder=1)
+            ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.3, zorder=1)
+            ax.set_yticks([0.0, 1.0])
+            ax.set_yticklabels(['Wrong', 'Correct'])
+            ax.set_ylim(-0.22, 1.22)
+            # ax.text(-0.05, 0.5, 'correctness\nmoving avg', rotation=90, va='center', ha='right', fontsize=6, color='k')
+            ax.legend(loc='lower right', fontsize=6)
+
+        elif logger.predicted_outputs and config.dataset_name in ('flanker_pretrain', 'flanker_stage2', 'flanker_stage3', 'flanker_stage4'):
+            # correct at t = predicted direction (last output dim) matches sign of true direction (last input dim)
+            correct = (ii[x1:x2, -1] * oi[x1:x2, -1] > 0).astype(float)
+            ma_window = 20
+            ma = np.convolve(correct, np.ones(ma_window) / ma_window, mode='full')[:len(correct)]
+            ax.plot(ma, color='k', linewidth=0.75, alpha=0.9, label=f'MA({ma_window})')
+            ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.3)
+            ax.set_ylim(0.0, 1.1)
+            ax.set_ylabel('Accuracy')
+            ax.legend(loc='lower right', fontsize=6)
+
         else:
             print('No corrects to plot for this dataset')
 
     def label_phases(ax, subplot_height):
         for i, (phase_name, phase_start) in enumerate(logger.phases):
-            if phase_start + 10 > x2:
+            local_start = phase_start - x1
+            if local_start + 10 > x2 - x1:
                 break
             if i < len(logger.phases) - 1:
-                phase_end = logger.phases[i + 1][1]
+                local_end = logger.phases[i + 1][1] - x1
             else:
-                phase_end = x2
-            phase_midpoint = (phase_start + phase_end) / 2
-            # add newlines to the phase name based on the number of words, to avoid overlap
+                local_end = x2 - x1
+            local_end = min(local_end, x2 - x1)
+            phase_midpoint = (max(local_start, 0) + local_end) / 2
             phase_name = '\n'.join(phase_name.split())
 
-            ax.axvline(phase_start, color='tab:green', linestyle='-', linewidth=3, alpha=0.7)
-            y_factor = 1.05 if subplot_height == 4 else 1.8
+            if 0 <= local_start <= x2 - x1:
+                ax.axvline(local_start, color='tab:green', linestyle='-', linewidth=3, alpha=0.7)
+            y_factor = 1.05 if subplot_height == 4 else 1.2
             ax.text(phase_midpoint, ax.get_ylim()[1] * y_factor, phase_name, rotation=0, verticalalignment='top', color='tab:green',
              fontsize=6, fontweight='bold', ha='center')
     def plot_latent_2d(ax):
         plot_latent(ax, force_2d=True)
+
+    def plot_context_belief(ax):
+        """Reported context belief vs. the true context, for a task with a context output head.
+
+        Needs config.enable_context_output() (rotating targets). oi[t] is the prediction of
+        frame ii[t] and logger.context_ids[t] is that same frame's context, so belief and truth
+        are already index-aligned. Wrong-side judgements are marked so perseveration after a
+        switch and slips within a block are visible directly on the time axis.
+        """
+        sl = getattr(config, 'context_output_slice', None)
+        if sl is None or not logger.predicted_outputs:
+            ax.set_ylabel('Belief')
+            return
+        belief = np.arctan2(oi[x1:x2, sl][:, 1], oi[x1:x2, sl][:, 0])
+        true   = ll.reshape(-1)[x1:x2]
+        rots   = np.deg2rad(np.asarray(config.train_rotations, dtype=float))
+        d      = np.abs(np.arctan2(np.sin(belief[:, None] - rots[None, :]),
+                                   np.cos(belief[:, None] - rots[None, :])))
+        ok = np.argmin(d, axis=1) == np.argmin(
+            np.abs(np.arctan2(np.sin(true[:, None] - rots[None, :]),
+                              np.cos(true[:, None] - rots[None, :]))), axis=1)
+        t = np.arange(len(belief))
+        ax.plot(t, np.degrees(true), '-', color='0.7', linewidth=0.8, zorder=1)
+        ax.scatter(t[ok],  np.degrees(belief[ok]),  s=1.0, color='tab:blue',
+                   alpha=0.6, linewidths=0, zorder=3)
+        ax.scatter(t[~ok], np.degrees(belief[~ok]), s=2.0, color='tab:red',
+                   alpha=0.9, linewidths=0, zorder=4)
+        ax.axhline(float(np.degrees(rots.mean())), color='k', linewidth=0.6,
+                   linestyle=':', alpha=0.4, zorder=2)
+        ax.set_ylabel('Belief (deg)')
     def plot_latent_chunk_1(ax):
         plot_latent(ax, chunk_no=0)
     def plot_latent_chunk_2(ax):
         plot_latent(ax, chunk_no=1)
 
+    def plot_rotating_targets_behavior(ax, color_idx=0):
+        """Compact single-panel view for rotating-targets task.
+
+        Plots observed and predicted x/y positions for one shield color at
+        each timestep it appeared, on the same x-axis as loss/latent panels.
+        Context-switch shading is added automatically by the outer loop.
+        """
+        nc = config.n_colors
+        cue_ts = np.array([
+            t for t in range(x1, min(x2, len(ii) - 1))
+            if ii[t, color_idx] > 0.5 and ii[t, :nc].sum() > 0.5
+        ])
+        if len(cue_ts) == 0:
+            ax.set_ylabel(f'C{color_idx} pos')
+            return
+
+        rel_ts = cue_ts - x1          # relative to window start
+        obs_x  = ii[cue_ts + 1, -2]   # outcome frame carries (x, y)
+        obs_y  = ii[cue_ts + 1, -1]
+        ax.plot(rel_ts, obs_x, '.', color='tab:grey',   alpha=0.5, ms=2, label='obs x')
+        ax.plot(rel_ts, obs_y, '.', color='tab:orange', alpha=0.5, ms=2, label='obs y')
+
+        if logger.predicted_outputs:
+            pred_x = oi[cue_ts + 1, -2]
+            pred_y = oi[cue_ts + 1, -1]
+            ax.plot(rel_ts, pred_x, '.', color='tab:blue', alpha=0.7, ms=2, label='pred x')
+            ax.plot(rel_ts, pred_y, '.', color='tab:red',  alpha=0.7, ms=2, label='pred y')
+
+        ax.set_ylabel(f'C{color_idx} pos')
+        ax.legend(fontsize=5, ncol=2, loc='upper right', markerscale=2,
+                  handletextpad=0.2, borderpad=0.3, labelspacing=0.2)
+
     # Dictionary mapping panel names to functions
     panel_functions = {
         'behavior': plot_behavior,
+        'rotating_targets_behavior': plot_rotating_targets_behavior,
         'latent': plot_latent,
         'latent_effective_lr': plot_effective_lr,
         'latent_2d': plot_latent_2d,
+        'context_belief': plot_context_belief,
         'latent_2D': plot_latent_2d,
         'latent2D': plot_latent_2d,
         'latent_chunk_1': plot_latent_chunk_1,
@@ -308,12 +458,13 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
 
     for panel in panel_order:
         ax = axes[panel]
-        ax.set_xlim(x1, x2)
+        ax.set_xlim(0, x2 - x1)
         if config.dataset_name == 'seq_learn':
             # plot_switches(ax, states, both_starts)
-            plot_switches_from_logger(ax, logger, config, use_ll=False)
+            plot_switches_from_logger(ax, logger, config, use_ll=False, x1=x1, x2=x2)
         elif panel not in  ['task_illustration_and_hierarchies', 'latent', 'latent_chunk_1', 'latent_chunk_2']:
-            plot_switches_from_logger(ax, logger, config)
+            use_ll = True if config.dataset_name in ['flanker_stage2_v1', 'mean_prediction','mean_prediction_gradual' ] else False
+            plot_switches_from_logger(ax, logger, config, use_ll=use_ll, x1=x1, x2=x2)
         
         # annotate_training_phases(ax, config, logger=logger, add_text=True if ax==axes['A'] else False)
         # remove xtick labels except for bottom panel
@@ -327,6 +478,115 @@ def plot_logger_panels(logger, config, panel_order, x2=None, dpi=100, subplot_he
 
     return fig
 
+
+def extract_block_corrects(logger, last_ts_in_a_block=15,
+                           phases_to_include='Learning and inference'):
+    """Per-block mean |pred − ground-truth mean| using only the tail of each block.
+
+    Returns (block_means, block_sems) as np.ndarrays of shape (n_blocks,),
+    or (None, None) if no predicted_outputs are logged.
+    """
+    if not logger.predicted_outputs:
+        return None, None
+
+    ll_full = np.concatenate(logger.context_ids, axis=0).reshape(-1, 1)
+    oi_full = np.concatenate(logger.predicted_outputs, axis=0)
+    oi_full = oi_full.reshape(-1, oi_full.shape[-1])
+
+    if phases_to_include is None:
+        ll, oi = ll_full, oi_full
+    else:
+        include = [phases_to_include] if isinstance(phases_to_include, str) else phases_to_include
+        phase_windows = []
+        for i, (name, ts) in enumerate(logger.phases):
+            end = logger.phases[i + 1][1] if i + 1 < len(logger.phases) else len(ll_full)
+            if name in include:
+                phase_windows.append((ts, end))
+        if phase_windows:
+            ll = np.concatenate([ll_full[s:e] for s, e in phase_windows], axis=0)
+            oi = np.concatenate([oi_full[s:e] for s, e in phase_windows], axis=0)
+        else:
+            ll, oi = ll_full, oi_full
+
+    abs_dist = np.abs(oi[:, 0] - ll[:, 0])
+    switches = [ts for ts in range(1, len(ll)) if ll[ts] != ll[ts - 1]]
+    block_boundaries = list(zip([0] + switches, switches + [len(ll)]))
+
+    block_means, block_sems = [], []
+    for start, end in block_boundaries:
+        tail_start = max(start, end - last_ts_in_a_block)
+        tail = abs_dist[tail_start:end]
+        if len(tail) > 0:
+            block_means.append(tail.mean())
+            block_sems.append(tail.std() / np.sqrt(len(tail)))
+    return np.array(block_means), np.array(block_sems)
+
+
+def plot_logger_analysis(logger, config, subplot_width=1.5, subplot_height=1.5, dpi=100,
+                         last_ts_in_a_block=15, aggregate_blocks=None,
+                         phases_to_include='Learning and inference'):
+    """
+    2×2 summary analysis of a training run (not time-series).
+
+    phases_to_include : str or list of str, phase name(s) from logger.phases to include.
+                        Defaults to 'Learning and inference'. Pass None to use all data.
+    aggregate_blocks  : int, number of blocks to average into one data point.
+                        E.g. no_of_blocks // 3 gives early/mid/late.
+    """
+    fig, axes = plt.subplot_mosaic(
+        [['A', 'B'], ['C', 'D']],
+        sharex=False, sharey=False,
+        constrained_layout=True,
+        figsize=(subplot_width * 2, subplot_height * 2),
+        dpi=dpi,
+    )
+
+    for idx, (label, ax) in enumerate(axes.items(), start=65):
+        trans = mtransforms.ScaledTranslation(-27/72, 0/72, fig.dpi_scale_trans)
+        ax.text(-0.02, 1.0, chr(idx), transform=ax.transAxes + trans,
+                fontsize=12, va='bottom', fontfamily='sans-serif')
+
+    # ── Panel A: |pred − mean| per block (tail only), optionally aggregated ──
+    def plot_block_corrects(ax):
+        block_means, block_sems = extract_block_corrects(
+            logger, last_ts_in_a_block=last_ts_in_a_block,
+            phases_to_include=phases_to_include,
+        )
+        if block_means is None:
+            ax.set_axis_off()
+            return
+
+        n_agg = int(aggregate_blocks) if aggregate_blocks is not None else 1
+        if n_agg > 1:
+            n_groups = len(block_means) // n_agg
+            x_vals, grp_means, grp_sems = [], [], []
+            for g in range(n_groups):
+                grp = block_means[g * n_agg:(g + 1) * n_agg]
+                x_vals.append(g + 0.5)
+                grp_means.append(grp.mean())
+                grp_sems.append(grp.std() / np.sqrt(len(grp)))
+            ax.errorbar(x_vals, grp_means, yerr=grp_sems,
+                        fmt='-o', capsize=3, linewidth=1, markersize=4)
+            ax.set_xlabel(f'Block group (×{n_agg})')
+            ax.set_xticks(x_vals)
+            ax.set_xticklabels([f'{g*n_agg}–{(g+1)*n_agg}' for g in range(n_groups)], fontsize=6, rotation=30)
+        else:
+            ax.errorbar(range(len(block_means)), block_means, yerr=block_sems,
+                        fmt='-o', capsize=2, markersize=3, linewidth=1, alpha=0.8)
+            ax.set_xlabel('Block')
+
+        phase_label = phases_to_include if isinstance(phases_to_include, str) else ', '.join(phases_to_include or [])
+        ax.set_title(f'|pred − mean| tail={last_ts_in_a_block}\n{phase_label}', fontsize=7)
+        ax.set_ylabel('|pred − mean|')
+
+    plot_block_corrects(axes['A'])
+
+    for key in ['B', 'C', 'D']:
+        axes[key].set_axis_off()
+
+    return fig
+
+
 def plot_behavior_panel(ax, logger, config, x2=None):
     ii = np.concatenate(logger.inputs, axis=0)
     ii = ii.reshape(-1, ii.shape[-1])
@@ -335,14 +595,19 @@ def plot_behavior_panel(ax, logger, config, x2=None):
     else:
         x1, x2 = 0, x2
 
-    if ii.shape[-1] > 1:
-        ax.imshow(ii[x1:x2, ].T, aspect='auto', cmap='viridis', interpolation='none')
+    input_mask  = getattr(config, 'input_feed_mask',  None)
+    output_mask = getattr(config, 'output_loss_mask', None)
+    ii_plot = _active_dims(ii, input_mask)
+
+    if ii_plot.shape[-1] > 1:
+        ax.imshow(ii_plot[x1:x2, ].T, aspect='auto', cmap='viridis', interpolation='none')
     else:
-        ax.plot(ii[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, color='tab:grey', label='Observed')
+        ax.plot(ii_plot[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, color='tab:grey', label='Observed')
         if logger.predicted_outputs:
             oi = np.concatenate(logger.predicted_outputs, axis=0)
             oi = oi.reshape(-1, oi.shape[-1])
-            ax.plot(oi[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color='tab:red')
+            oi_plot = _active_dims(oi, output_mask)
+            ax.plot(oi_plot[x1:x2, ], '.', alpha=0.7, markersize=3, linewidth=1, label='Predicted', color='tab:red')
             ax.legend(loc='lower center')
     ax.set_ylabel('Data dim')
     ax.set_xlabel('Time steps')
@@ -374,7 +639,7 @@ def plot_task_and_hierarchies_illustration(logger,  config, x2=None, show_output
     if logger.predicted_outputs != []:
         oi = np.concatenate(logger.predicted_outputs, axis=0)
         oi = oi.reshape(-1, oi.shape[-1])
-    ll = np.concatenate(logger.llcids, axis=0)
+    ll = np.concatenate(logger.context_ids, axis=0)
     ll = ll.reshape(-1, 1)
     hh = np.concatenate(logger.hlcids, axis=0)
     hh = hh.reshape(-1,1)
@@ -541,7 +806,7 @@ def plot_seq_learn_behavior_and_overall_corrects(logger, config, include_gradien
         if config.stride > 1:
             dw_norm = dw_norm.reshape(-1, dw_norm.shape[-1])
         ax.plot(dw_norm, label='Grad Norms', alpha=0.9)
-        ax.set_ylabel('$\delta$ Weight', )
+        ax.set_ylabel(r'$\delta$ Weight')
         
         ax = axes['D']
         gcorr = np.stack(logger.gradients_corrections).squeeze()
@@ -628,34 +893,42 @@ def plot_switches(ax, states, both_starts):
         # if isw % 2 == 0 and len(switches) > isw:
         #     ax.axvspan(switch, switches[isw+1], color='b', alpha=0.1)
 
-def plot_switches_from_logger(ax, logger, config, use_ll=True, alpha =0.1, alpha_interleaved=0.03):
+def plot_switches_from_logger(ax, logger, config, use_ll=True, alpha =0.1, alpha_interleaved=0.03, x1=0, x2=None):
     import plot_style
     cs = plot_style.Color_scheme()
-    ll = np.concatenate(logger.llcids, axis=0)
+    ll = np.concatenate(logger.context_ids, axis=0)
     ll = ll.reshape(-1, ll.shape[-1])
     if not use_ll:
         hh = np.concatenate(logger.hlcids, axis=0)
         hh = hh.reshape(-1, hh.shape[-1])
         ll = hh # use high level instead
 
+    if x2 is None:
+        x2 = len(ll)
+
     unique_ll = np.unique(ll)
-    # ll_cmap = plt.get_cmap('Pastel', len(unique_ll))
     ll_cmap = plt.get_cmap('Paired', 1+len(np.unique(ll)))
 
     # check at which time steps the task ll changes
-    switches = [ts for ts in range(1, len(ll)) if ll[ts] != ll[ts-1]]
+    if ll.shape[-1] > 1:
+        switches = [ts for ts in range(1, len(ll)) if not np.array_equal(ll[ts], ll[ts-1])]
+    else:   
+        switches = [ts for ts in range(1, len(ll)) if ll[ts] != ll[ts-1]]
     switches = [0] + switches + [len(ll)]
     for isw, switch in enumerate(switches):
         c = cs.contextA if isw%2==0 else cs.contextB
 
-        # cmap = plt.get_cmap('Paired')    
-        # c = cmap(1) if isw % 2 == 0 else cmap(5)
-         
         if isw < len(switches) -1 :
-            # c = ll_cmap(ll[switch][0])
-            # print(switch, switches[isw+1])
-            alpha = alpha if (switches[isw+1] - switch) > 7 else alpha_interleaved # make it much lighter for shuffled or interleaved
-            ax.axvspan(switch, switches[isw+1], color=c, alpha=alpha)
+            span_start = switch
+            span_end = switches[isw+1]
+            # skip spans entirely outside the visible window
+            if span_end <= x1 or span_start >= x2:
+                continue
+            # clip to [x1, x2] and convert to relative (plot) coordinates
+            rel_start = max(span_start, x1) - x1
+            rel_end = min(span_end, x2) - x1
+            span_alpha = alpha if (span_end - span_start) > 7 else alpha_interleaved
+            ax.axvspan(rel_start, rel_end, color=c, alpha=span_alpha)
 
 def plot_corrects_by_transition(logger, get_corrects_and_trial_starts):
     
@@ -810,7 +1083,7 @@ def plot_corrects_seq_learn(logger, config):
     ax.plot(corrects + np.random.normal(0, 0.1, len(corrects)), 'o', alpha=0.5, markersize=1)
     #plot again with a moving average
 
-    ll = np.concatenate(logger.llcids, axis=0)
+    ll = np.concatenate(logger.context_ids, axis=0)
     ll = ll.reshape(-1, 1)
     hh = np.concatenate(logger.hlcids, axis=0)
     hh = hh.reshape(-1,1)
@@ -925,13 +1198,18 @@ class Logger:
     - latent_updating_grad_model_outputs: List - Model output gradients during LU
     
     Task Context IDs:
-    - llcids: List[(batch, stride, 1)] - Low-level context IDs (block-level latent indicators)
+    - context_ids: List[(batch, stride, 1)] - Low-level context IDs (block-level latent indicators)
     - hlcids: List[(batch, stride, 1)] - High-level context IDs (hierarchical latent indicators)
     
     Model Internal States:
-    - hidden_states: List[(batch, seq_len, hidden_size)] - RNN/LSTM hidden states (h, c)
+    - hidden_states: List[(batch, hidden_size)] - RNN/LSTM hidden state h
              Only logged if config.log_hidden_states=True
              For LSTM: tuple of (h, c), Logger extracts h via hidden_states[0]
+             model.forward returns only the FINAL (h, c) of the sequence, and _log_batch
+             logs it unsliced — so this is one state per batch, not one per timestep.
+             That final h is the state whose readout produced the logged prediction for
+             the same batch, so it aligns 1:1 with inputs/predicted_outputs/latent_values
+             when stride=1 and log_initial_burn_in_timesteps=False.
     - input_attention_weights: List - Attention weights if using input attention
     
     Training Phases:
@@ -988,7 +1266,7 @@ class Logger:
         self.predicted_outputs = []
         self.prediction_losses = []
         self.inputs = []
-        self.llcids = []
+        self.context_ids = []
         self.hlcids = []
         self.hidden_states = []
         self.gradients_max_entropy = []

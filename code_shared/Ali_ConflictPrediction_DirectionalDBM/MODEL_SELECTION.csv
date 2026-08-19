@@ -1,0 +1,5 @@
+analysis,outcome,selected_model,selection_statistic,value,interpretation
+Conflict prediction,RT,Composite conflict-history RL,Summed delta BIC (congruency-only minus composite),235.576651133372,Positive value favors composite
+Conflict prediction,Error,Congruency-only RL,Summed delta BIC (congruency-only minus composite),-119.507297960541,Negative value favors congruency-only
+Target-sequence DBM,RT,Direction-specific DBM,Summed delta BIC (directional minus symmetric),-2264.31322502933,Negative value favors directional
+Target-sequence DBM,Error,Direction-specific DBM,Summed delta BIC (directional minus symmetric),-4246.91289603185,Negative value favors directional

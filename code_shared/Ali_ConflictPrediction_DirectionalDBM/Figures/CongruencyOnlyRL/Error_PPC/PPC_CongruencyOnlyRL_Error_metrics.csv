@@ -1,0 +1,3 @@
+CurrentCongruence,Correlation,RMSE,PredictiveCoverage,NCells
+Congruent,0.0792759925700617,0.502759459882807,25,8
+Incongruent,0.978394893926328,0.684352958699859,12.5,8

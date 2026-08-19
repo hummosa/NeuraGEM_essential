@@ -121,9 +121,9 @@ Looks up `config.dataset_name` in `DATASET_REGISTRY`, instantiates train and tes
 
 All loaders yield 3-tuples:
 ```
-(data, llcids, hlcids)
+(data, context_ids, hlcids)
 data:   (batch, seq_len, input_size)
-llcids: (batch, seq_len, 1)
+context_ids: (batch, seq_len, 1)
 hlcids: (batch, seq_len, 1)
 ```
 
@@ -136,9 +136,14 @@ DATASET_REGISTRY = {
     'contextual_switching_task':    TaskDataset,
     'contextual_switching_task_2D': TaskDataset2D,
     'seq_learn':                    seq_learnDataset,
+    'rotating_targets':             RotatingTargetsDataset,
+    'rotating_targets_test':        RotatingTargetsTestDataset,
+    'mean_prediction':              MeanPredictionDataset,
     # add your dataset here
 }
 ```
+
+When a config defines `test_dataset_name`, `create_datasets_and_loaders` will instantiate the test set from that key instead of `dataset_name`. This is how `RotatingTargetsConfig` separates train rotations from test rotations.
 
 ---
 
@@ -195,6 +200,34 @@ Used by `run_generalized_tests()` in `train_and_infer_functions.py`.
 
 ---
 
+## `MeanPredictionDataset` — Mean Prediction Task
+
+**`dataset_name = 'mean_prediction'`**
+
+Same block-switching structure as `TaskDataset`, but **each timestep element is 2D: `[observation, ground_truth_mean]`**. The ground-truth mean is embedded as a second input dimension so the standard pipeline can use it as the loss target without any new plumbing.
+
+This dataset is designed to work with `MeanPredictionConfig`, which sets two masks:
+- `input_feed_mask = [1, 0]` — zeros out dim 1 (the mean) before the model sees the input, so the model cannot cheat by reading the answer off the input.
+- `output_loss_mask = [0, 1]` — computes loss only on dim 1 of the model output, training the network to produce the inferred mean in that dimension.
+
+The model sees `[obs, 0.0]` as input at each step and learns to output `[?, mean]`. Since the mean is constant within a block, predicting `mean[t+1]` is equivalent to predicting `mean[t]`, so the `predict_first_frame=False` shift causes no ambiguity.
+
+### Key config fields
+
+| Field | Value | Description |
+|---|---|---|
+| `input_size` | 2 | `[observation, mean]` |
+| `output_size` | 2 | model must output 2D |
+| `input_feed_mask` | `[1, 0]` | hide dim 1 from model input |
+| `output_loss_mask` | `[0, 1]` | train only on mean-prediction dim |
+| `training_data_means` | `[0.2, 0.8]` | inherited from contextual switching |
+
+### Ablation (verifying the mask works)
+
+Set `config.input_feed_mask = [1, 1]` and the model can directly copy the true mean from dim 1 of the input. If the model then achieves near-zero loss immediately, it confirms the mask is the only thing preventing cheating.
+
+---
+
 ## `seq_learnDataset` — Sequence Learning Task
 
 **`dataset_name = 'seq_learn'`**
@@ -243,10 +276,10 @@ Controlled by `config.shuffle_or_interleave` (`'interleave'` alternates tasks, `
 
 `predictive_learning()` iterates the DataLoader:
 ```python
-for inputs, llcids, hlcids in dataloader:
+for inputs, context_ids, hlcids in dataloader:
     # inputs:  (B=1, seq_len, input_size)
-    # llcids:  (B=1, seq_len, 1)  — low-level context IDs; passed to model as taskID in oracle mode
+    # context_ids:  (B=1, seq_len, 1)  — low-level context IDs; passed to model as taskID in oracle mode
     # hlcids:  (B=1, seq_len, 1)  — high-level context IDs; logged for analysis
 ```
 
-When `config.what_latent_to_use = 'taskID'`, `llcids` is used directly as the oracle context label, bypassing Z optimization entirely. This is the oracle baseline.
+When `config.what_latent_to_use = 'context_ids'`, `context_ids` is used directly as the oracle context label, bypassing Z optimization entirely. This is the oracle baseline.

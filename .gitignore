@@ -8,6 +8,14 @@ exports/
 .vscode/
 __pycache__/
 *.log
+.claude/
+slurm/
+exports/
+./slurm/
+./exports/
+slurm
+exports
+
 
 # C extensions
 *.so

@@ -38,8 +38,8 @@ python run_example.py
 In `run_example.py` you can:
 
 - Load either `ContextualSwitchingTaskConfig` (contextual switching task) or `seq_learnConfig` (sequence learning task).
-- Run NeuraGEM (default) or an RNN baseline by setting `config.LU_lr = 0`.
-- Run a long-horizon RNN baseline by setting `config.LU_lr = 0` and `config.seq_len = 50`.
+- Run NeuraGEM (default) or an RNN baseline by setting `config.Z_lr = 0`.
+- Run a long-horizon RNN baseline by setting `config.Z_lr = 0` and `config.seq_len = 50`.
 
 
 ## Disclaimer
