@@ -253,6 +253,39 @@ cell_state   = torch.zeros((B, hidden_size))   # LSTM only
 
 The initial hidden state is set to `10/hidden_size` (not zero). This non-zero initialization was chosen for stability; it ensures the multiplicative gates do not immediately collapse the hidden state on the first timestep.
 
+### Carrying the hidden state across windows (`stateful_hidden`)
+
+By default `forward()` re-initializes `h`/`c` on **every** call. One window is one batch, so
+with `seq_len == stride` the state resets at every window boundary and `Z` is the only
+quantity that carries information across them. Every existing flanker result rests on that.
+
+Setting `config.stateful_hidden = True` makes `forward()` start from the previous window's
+end state instead. Three rules govern it:
+
+| Rule | Why |
+|---|---|
+| The carry is stored **detached** (`set_hidden_carry`) | Values cross the window boundary, gradients do not — truncated BPTT, the direct analogue of `detach_Z()` for Z |
+| `forward()` **reads** the carry but never advances it | WU and LU each forward over the *same* window. If `forward` advanced the carry, the LU pass would start where the WU pass ended and the window would be consumed twice |
+| Only `predictive_learning()` commits, once per window, **after** WU *and* LU | Guarantees every re-forward of a window starts from the same `h0` |
+
+```python
+model.reset_hidden_carry()          # start of predictive_learning(); clears at phase boundaries
+...                                 # WU forward, then LU forward(s) — all from the same h0
+model.set_hidden_carry(hidden_states)   # commit the WU end state, detached
+```
+
+`predictive_learning()` raises `ValueError` unless `stride == seq_len`: with overlapping
+windows the "last timestep to carry from" is ambiguous and windows would re-consume
+timesteps through the carried state. `__deepcopy__` does not copy the carry, so a copied
+model always begins a fresh stream.
+
+**The stream is not perfectly gapless.** Because `_prepare_batch_inputs` shifts inputs, a
+`predict_first_frame=True` config (flanker) feeds the model `[zero_frame, x_0 … x_{n-2}]` —
+the final frame `x_{n-1}` of each window is a target only, never an input. So the carry
+joins window *k*'s state-after-`x_{n-2}` to window *k+1*'s zero frame. For flanker this is
+defensible (the zero frame reads as an inter-trial marker), but "reuse the most recent
+hidden state" implies slightly more continuity than actually happens.
+
 ---
 
 ## Deep Copy Support

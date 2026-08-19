@@ -44,6 +44,7 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
 
     model.init_Z(batch_size, seq_len)      # Z ← zeros(B, seq_len, Z_dim)
     model.init_hidden(batch_size)           # h ← 10/hidden_size, c ← 0
+    model.reset_hidden_carry()              # stateful_hidden only; clears at phase boundaries
 
     for epoch in range(epochs):
         for inputs, context_ids, hlcids in dataloader:
@@ -72,7 +73,11 @@ def predictive_learning(logger, config, dataloader, model, criterion, epochs):
                 before_loss = model.update_Z(inputs, criterion, logger, context_ids,
                                              no_of_steps=no_of_steps_in_latent_space)
 
-            # 3. LOG
+            # 3. COMMIT HIDDEN CARRY  (only if config.stateful_hidden)
+            # After WU *and* LU, so both forwards started from the same h0.
+            model.set_hidden_carry(hidden_states)   # detached → truncated BPTT
+
+            # 4. LOG
             logger.log_input(inputs)
             logger.log_predicted_output(outputs)
             logger.log_latent_value(model.Z)
@@ -190,6 +195,23 @@ for chunk_idx, chunk_slice in enumerate(chunk_slices):
 ```
 
 This allows different latent chunks to learn at different speeds or have different regularization strengths.
+
+---
+
+## Hidden-State Carryover (`stateful_hidden`)
+
+Off by default. When `False`, `forward()` re-initializes `h`/`c` on every call, so `Z` is the
+only quantity carrying information across windows.
+
+When `True`, `forward()` starts from the previous window's detached end state. The training
+loop owns the carry: it resets at the top of `predictive_learning()` (hence at every phase
+boundary and every `train_model()` call) and commits once per window **after both WU and
+LU**, so each re-forward of a window starts from the same `h0`. Requires `stride == seq_len`
+— `predictive_learning()` raises `ValueError` otherwise.
+
+This is the same mechanism as `pass_previous_latent` below, applied to the recurrent state
+rather than to Z. Enabling it means cross-window effects are no longer necessarily
+Z-mediated. See [model_rnn_with_latent.md](model_rnn_with_latent.md#carrying-the-hidden-state-across-windows-stateful_hidden).
 
 ---
 

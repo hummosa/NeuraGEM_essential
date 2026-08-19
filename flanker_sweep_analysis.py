@@ -22,120 +22,18 @@ import plot_style
 plot_style.set_plot_style()
 from plot_style import FigSize
 
-from flanker_analyses import extract_trials, lagged_factors
+from flanker_analyses import extract_trials
+from flanker_metrics import session_effects
 from flanker_sweep import load_condition, result_path
 from flanker_sweep_config import P_CONGRUENT_LEVELS, RT_THRESHOLD, SEEDS
 
 import os
 
 
-# ── Per-session effect computation ────────────────────────────────────────────
-
-def _mean(vals, mask):
-    """NaN-safe mean over a boolean mask; NaN if the cell is empty."""
-    v = vals[mask]
-    v = v[~np.isnan(v)]
-    return v.mean() if len(v) else np.nan
-
-
-def session_effects(trials):
-    """Compute every scalar effect of interest for one session. Returns dict."""
-    f = lagged_factors(trials, n_back=2)
-
-    acc = trials['correct_at_decision'].astype(float)
-    rt  = trials['rt_interp']
-    foc_in, dfoc = trials['focus_in'], trials['delta_focus']
-
-    cong,   incong  = f['cong'] == 1,      f['cong'] == 0
-    near,   far     = f['near'] == 1,      f['near'] == 0
-    valid           = f['valid']
-    pc, perr        = f['correct_1'] == 1, f['correct_1'] == 0
-    p2c             = f['correct_2'] == 1
-    p_cong, p_incong   = f['cong_1'] == 1, f['cong_1'] == 0
-    p2_cong, p2_incong = f['cong_2'] == 1, f['cong_2'] == 0
-    p_near, p_far   = f['near_1'] == 1,    f['near_1'] == 0
-    rep, sw         = f['resp_rep'] == 1,  f['resp_rep'] == 0
-    corr_dec        = trials['correct_at_decision']
-
-    e = {}
-    e['censored_frac'] = float(np.isnan(rt).mean())
-    e['acc_overall']   = acc.mean()
-
-    # Control state actually in force during each trial: the Z focus carried in from
-    # the previous trial. This is the level the list composition moves, and it gates
-    # how much the flankers get into the decision at all.
-    e['focus_all']    = float(np.nanmean(foc_in))
-    e['focus_cong']   = _mean(foc_in, cong)
-    e['focus_incong'] = _mean(foc_in, incong)
-
-    # 1. Congruency x distance
-    e['cong_effect_acc'] = _mean(acc, cong) - _mean(acc, incong)
-    e['cong_effect_rt']  = _mean(rt, incong) - _mean(rt, cong)
-    for dn, dm in [('near', near), ('far', far)]:
-        e[f'cong_effect_acc_{dn}'] = _mean(acc, cong & dm) - _mean(acc, incong & dm)
-        e[f'cong_effect_rt_{dn}']  = _mean(rt, incong & dm) - _mean(rt, cong & dm)
-    e['interaction_acc'] = e['cong_effect_acc_near'] - e['cong_effect_acc_far']
-    e['interaction_rt']  = e['cong_effect_rt_near']  - e['cong_effect_rt_far']
-
-    # Cell means, so the four conditions can be read directly and not only as contrasts.
-    for cn, cm in [('cong', cong), ('incong', incong)]:
-        for dn, dm in [('near', near), ('far', far)]:
-            e[f'acc_{dn}_{cn}'] = _mean(acc, cm & dm)
-            e[f'rt_{dn}_{cn}']  = _mean(rt,  cm & dm)
-
-    # Simple effects of distance *within* each congruency. This is the prediction that
-    # actually has a direction: near flankers should help when they agree with the
-    # target (+ on accuracy) and hurt when they conflict (- on accuracy). The
-    # interaction is the sum of the two and hides which half, if either, is present.
-    e['dist_effect_acc_cong']   = e['acc_near_cong']   - e['acc_far_cong']
-    e['dist_effect_acc_incong'] = e['acc_near_incong'] - e['acc_far_incong']
-    e['dist_effect_rt_cong']    = e['rt_near_cong']    - e['rt_far_cong']
-    e['dist_effect_rt_incong']  = e['rt_near_incong']  - e['rt_far_incong']
-
-    # 2. Sequential congruency, post-correct (both prior trials correct)
-    ok = valid & pc & p2c
-    for lbl, c2m, c1m in [('CC', p2_cong, p_cong), ('CI', p2_cong, p_incong),
-                          ('IC', p2_incong, p_cong), ('II', p2_incong, p_incong)]:
-        e[f'acc_{lbl}_to_I'] = _mean(acc, ok & c2m & c1m & incong)
-        e[f'rt_{lbl}_to_I']  = _mean(rt,  ok & c2m & c1m & incong)
-        e[f'acc_{lbl}_to_C'] = _mean(acc, ok & c2m & c1m & cong)
-        e[f'rt_{lbl}_to_C']  = _mean(rt,  ok & c2m & c1m & cong)
-
-    # Which lag drives the history effect? Both contrasts on current-incongruent trials.
-    e['lag1_contrast_acc'] = _mean(acc, ok & p_incong & incong)  - _mean(acc, ok & p_cong & incong)
-    e['lag2_contrast_acc'] = _mean(acc, ok & p2_incong & incong) - _mean(acc, ok & p2_cong & incong)
-    e['lag1_contrast_rt']  = _mean(rt,  ok & p_cong & incong)    - _mean(rt,  ok & p_incong & incong)
-    e['lag2_contrast_rt']  = _mean(rt,  ok & p2_cong & incong)   - _mean(rt,  ok & p2_incong & incong)
-
-    # 3. Gratton interaction (lag 1), with and without the response-repetition control
-    for rname, rmask in [('all', np.ones_like(rep)), ('switch', sw), ('repeat', rep)]:
-        base = valid & pc & rmask
-        ce_rt_c = _mean(rt, base & p_cong & incong)   - _mean(rt, base & p_cong & cong)
-        ce_rt_i = _mean(rt, base & p_incong & incong) - _mean(rt, base & p_incong & cong)
-        ce_ac_c = _mean(acc, base & p_cong & cong)    - _mean(acc, base & p_cong & incong)
-        ce_ac_i = _mean(acc, base & p_incong & cong)  - _mean(acc, base & p_incong & incong)
-        e[f'sce_rt_{rname}']  = ce_rt_c - ce_rt_i
-        e[f'sce_acc_{rname}'] = ce_ac_c - ce_ac_i
-
-    # 4. Post-error, incongruent trial A only
-    for bn, bm in [('I', incong), ('C', cong)]:
-        a_e, a_c = valid & p_incong & perr & bm, valid & p_incong & pc & bm
-        e[f'pia_B{bn}'] = _mean(acc, a_e) - _mean(acc, a_c)
-        e[f'pes_B{bn}'] = _mean(rt,  a_e) - _mean(rt,  a_c)
-        e[f'focus_in_diff_B{bn}'] = _mean(foc_in, a_e) - _mean(foc_in, a_c)
-    ce_err  = _mean(rt, valid & p_incong & perr & incong) - _mean(rt, valid & p_incong & perr & cong)
-    ce_corr = _mean(rt, valid & p_incong & pc   & incong) - _mean(rt, valid & p_incong & pc   & cong)
-    e['peri'] = ce_corr - ce_err
-
-    # 5. What drives the update — measured on the trial itself, not the one after
-    e['dfocus_near_err']  = _mean(dfoc, near & incong & ~corr_dec)
-    e['dfocus_far_err']   = _mean(dfoc, far  & incong & ~corr_dec)
-    e['dfocus_near_corr'] = _mean(dfoc, near & incong &  corr_dec)
-    e['dfocus_far_corr']  = _mean(dfoc, far  & incong &  corr_dec)
-    e['dfocus_near_minus_far_err'] = e['dfocus_near_err'] - e['dfocus_far_err']
-    e['focus_in_after_near_err'] = _mean(foc_in, valid & p_incong & p_near & perr)
-    e['focus_in_after_far_err']  = _mean(foc_in, valid & p_incong & p_far  & perr)
-    return e
+# ── Per-session effects ───────────────────────────────────────────────────────
+# The measures themselves live in flanker_metrics.py, grouped by question (behaviour,
+# RT by outcome, history, post-error, control). This file is about what to do with them
+# across seeds: t-tests, paired contrasts, and the printed tables.
 
 
 def collect_by_seed(p_congruent, rt_threshold=RT_THRESHOLD):
@@ -214,7 +112,7 @@ def main(reference_p=0.8):
         return
 
     report(eff, [('acc_overall', 'overall accuracy'),
-                 ('censored_frac', 'censored RT fraction'),
+                 ('extrapolated_frac', 'extrapolated RT fraction'),
                  ('focus_all', 'Z focus (control state)')],
            'Session quality')
 
@@ -302,7 +200,7 @@ def main(reference_p=0.8):
         rt_m.append(sr['mean']);  rt_s.append(sr['sem'])
         print(f'  p_congruent={p}:  accuracy effect {sa["mean"]:.4f} ± {sa["sem"]:.4f}   '
               f'RT effect {sr["mean"]:.4f} ± {sr["sem"]:.4f}   (n={sa["n"]} seeds)  '
-              f'censored {summarize(ep["censored_frac"])["mean"]:.3f}')
+              f'extrapolated {summarize(ep["extrapolated_frac"])["mean"]:.3f}')
 
     # The same pretrained model is tested at every level, so this is a within-subject
     # manipulation and the paired contrast is the statistic that matters.

@@ -85,9 +85,15 @@ def _lag(arr, k):
 
 # ── Reaction time ─────────────────────────────────────────────────────────────
 
-def _interpolated_rt(output_traj, threshold, search_from):
+#: Ceiling, in timesteps, for a trial whose decision variable never reaches threshold
+#: inside the observation window. Its RT is projected forward (see _interpolated_rt) and
+#: clipped here, so no trial is dropped from an RT analysis.
+RT_CAP = 10.0
+
+
+def _interpolated_rt(output_traj, threshold, search_from, rt_cap=RT_CAP):
     """
-    Continuous threshold-crossing time.
+    Continuous threshold-crossing time, for every trial.
 
     The decision variable is sampled once per timestep, so an integer RT can take
     only a handful of values. Linearly interpolate the crossing between the two
@@ -95,19 +101,34 @@ def _interpolated_rt(output_traj, threshold, search_from):
 
         rt = (t-1) + (threshold - |o(t-1)|) / (|o(t)| - |o(t-1)|)
 
+    Trials whose decision variable never reaches threshold inside the window are
+    **extrapolated, not dropped**. Discarding them censors conditions unequally —
+    incongruent trials fail to cross roughly three times as often as congruent ones —
+    which biases every observed incongruent RT downward and shrinks the very effects
+    being measured. Instead, the response window is fitted with a least-squares line
+    and projected forward to the threshold:
+
+        rt = (threshold - intercept) / slope,   clipped to [ad - 1, rt_cap]
+
+    A flat or falling trace (slope <= 0) would never cross, so it takes the cap. The
+    cap keeps a near-flat trace from producing an arbitrarily large RT that would
+    dominate a mean. `decided` still marks which trials crossed inside the window, so
+    any analysis can report the extrapolated fraction or exclude them deliberately.
+
     Parameters
     ----------
     output_traj : (n_trials, ad) decision variable
     threshold   : |output| level counted as a decision
     search_from : first timestep eligible to be a response (config.response_start_timestep);
                   earlier timesteps carry zero loss weight so their output is unconstrained.
+    rt_cap      : ceiling in timesteps for extrapolated trials
 
     Returns
     -------
-    rt_interp : (n,) float — NaN where the threshold was never crossed (censored)
+    rt_interp : (n,) float — crossing time; extrapolated (never NaN) if it never crossed
     rt_int    : (n,) float — integer crossing timestep; ad if never crossed
-    decided   : (n,) bool
-    cross_idx : (n,) int — crossing timestep, clamped to the last timestep if censored
+    decided   : (n,) bool  — crossed inside the observation window
+    cross_idx : (n,) int   — crossing timestep, clamped to the last timestep if not decided
     """
     a = np.abs(output_traj)
     n, ad = a.shape
@@ -124,8 +145,21 @@ def _interpolated_rt(output_traj, threshold, search_from):
     denom = cur_val - prev_val
     frac  = np.where(denom > 0, (threshold - prev_val) / np.where(denom > 0, denom, 1.0), 0.0)
     frac  = np.clip(frac, 0.0, 1.0)
+    rt_observed = (cross_idx - 1) + frac
 
-    rt_interp = np.where(decided, (cross_idx - 1) + frac, np.nan)
+    # Least-squares slope of |output| over the response window, per trial.
+    ts        = np.arange(search_from, ad, dtype=float)
+    win       = a[:, search_from:]
+    centred   = ts - ts.mean()
+    denom_ts  = max(float((centred ** 2).sum()), 1e-12)
+    slope     = (win * centred).sum(axis=1) / denom_ts
+    intercept = win.mean(axis=1) - slope * ts.mean()
+    with np.errstate(divide='ignore', invalid='ignore'):
+        projected = (threshold - intercept) / slope
+    projected = np.where(slope > 0, projected, np.inf)   # never rising -> take the cap
+    rt_extrap = np.clip(projected, ad - 1, rt_cap)
+
+    rt_interp = np.where(decided, rt_observed, rt_extrap)
     rt_int    = np.where(decided, cross_idx.astype(float), float(ad))
     cross_idx = np.where(decided, cross_idx, ad - 1)
 
@@ -134,7 +168,7 @@ def _interpolated_rt(output_traj, threshold, search_from):
 
 # ── Trial extraction ──────────────────────────────────────────────────────────
 
-def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
+def extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=RT_CAP):
     """
     Unpack a logger into per-trial aligned arrays.
 
@@ -147,6 +181,8 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
     search_from  : first timestep eligible as a response.
                    Defaults to config.response_start_timestep — timesteps before it
                    carry zero loss weight, so a "crossing" there is unconstrained noise.
+    rt_cap       : ceiling in timesteps for trials that never cross inside the window;
+                   their RT is extrapolated rather than dropped (see _interpolated_rt).
 
     Returns
     -------
@@ -162,9 +198,10 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
         correct_at_decision  (n,)     bool — correct at the threshold-crossing timestep
         resp_at_decision     (n,)     ±1 — response emitted at the crossing timestep
         rt                   (n,)     integer crossing timestep; ad if never crossed
-        rt_interp            (n,)     interpolated crossing time; NaN if censored
+        rt_interp            (n,)     crossing time, interpolated inside the window and
+                                      extrapolated (capped at rt_cap) beyond it — never NaN
         decided              (n,)     bool — threshold was crossed inside the window
-        cross_idx            (n,)     crossing timestep index (clamped for censored trials)
+        cross_idx            (n,)     crossing timestep index (clamped when not decided)
 
     Condition labels
         trial_type   (n,)  hlcids per trial; 0-3 = near-cong/near-incong/far-cong/far-incong
@@ -211,7 +248,7 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
     z_traj      = z_flat[:n_ts].reshape(n_trials, ad, -1)
 
     rt_interp, rt_int, decided, cross_idx = _interpolated_rt(
-        output_traj, rt_threshold, search_from
+        output_traj, rt_threshold, search_from, rt_cap
     )
 
     # Sign-normalize output by the model's own final decision (sign of output at t=-1).
@@ -275,6 +312,7 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
         z_grad = z_grad,
         # scalars
         rt_threshold = rt_threshold,
+        rt_cap       = float(rt_cap),
         search_from  = search_from,
         ad           = ad,
         n_trials     = n_trials,
@@ -298,14 +336,17 @@ def _optional_channel(entries, n_ts, ad, dim):
 def report_extraction(trials, label=''):
     """Print the diagnostics that should be eyeballed before trusting any figure."""
     n = trials['n_trials']
-    censored = int((~trials['decided']).sum())
-    print(f'{label}trials={n}  censored RT={censored} ({100*censored/max(n,1):.1f}%)  '
+    extrap = int((~trials['decided']).sum())
+    print(f'{label}trials={n}  extrapolated RT={extrap} ({100*extrap/max(n,1):.1f}%)  '
           f'accuracy={trials["correct_at_decision"].mean():.3f}  '
           f'Z within-trial spread={trials["z_within_trial_spread"]:.4f}')
+    rt = trials['rt_interp']
+    print(f'{label}RT (all trials): mean={rt.mean():.2f}  '
+          f'min={rt.min():.2f}  max={rt.max():.2f}  cap={trials["rt_cap"]:.0f}')
     if trials['decided'].any():
-        rt = trials['rt_interp'][trials['decided']]
-        print(f'{label}RT (decided): mean={rt.mean():.2f}  '
-              f'min={rt.min():.2f}  max={rt.max():.2f}')
+        rt_d = rt[trials['decided']]
+        print(f'{label}RT (crossed in window): mean={rt_d.mean():.2f}  '
+              f'min={rt_d.min():.2f}  max={rt_d.max():.2f}')
 
 
 # ── Trial selection ───────────────────────────────────────────────────────────
@@ -600,15 +641,17 @@ def plot_rt_distribution(ax, trials, specs, config, fit_gaussian=True, linestyle
 def plot_rt_continuous(ax, trials, specs, config, bin_width=0.25, linestyles=None):
     """
     Plot the distribution of interpolated RTs — the continuous counterpart to
-    plot_rt_distribution. Censored (never-crossed) trials cannot be placed on the
-    time axis, so they are excluded here and their proportion is put in the legend.
+    plot_rt_distribution. Trials that never crossed inside the window carry an
+    extrapolated RT (capped at trials['rt_cap']) rather than being dropped, so the axis
+    runs past the trial and the legend reports what fraction sits in that tail.
 
     specs : list of (mask, label, color) — mask is boolean (n_trials,)
     """
     rt   = trials['rt_interp']
     ad   = trials['ad']
+    hi   = float(trials.get('rt_cap', ad))
     lo   = max(int(trials['search_from']) - 1, 0)
-    bins = np.arange(lo, ad + bin_width, bin_width)
+    bins = np.arange(lo, hi + bin_width, bin_width)
     ctrs = 0.5 * (bins[:-1] + bins[1:])
     if linestyles is None:
         linestyles = ['-'] * len(specs)
@@ -621,16 +664,17 @@ def plot_rt_continuous(ax, trials, specs, config, bin_width=0.25, linestyles=Non
         vals    = vals[~np.isnan(vals)]
         if len(vals) == 0:
             continue
-        censored = 100.0 * (n_total - len(vals)) / n_total
-        dens, _  = np.histogram(vals, bins=bins, density=True)
+        extrap  = 100.0 * float((~trials['decided'][mask]).mean())
+        dens, _ = np.histogram(vals, bins=bins, density=True)
         ax.plot(ctrs, dens, color=color, linestyle=ls, linewidth=0.9,
-                label=f'{label} (n={n_total}, {censored:.0f}% cens.)')
+                label=f'{label} (n={n_total}, {extrap:.0f}% extrap.)')
 
     ax.axvspan(lo - 0.5, config.response_start_timestep - 0.5, alpha=0.08, color='k')
-    ax.set_xlabel('RT (timesteps, interpolated)')
+    ax.set_xlabel('RT (timesteps)')
     ax.set_ylabel(f'Density  [threshold = {trials["rt_threshold"]}]')
     ax.set_ylim(bottom=0)
-    ax.legend(fontsize=5)
+    # The density peaks at the left, where the legend used to sit.
+    ax.legend(fontsize=5, loc='upper right', framealpha=0.85)
 
 
 def plot_z_by_timestep(ax, trials, specs, z_dim, config, linestyles=None):

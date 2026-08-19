@@ -44,7 +44,15 @@ TEST_OVERRIDES     = {'no_of_steps_in_latent_space': 1}
 # 'baseline' keeps the original export paths; every other variant gets its own folder.
 VARIANTS = {
     # ── reference ────────────────────────────────────────────────────────────
-    'baseline':   dict(overrides={},                    p_levels=P_CONGRUENT_LEVELS),
+    # p_corr_by_distance is pinned here rather than inherited from FlankerTaskConfig.
+    # The class default was changed to the steep gradient (0.75/0.52) so that
+    # run_flanker.py trains the reference model; without this pin, re-running the
+    # sweep's pretraining would silently make 'baseline' identical to 'spatial_steep'
+    # and invalidate every comparison against it. This value is what the cached
+    # models in exports/.../pretrained/ were actually trained with.
+    'baseline':   dict(overrides={},
+                       pretrain_overrides={'p_corr_by_distance': [1.0, 0.65, 0.55, 0.25, 0.1]},
+                       p_levels=P_CONGRUENT_LEVELS),
 
     # ── how strongly the control state is pulled back to diffuse attention ───
     # 1x is the baseline (Z_decay = 1e-4). 2x fills the large gap between 1x and 5x,
@@ -69,8 +77,10 @@ VARIANTS = {
     #                                                    gap at [1] vs [2]
     'spatial_flat':    dict(pretrain_overrides={'p_corr_by_distance': [1.0, 0.60, 0.60, 0.25, 0.1]},
                             p_levels=[0.5]),             # 0.00 - predicts no distance effect
+    # Run at every congruency level: with a training gradient steep enough to produce a
+    # reliable distance effect, does the list manipulation still shift it on top?
     'spatial_steep':   dict(pretrain_overrides={'p_corr_by_distance': [1.0, 0.75, 0.52, 0.25, 0.1]},
-                            p_levels=[0.5]),             # 0.23
+                            p_levels=P_CONGRUENT_LEVELS),  # 0.23
     'spatial_steeper': dict(pretrain_overrides={'p_corr_by_distance': [1.0, 0.85, 0.51, 0.25, 0.1]},
                             p_levels=[0.5]),             # 0.34
 }

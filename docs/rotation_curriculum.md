@@ -225,8 +225,10 @@ causes are structurally absent here:
 - **Dense supervised error, not sparse stochastic reward.** Z is driven by the same MSE that
   trains the weights. The reference used `z_loss_source='policy'`, an advantage-weighted log-prob
   whose gradient scale shifts with the policy and needed retuning whenever the loss source changed.
-- **No hidden-state carry.** `forward` re-initialises the hidden state every batch
-  (`models.py`), so there is no `stateful_hidden` channel leaking context across blocks.
+- **No hidden-state carry.** `config.stateful_hidden` defaults to `False` and the rotation
+  configs leave it off, so `forward` re-initialises the hidden state every batch
+  (`models.py`) and no carry channel leaks context across blocks. Turning it on would add
+  one; don't, without re-running the curriculum comparisons.
 - **No input augmentation.** The reference fed previous action and reward into the input, which
   competed with Z as a context route — and left them on despite its header saying otherwise.
 - **The field names are the ones the model reads.** `Z_lr` / `Z_decay` here; in the RL repo those

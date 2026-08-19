@@ -47,6 +47,7 @@ class Config:
         # ── Latent Optimizer (LU) ──────────────────────────────────────────────
         self.Z_lr = 0.4
         self.LU_optimizer = 'Adam'        # 'Adam', 'AdamW', or 'SGD'
+        self.Z_optimizer = self.LU_optimizer  # alias for clarity
         self.LU_Adam_betas = (0.6, 0.7)   # For faster dynamics (0.9, 0.999)
         self.LU_momentum = 0.0            # only used when LU_optimizer='SGD'
         self.Z_decay = 0.0001                  # L2 regularization weight on Z (weight decay)
@@ -149,6 +150,14 @@ class Config:
         self.batch_size = 1
         self.epochs = 1
         self.block_size = 100
+
+        # Carry the RNN hidden state across windows (truncated BPTT / RL2-style):
+        # forward() starts from the previous window's detached end state instead of
+        # re-initializing. Reset per phase by predictive_learning(). Requires
+        # non-overlapping windows (stride == seq_len), else predictive_learning raises.
+        # Off by default: with it off, Z is the only cross-window memory, which is what
+        # the existing flanker results assume.
+        self.stateful_hidden = False
 
     @property
     def run_name(self):
@@ -650,7 +659,10 @@ class FlankerTaskConfig(Config):
         # ── Flanker stimulus parameters ───────────────────────────────────────
         self.n_slots            = 5
         # p_corr_by_distance[d] = probability companion matches target at distance d
-        self.p_corr_by_distance = [1.0, 0.65, 0.55, 0.25, 0.1]
+        # self.p_corr_by_distance = [1.0, 0.65, 0.55, 0.25, 0.1]
+        # this steeper corr significantly improved model's capture int the flanker_sweep setup.
+        self.p_corr_by_distance = [1.0, 0.75, 0.52, 0.25, 0.1]
+        
         # This is a tight balance. 
         # Increasing the corr increases congruent trials n and lowers incongruent. 
         # But this makes the cong trials easier, but the model never learns to respond to context_ids which has the target slot
@@ -681,7 +693,24 @@ class FlankerTaskConfig(Config):
         self.exponential_increase_steepness = [2]
         self.Z_lr               = 0.3
         self.Z_decay            = 0.0001
-
+        self.LU_optimizer = 'SGD'
+        if self.LU_optimizer in ('sgd', 'SGD'):
+            # SGD steps on the raw dL/dZ, which on this task is ~1e-3, so Z_lr has to be
+            # ~1000x the Adam value to move Z at all. The two knobs separate cleanly:
+            #   Z_decay sets WHERE Z settles — equilibrium is |grad| / effective_decay, and
+            #     1.3e-4 puts activated focus at ~0.25 and raw focus at ~1.0, i.e. the Stage 1
+            #     oracle value softmax(one_hot) (focus = e/(e+4) - 1/(e+4) = 0.2558).
+            #     5e-5 overshoots to 0.35, 2e-4 undershoots to 0.19, 1e-2 pins Z at zero
+            #     (a uniform gate — this is what Z_lr=3, Z_decay=0.02 was doing).
+            #   Z_lr sets HOW FAST it gets there and how much Z moves per trial. At 1.3e-4:
+            #     lr=100 needs ~80 trials to converge, lr=300 ~25 with lag-1 focus autocorr
+            #     0.75, lr>=1000 costs accuracy, lr=3000 diverges.
+            # Tuned over 3 seeds against the oracle-Z accuracy ceiling; lr=200 is the more
+            # conservative choice (+0.01 accuracy, ~1.5x slower adaptation).
+            # NOTE: these assume Z_decay_mode='both', which applies the decay twice under
+            # SGD. Switching to the recommended 'grad' mode halves it — use 2.6e-4 there.
+            self.Z_lr               = 300.
+            self.Z_decay            = 1.3e-4
         # ── Derived NeuraGEM internal params (from user-facing names above) ───
         self.block_size             = self.trials_per_context_block * self.arrows_duration
         self.no_of_blocks           = self.n_training_contexts
@@ -770,6 +799,7 @@ class FlankerRandomTrialsConfig(FlankerTaskConfig):
         # varies it to test the list-wide proportion-congruent prediction.
         self.p_congruent = 0.5
         self.p_near      = 0.5
+        # self.LU_optimizer = 'SGD' # HAS no effect, model already built by the time this config comes to play
 
         self.update_export_path()
         self._validate()

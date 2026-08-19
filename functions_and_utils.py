@@ -331,7 +331,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             # ax.text(-0.05, 0.5, 'correctness\nmoving avg', rotation=90, va='center', ha='right', fontsize=6, color='k')
             ax.legend(loc='lower right', fontsize=6)
 
-        elif logger.predicted_outputs and config.dataset_name in ('flanker_pretrain', 'flanker_stage2', 'flanker_stage3', 'flanker_stage4'):
+        elif logger.predicted_outputs and config.dataset_name in ('flanker_pretrain', 'flanker_random', 'flanker_stage2', 'flanker_stage3', 'flanker_stage4'):
             # correct at t = predicted direction (last output dim) matches sign of true direction (last input dim)
             correct = (ii[x1:x2, -1] * oi[x1:x2, -1] > 0).astype(float)
             ma_window = 20

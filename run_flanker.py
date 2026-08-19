@@ -15,14 +15,25 @@ confound condition with time-in-block and with adaptation-to-switch, so they are
 longer used; the old blocked stages live in archive/run_flanker_blocked.py.
 
 Three analysis conventions, all enforced in flanker_analyses.py:
-  - RT is the interpolated threshold crossing, and censored trials are NaN rather
-    than being silently clamped to the end of the trial.
+  - RT is the threshold crossing: interpolated inside the response window, and
+    extrapolated (least-squares projection, capped at 10 timesteps) for trials that
+    never cross. No trial is dropped, because failing to cross is ~4x more common on
+    incongruent trials and censoring them biased incongruent RT downward. About half
+    the extrapolated trials are not rising at all and land on the cap, so RT partly
+    encodes failure-to-decide — `report_extraction` prints the extrapolated fraction.
   - Z is reported activated (softmax across slots) via the scalar `focus` index.
   - `focus_in` is the state a trial *inherited*; `delta_focus` is the update it
     produced. Z is logged after the LU step, so a trial's own Z already contains
     its own update and must not be read as the state it started from.
 
-Analysis utilities live in flanker_analyses.py.
+**This is one session, i.e. one synthetic subject.** Several effects that looked clear
+in a single 5000-trial session did not survive ten seeds, and one reversed sign. Use
+these figures to see mechanism and shape; take the statistics from the group scripts:
+
+    python flanker_sweep_analysis.py                                 # across-seed tables
+    python flanker_model_figures.py --variant spatial_steep --p 0.5  # model card
+
+Analysis utilities live in flanker_analyses.py; per-seed measures in flanker_metrics.py.
 """
 
 if 'get_ipython' in globals():
@@ -81,6 +92,7 @@ config = FlankerTaskConfig(experiment_to_run='default')
 config.run_name = 'flanker_pretrain_v1'
 config.env_seed = 42
 
+config.Z_optimizer = 'SGD'
 # Session length is specified in trials, not timesteps, so it stays correct if
 # arrows_duration ever changes.
 n_pretrain_trials = 2000
@@ -103,9 +115,9 @@ logger, model, config, figs = train_model(
     run_test_phase=False,
 )
 
-panel_order = ['behavior', 'latent_2d', 'corrects']
-fig = plot_logger_panels(logger, config, panel_order, x2=None,
-                         annotate_phases='behavior', width=5, legends=False, dpi=140)
+panel_order = [ 'latent_2d', 'corrects']
+_=fig = plot_logger_panels(logger, config, panel_order, x2=None,
+                         annotate_phases='corrects', width=5, legends=False, dpi=140)
 fig.savefig(config.export_path + 'flanker_pretrain_results.pdf', bbox_inches='tight')
 print(f'Exported: {config.export_path + "flanker_pretrain_results.pdf"}')
 
@@ -259,10 +271,14 @@ fig1.tight_layout()
 fig1.savefig(test_config.export_path + 'flanker_congruency_distance.pdf', bbox_inches='tight')
 print(f'Exported: {test_config.export_path + "flanker_congruency_distance.pdf"}')
 
+# Z panel uses delta_focus, not focus. Trials are i.i.d., so what a trial *inherits*
+# (focus_in) cannot differ by its own condition — that panel is flat by construction.
+# The trial's own `focus` is logged after its update, so grouping it by condition shows
+# the update mixed into the mean level; delta_focus shows the update on its own.
 fig1b, (ax1d, ax1e, ax1f) = plt.subplots(1, 3, figsize=(FigSize.large[0] * 3, FigSize.large[1]))
 plot_scalar_bars(ax1d, trials, specs_cd, measure='accuracy',  baseline=0.5)
 plot_scalar_bars(ax1e, trials, specs_cd, measure='rt_interp')
-plot_scalar_bars(ax1f, trials, specs_cd, measure='focus')
+plot_scalar_bars(ax1f, trials, specs_cd, measure='delta_focus', baseline=0.0)
 fig1b.suptitle('Congruency × distance — mean ± SEM', fontsize=7)
 fig1b.tight_layout()
 fig1b.savefig(test_config.export_path + 'flanker_congruency_distance_bars.pdf', bbox_inches='tight')
@@ -312,10 +328,11 @@ print(f'Exported: {test_config.export_path + "flanker_session_and_rt_by_outcome.
 # lateralisation signal: incongruent trials should dip early (flankers pull away
 # from the eventual choice) and reverse late on correct trials.
 
+# Colour = congruency, line style = outcome, as everywhere else in this script.
 accum_specs = [
-    (correct_dec  & cong,   'Correct, cong',   '#084594', '-'),
-    (~correct_dec & cong,   'Error, cong',     COL['cong'], '--'),
-    (correct_dec  & incong, 'Correct, incong', COL['error'], '-'),
+    (correct_dec  & cong,   'Correct, cong',   COL['cong'],   '-'),
+    (~correct_dec & cong,   'Error, cong',     COL['cong'],   '--'),
+    (correct_dec  & incong, 'Correct, incong', COL['incong'], '-'),
     (~correct_dec & incong, 'Error, incong',   COL['incong'], '--'),
 ]
 

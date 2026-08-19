@@ -77,6 +77,10 @@ class RNN_with_latent(nn.Module):
 
         self.hidden_state: Optional[torch.Tensor] = None
         self.cell_state: Optional[torch.Tensor] = None
+        # Carried start-of-window state for stateful mode (config.stateful_hidden).
+        # Always stored detached; forward() READS it but never advances it —
+        # predictive_learning() commits it once per window via set_hidden_carry().
+        self.h0_carry: Optional[Tuple[torch.Tensor, Optional[torch.Tensor]]] = None
 
         self.loss_function = nn.MSELoss(reduction="none")
         self.exponential_increase_filter: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None
@@ -125,6 +129,21 @@ class RNN_with_latent(nn.Module):
         else:
             self.cell_state = None
         return self.hidden_state, self.cell_state
+
+    def reset_hidden_carry(self) -> None:
+        """Drop the carried state; the next forward starts from init_hidden()."""
+        self.h0_carry = None
+
+    def set_hidden_carry(self, state: Tuple[torch.Tensor, Optional[torch.Tensor]]) -> None:
+        """Commit a window's end state as the next window's start state (detached).
+
+        Values cross the window boundary, gradients do not — truncated BPTT, the
+        direct analogue of what detach_Z() does for Z. Call this only from the
+        training loop, and only after every re-forward of the window (WU and LU),
+        so each of those forwards starts from the same h0.
+        """
+        h, c = state
+        self.h0_carry = (h.detach(), c.detach() if c is not None else None)
 
     # ── Latent variable Z lifecycle ────────────────────────────────────────────
 
@@ -233,7 +252,7 @@ class RNN_with_latent(nn.Module):
             betas = self.config.LU_Adam_betas
             cls = torch.optim.Adam if opt_name == "adam" else torch.optim.AdamW
             return cls([self.Z], lr=lr, betas=betas, weight_decay=decay)
-        if opt_name == "sgd":
+        if opt_name in ("sgd", "SGD"):
             return torch.optim.SGD([self.Z], lr=lr, momentum=float(self.config.LU_momentum), weight_decay=decay)
         raise ValueError(f"Unsupported LU_optimizer '{self.config.LU_optimizer}'.")
 
@@ -489,7 +508,16 @@ class RNN_with_latent(nn.Module):
             (h, c):     final hidden and cell states.
         """
         batch_size, seq_len, _ = input.shape
-        h, c = self.init_hidden(batch_size)
+        # Start-of-window state: carried end state (stateful mode) > fresh init.
+        # Read-only here — re-forwarding the same window (the LU steps) must start from
+        # the same h0 until predictive_learning() commits via set_hidden_carry().
+        # getattr defaults keep models/configs pickled before this flag existed loadable.
+        if (getattr(self.config, "stateful_hidden", False)
+                and getattr(self, "h0_carry", None) is not None
+                and self.h0_carry[0].shape[0] == batch_size):
+            h, c = self.h0_carry
+        else:
+            h, c = self.init_hidden(batch_size)
 
         processed_input = self.input_layer(input)  # (batch, seq_len, hidden_size)
         outputs: List[torch.Tensor] = []
@@ -685,6 +713,8 @@ class RNN_with_latent(nn.Module):
     def __deepcopy__(self, memo):
         if id(self) in memo:
             return memo[id(self)]
+        # h0_carry is deliberately NOT copied: the fresh model starts with h0_carry=None,
+        # so a deepcopy begins a fresh trial stream rather than inheriting a stale state.
         new_model = self.__class__(copy.deepcopy(self.config, memo)).to(self.device)
         # The fresh model allocates Z at (batch_size, config.seq_len, Z_dim), but a model that
         # has run LU had Z resized by _ensure_Z_shape to the sequence length the forward pass
