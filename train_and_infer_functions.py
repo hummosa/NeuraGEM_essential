@@ -264,6 +264,21 @@ def predictive_learning(logger, config, dataloader, model,
     """
     # epochs = config.epochs if epochs is None else epochs # I only use 1 epoch
 
+    # Hidden-state carry (off by default). Overlapping windows would re-consume
+    # timesteps through the carried state and leave the "last timestep to carry from"
+    # ambiguous, so require non-overlapping windows. getattr default keeps configs
+    # pickled before this flag existed loadable.
+    _stateful = bool(getattr(config, 'stateful_hidden', False))
+    if _stateful and int(config.stride) != int(config.seq_len):
+        raise ValueError(
+            f"stateful_hidden=True requires non-overlapping windows: stride == seq_len; "
+            f"got seq_len={config.seq_len}, stride={config.stride}. Overlapping windows "
+            f"re-consume timesteps through the carried state. Set stride = seq_len or "
+            f"config.stateful_hidden = False."
+        )
+    # Each call restarts the trial stream, so the carry clears at every phase boundary.
+    model.reset_hidden_carry()
+
     running_loss = 0.0
     pbar = tqdm(enumerate(dataloader), total=len(dataloader))
 
@@ -303,6 +318,13 @@ def predictive_learning(logger, config, dataloader, model,
             first_full_loss = _latent_update_step(
                 model, config, core_inputs, inputs, criterion, logger, context_ids
             )
+        # Commit the carry AFTER the LU re-forwards, which all had to start from the
+        # same h0. hidden_states is the WU forward's end state — the pass whose outputs
+        # are logged, hence the acting pass in either WU/LU ordering. The state crosses
+        # the window boundary detached: truncated BPTT.
+        if _stateful:
+            model.set_hidden_carry(hidden_states)
+
         # ── 4. Log ────────────────────────────────────────────────────
         _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
                     model, combined_input, context_ids, batch_hlcids, hidden_states, bi)
@@ -515,6 +537,7 @@ def eval_z_space(model_org, config_org, bi):
     config.no_of_steps_in_latent_space = 5
     config.pass_previous_latent = False
     config.seq_len = 4
+    config.stateful_hidden = False  # probe changes seq_len only; a carry is ill-posed here
     model.config = config
 
     logger = Logger()

@@ -114,8 +114,14 @@ A task may expose `oracle_context_values` as a property so it tracks a run scrip
 | `use_add_gating` | `False` | Additive gating: concatenate Z to input instead of using multiplicative gating |
 | `P_gates_bernoulli_prob` | 0.3 | Fraction of Z→hidden connections enabled in the static random mask |
 | `use_input_attention` | `False` | Additional input attention mechanism |
+| `stateful_hidden` | `False` | Carry the RNN hidden state across windows instead of re-initializing each `forward()`. Requires `stride == seq_len` |
 
 > `post_gating` and `pre_gating` are fully independent booleans. Both can be `True` (gate before and after), both can be `False` (no gating at all).
+
+> `stateful_hidden` is off by default. With it off, the hidden state is re-initialized on
+> every `forward()`, so `Z` is the **only** thing that carries information across windows.
+> Turning it on gives the recurrent state a second, competing carryover channel — see
+> [model_rnn_with_latent.md](model_rnn_with_latent.md#hidden-state-initialization).
 
 ### Training Phases / Curriculum
 

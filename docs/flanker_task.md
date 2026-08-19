@@ -13,9 +13,12 @@ Human dataset: Fischer et al. 2018 / Kirschner et al. 2024 flanker EEG (N ≈ 13
 | `datasets.py` | `FlankerTaskDataset`, `FlankerRandomTrialsDataset` + `DATASET_REGISTRY` |
 | `run_flanker.py` | Main experiment script (`#%%` cells) — two stages plus all analyses |
 | `flanker_analyses.py` | Trial extraction, factor construction, plotting, config/model helpers |
+| `flanker_metrics.py` | Every per-seed scalar effect, grouped by question; `SIGNATURES` registry |
 | `flanker_sweep.py` / `flanker_sweep_config.py` | Seeds × congruency-proportion sweep |
-| `flanker_sweep_analysis.py` | Across-subject statistics: per-seed effects + one-sample t-tests |
-| `flanker_sweep_figures.py` | Group figures: means ± SEM with one dot per seed |
+| `flanker_sweep_analysis.py` | Across-subject statistics: one-sample t-tests on the per-seed effects |
+| `flanker_figure_utils.py` | Panel primitives (`bars_with_seeds`, `band`, `series`) and variant-aware loading |
+| `flanker_sweep_figures.py` | The standing group figures for one condition |
+| `flanker_model_figures.py` | Model card (congruency, distance, RT×outcome, adaptation, scorecard) + manipulation series |
 | `train_and_infer_functions.py` | `train_model()` training loop |
 | `functions_and_utils.py` | `plot_logger_panels()`, `Logger` class |
 | `archive/run_flanker_blocked.py` | Retired blocked Stage 2/3 — see "Why blocks were dropped" |
@@ -138,16 +141,32 @@ Stage 2 trial types: `0` near-cong, `1` near-incong, `2` far-cong, `3` far-incon
 
 These are enforced in `flanker_analyses.py`; ignoring them produces wrong Z conclusions.
 
-**1. RT is interpolated, and censoring is explicit.**
+**1. RT is interpolated inside the window and extrapolated beyond it.**
 The decision variable is sampled once per timestep, so an integer RT takes only ~4
 values. `rt_interp` linearly interpolates the threshold crossing between the bracketing
-samples. Trials that never cross are `NaN` — **not** clamped to the end of the trial, as
-the old code did. Only crossings at or after `response_start_timestep` count; earlier
-timesteps carry zero loss weight so their output is unconstrained.
+samples. Only crossings at or after `response_start_timestep` count; earlier timesteps
+carry zero loss weight so their output is unconstrained.
 
-Censoring is condition-dependent (roughly 6% congruent vs 21% incongruent), which biases
-observed incongruent RTs *downward* — the true congruency effect on RT is larger than the
-means suggest. Check `report_extraction()` output before trusting RT comparisons.
+Trials that never cross are **extrapolated, not dropped**. Failing to cross is
+condition-dependent (~6% congruent vs ~21% incongruent), so discarding those trials
+censored incongruent RTs *downward* and shrank the very effects being measured. The
+response window is fitted with a least-squares line and projected forward to the
+threshold, clipped to `[ad - 1, rt_cap]` with `rt_cap = 10` timesteps
+(`flanker_analyses.RT_CAP`); a flat or falling trace takes the cap.
+
+Two consequences to hold in mind:
+
+- About half of the extrapolated trials are not rising at all and land exactly on the
+  cap, so RT distributions have a spike at 10 and RT partly encodes *failure to decide*.
+  Every RT cell in `flanker_metrics` is paired with a `dec_*` decided fraction for this
+  reason, and `cong_effect_rt_decided` gives the crossed-in-window comparison.
+- RT effects are therefore much larger than under the old censored convention (at
+  baseline p=0.5, congruency effect 1.55 vs 0.33 timesteps) and one conclusion changes
+  sign: PERI goes from null (−0.005, p=0.84) to reliably negative (−0.43, p=0.0005),
+  i.e. interference *grows* after an error once slow trials are counted.
+
+`decided` still marks which trials crossed inside the window; `report_extraction()`
+prints the extrapolated fraction.
 
 **2. Z is one value per trial, and it is logged *after* the update.**
 The LU step aggregates the latent gradient over the trial's timesteps and broadcasts one
@@ -175,17 +194,17 @@ corrects, leaving frozen noise on the gate.
 
 ## `flanker_analyses.py` API
 
-### `extract_trials(logger, config, rt_threshold=0.5, search_from=None)`
+### `extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=10.0)`
 
 Returns a dict of per-trial aligned arrays. Key groups:
 
 | Group | Keys |
 |---|---|
-| Behaviour | `correct` (n,ad), `output_traj`, `signed_output`, `true_dir`, `is_correct`, `response_side`, `correct_at_decision`, `resp_at_decision`, `rt`, `rt_interp`, `decided`, `cross_idx` |
+| Behaviour | `correct` (n,ad), `output_traj`, `signed_output`, `true_dir`, `is_correct`, `response_side`, `correct_at_decision`, `resp_at_decision`, `rt`, `rt_interp` (never NaN), `decided`, `cross_idx` |
 | Conditions | `trial_type` (hlcids), `context_id`, `trial_idx` |
 | Latent | `z_raw`, `z_act`, `z_in`, `delta_z`, `focus`, `focus_in`, `delta_focus`, `z_traj`, `z_within_trial_spread` |
 | Optional | `pe` (pre-LU prediction error), `z_grad` (aggregated dL/dZ) — `None` if not logged |
-| Scalars | `rt_threshold`, `search_from`, `ad`, `n_trials`, `center_slot` |
+| Scalars | `rt_threshold`, `rt_cap`, `search_from`, `ad`, `n_trials`, `center_slot` |
 
 `correct_at_decision` / `resp_at_decision` evaluate at the threshold-crossing timestep —
 that is the response the model actually emitted. `is_correct` / `response_side` use the
@@ -390,7 +409,16 @@ Express session length in trials (`n_pretrain_trials * arrows_duration`,
 **6. DataLoader uses `shuffle=False`.** Trial order is exactly as generated — required
 for the history analyses. Stage 2 trials are i.i.d. by construction, not by shuffling.
 
-**7. `torch.load` needs `weights_only=False`.** These checkpoints are whole pickled
+**7. The hidden state resets every trial, so Z is the only cross-trial carrier.**
+`seq_len == stride == arrows_duration`, so one batch is one trial, and `forward()`
+re-initializes `h`/`c` on every call. Nothing but `Z` survives a trial boundary — which is
+precisely why the sequential-congruency, post-error and proportion-congruent results can be
+read as Z-mediated control. `config.stateful_hidden = True` (default `False`) carries the
+LSTM state across trials instead, giving those effects a second possible source; results
+from the two settings are not comparable, and a stateful run needs its own Z-ablated
+control before any effect is attributed to Z.
+
+**8. `torch.load` needs `weights_only=False`.** These checkpoints are whole pickled
 models, and torch ≥ 2.6 defaults `weights_only` to `True`.
 
 ---

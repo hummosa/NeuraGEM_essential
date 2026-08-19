@@ -52,7 +52,7 @@ Be precise about this — it has caused real confusion.
 | Term | Definition |
 |---|---|
 | **accuracy** | proportion of trials answered correctly (0-1), evaluated at the threshold-crossing timestep, i.e. the response actually emitted |
-| **RT** | interpolated threshold crossing, in timesteps (range ~0-5). Trials that never cross are `NaN` (censored), **not** clamped |
+| **RT** | threshold crossing in timesteps: interpolated inside the response window, and **extrapolated** (least-squares projection of the window, capped at 10) for trials that never cross. No trial is dropped |
 | **congruency effect** | congruent accuracy minus incongruent accuracy (or incongruent RT minus congruent RT) |
 | **near - far** | computed **separately within congruent and within incongruent trials**. The two have opposite predicted signs |
 | **interaction** | (near-far on congruent) minus (near-far on incongruent). A difference of differences — it collapses the two directional predictions, so always report the simple effects too |
@@ -69,9 +69,14 @@ Be precise about this — it has caused real confusion.
    Use `focus_in` for "what state did this trial start from". Reading a Z *level* after
    conditioning on the trial outcome is circular — a focused Z is what made the trial
    correct. `delta_focus` grouped by trial properties is fine; it describes the update rule.
-2. Censoring is condition-dependent (~6% congruent vs ~21% incongruent). Dropped slow
-   incongruent trials bias observed incongruent RT *downward*, so the true RT congruency
-   effect is larger than the means suggest.
+2. Failure to cross threshold is condition-dependent (~6% congruent vs ~21% incongruent).
+   Those trials used to be dropped, which biased observed incongruent RT *downward*; they
+   are now extrapolated and capped at 10 timesteps instead. About half of them are not
+   rising at all and land on the cap, so RT partly encodes failure-to-decide — read any RT
+   cell next to its `dec_*` decided fraction, and use `cong_effect_rt_decided` for the
+   crossed-in-window comparison. **Every RT number in §5 predates this change** and is
+   roughly 4-5x smaller than the current convention gives; the accuracy numbers are
+   unaffected.
 
 ---
 
@@ -295,8 +300,9 @@ python flanker_sweep.py pretrain
 python flanker_sweep.py
 
 # analysis
-python flanker_sweep_analysis.py      # across-subject tables
-python flanker_sweep_figures.py 0.5   # group figures for one congruency level
+python flanker_sweep_analysis.py                                  # across-subject tables
+python flanker_sweep_figures.py --p 0.5 --variant spatial_steep   # standing group figures
+python flanker_model_figures.py --variant spatial_steep --p 0.5   # model card + manipulation series
 ```
 
 Jobs are ~90 s each. `SKIP_EXISTING` makes everything resumable, so adding a variant only
@@ -349,14 +355,17 @@ per-trial summaries instead of full loggers (~50x smaller).
 | `docs/flanker_task.md` | the main guide: task structure, both stages, the three Z conventions, the full `flanker_analyses` API, the confound controls, and the gotchas list |
 | `flanker_sweep_config.py` | what is being run — seeds, trial counts, congruency levels, and every variant with its rationale |
 | `flanker_sweep.py` | the runner: job matrix, variant-aware pretrain caching, atomic writes, result paths, loaders |
-| `flanker_analyses.py` | `extract_trials` (every per-trial field), RT interpolation, `z_act` / `z_in` / `delta_z`, `lagged_factors`, plotting helpers, `sync_gating` / `mirror_to_model` / `reset_Z_uniform` |
-| `flanker_sweep_analysis.py` | `session_effects` — the precise definition of every metric quoted in §5 |
+| `flanker_analyses.py` | `extract_trials` (every per-trial field), RT interpolation/extrapolation, `z_act` / `z_in` / `delta_z`, `lagged_factors`, plotting helpers, `sync_gating` / `mirror_to_model` / `reset_Z_uniform` |
+| `flanker_metrics.py` | `session_effects` — the precise definition of every metric quoted in §5, grouped by question, plus the `SIGNATURES` benchmark registry |
+| `flanker_sweep_analysis.py` | Across-seed statistics and the printed tables |
 
 ### Important, skim then consult as needed
 
 | File | Why |
 |---|---|
-| `flanker_sweep_figures.py` | group figures; `session_curves` builds learning curves, RT densities, within-trial dynamics |
+| `flanker_figure_utils.py` | panel primitives and variant-aware loading; `session_curves` builds learning curves, RT densities, within-trial dynamics |
+| `flanker_sweep_figures.py` | the standing group figures for one condition |
+| `flanker_model_figures.py` | the model card (congruency, distance, RT x outcome, adaptation, scorecard) and the manipulation series |
 | `run_flanker.py` | the single-session script — what each figure shows and how the condition masks are built |
 | `configs.py` | `FlankerTaskConfig` (Stage 1, including `p_corr_by_distance` and the note on why it is delicately balanced) and `FlankerRandomTrialsConfig` (Stage 2) |
 | `datasets.py` | `FlankerTaskDataset` and `FlankerRandomTrialsDataset` — how trials are actually generated |
