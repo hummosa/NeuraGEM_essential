@@ -203,6 +203,13 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=RT
         decided              (n,)     bool — threshold was crossed inside the window
         cross_idx            (n,)     crossing timestep index (clamped when not decided)
 
+    Stimulus evidence (what each slot actually delivered, not what it nominally showed)
+        obs               (n, ad, n_slots)  per-slot observation, noise included
+        centre_evidence   (n,)  response-window mean of obs[centre] x true_dir. Positive
+                                means the centre slot really did point at the target this
+                                trial; the noise is large enough that it often does not.
+        flanker_evidence  (n,)  same for whichever flanker pair was active this trial
+
     Condition labels
         trial_type   (n,)  hlcids per trial; 0-3 = near-cong/near-incong/far-cong/far-incong
         context_id   (n,)  context_ids per trial
@@ -256,6 +263,23 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=RT
     final_decision_sign = np.sign(output_traj[:, -1:])
     signed_output       = output_traj * final_decision_sign
 
+    # ── Stimulus evidence actually delivered, signed by the true direction ───────
+    # arrow_noise_std is 1.3 against a signal of 1.0, so on a sizeable minority of trials
+    # the target slot's own samples point the wrong way. Analyses of *why* a trial went
+    # wrong need that, not just the nominal condition label.
+    n_slots  = int(getattr(config, 'n_slots', 5))
+    obs      = ii[:n_ts, :n_slots].reshape(n_trials, ad, n_slots)
+    centre_i = n_slots // 2
+    near_i   = [centre_i - 1, centre_i + 1]
+    far_i    = [0, n_slots - 1]
+    signed   = obs[:, search_from:, :] * true_dir[:, search_from:, None]
+    centre_evidence = signed[:, :, centre_i].mean(axis=1)
+    near_evidence   = signed[:, :, near_i].mean(axis=(1, 2))
+    far_evidence    = signed[:, :, far_i].mean(axis=(1, 2))
+    # hlcids 0/1 = near cong/incong, 2/3 = far — so even trial types are the near ones.
+    is_near_trial    = np.isin(tt[::ad][:n_trials], (0, 1))
+    flanker_evidence = np.where(is_near_trial, near_evidence, far_evidence)
+
     # ── Latent: one value per trial, activated, and aligned to what it inherited ──
     z_within_trial_spread = float(z_traj.std(axis=1).mean())
     z_raw   = z_traj.mean(axis=1)                     # (n, Z)
@@ -293,6 +317,10 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=RT
         rt_interp           = rt_interp,
         decided             = decided,
         cross_idx           = cross_idx,
+        # stimulus evidence
+        obs              = obs,
+        centre_evidence  = centre_evidence,
+        flanker_evidence = flanker_evidence,
         # condition labels
         trial_type = tt[:n_ts].reshape(n_trials, ad)[:, 0],
         context_id = cid[:n_ts].reshape(n_trials, ad)[:, 0],
@@ -395,7 +423,13 @@ def lagged_factors(trials, n_back=2, coding='distance'):
     Returns dict with:
         cong, near, correct, rt, side           — current trial
         cong_k, near_k, correct_k, rt_k, side_k — for k in 1..n_back
+        target      — the target's direction (+/-1); `side` is the response emitted,
+                      so the two come apart exactly on error trials
+        flanker     — the flankers' direction (+/-1) = target x congruency sign
+        target_k    — lagged target direction, k = 1..n_back
         resp_rep    — this trial's response equals the previous trial's
+        target_rep  — this trial's target direction equals the previous trial's
+        cong_rep    — this trial's congruency equals the previous trial's
         alternated  — the previous response differed from the one before it
         valid       — trials with a full n_back history
     """
@@ -405,17 +439,26 @@ def lagged_factors(trials, n_back=2, coding='distance'):
     corr = trials['correct_at_decision'].astype(float)
     rt   = trials['rt_interp']
     side = trials['resp_at_decision'].astype(float)
+    targ = np.asarray(trials['true_dir'], dtype=float)
+    # Congruent flankers point with the target, incongruent ones against it.
+    flank = targ * np.where(cong == 1, 1.0, -1.0)
 
-    f = dict(cong=cong, near=near, correct=corr, rt=rt, side=side)
+    f = dict(cong=cong, near=near, correct=corr, rt=rt, side=side,
+             target=targ, flanker=flank)
     for k in range(1, n_back + 1):
         f[f'cong_{k}']    = _lag(cong, k)
         f[f'near_{k}']    = _lag(near, k)
         f[f'correct_{k}'] = _lag(corr, k)
         f[f'rt_{k}']      = _lag(rt,   k)
         f[f'side_{k}']    = _lag(side, k)
+        f[f'target_{k}']  = _lag(targ, k)
 
     f['resp_rep'] = np.where(np.isnan(f['side_1']), np.nan,
                              (side == f['side_1']).astype(float))
+    f['target_rep'] = np.where(np.isnan(f['target_1']), np.nan,
+                               (targ == f['target_1']).astype(float))
+    f['cong_rep'] = np.where(np.isnan(f['cong_1']), np.nan,
+                             (cong == f['cong_1']).astype(float))
     if n_back >= 2:
         f['alternated'] = np.where(np.isnan(f['side_2']), np.nan,
                                    (f['side_1'] != f['side_2']).astype(float))

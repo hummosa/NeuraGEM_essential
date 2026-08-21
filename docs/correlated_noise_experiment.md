@@ -5,7 +5,7 @@
 Compare how RNN (short horizon), MRNN (long horizon), and NeuraGEM adapt to observations
 with temporally correlated noise, sweeping `noise_correlation_tau` across [1, 2, 4, 6, 10].
 Metric: mean |pred − ground-truth mean| in the tail of each block, averaged over 20 seeds.
-NeuraGEM additionally sweeps `l2_loss` and `LU_lr`.
+NeuraGEM additionally sweeps `l2_loss` and `Z_lr`.
 
 ---
 
@@ -31,7 +31,7 @@ BASE_PARAM_GRIDS = {
     "neuragem":   {
         "noise_correlation_tau": [1,2,4,6,10],
         "l2_loss":  [0.0001, 0.0008],   # NeuraGEM-specific
-        "LU_lr":    [0.05, 0.1],         # NeuraGEM-specific
+        "Z_lr":    [0.05, 0.1],         # NeuraGEM-specific
         "seed":     range(20),
     },
 }

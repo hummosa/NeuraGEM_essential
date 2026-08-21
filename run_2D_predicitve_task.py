@@ -93,7 +93,7 @@ if over_segment: # trying out changing params to make ng oversegment to shields
     # config.add_passive_learning_phase = False
     config.blocked_phase_length = 1500   # ← 
     config.block_size = 200
-    # config.LU_optimizer = 'sgd' # 'adam' or 'sgd'; Adam's momentum seems to make it harder for the model to adapt quickly within a block, even with a low Z_lr.
+    # config.Z_optimizer = 'sgd' # 'adam' or 'sgd'; Adam's momentum seems to make it harder for the model to adapt quickly within a block, even with a low Z_lr.
     # config.Z_decay = 0.0
     # config.latent_aggregation_op = 'none'
     # config.update_latent_before_weights = True # whether to run the LU step before the WU step within each batch. This seems to help a lot with oversegmenting models, maybe by giving them a chance to adjust Z before the weights have to follow it.

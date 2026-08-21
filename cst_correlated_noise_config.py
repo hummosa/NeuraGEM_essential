@@ -40,7 +40,7 @@ CONDITIONS: Dict[str, Dict[str, Any]] = {
 # CONDITIONS_CANONICAL: Dict[str, Dict[str, Any]] = {
 #     "rnn":               dict(no_of_steps_in_latent_space=0),
 #     "neuragem":          dict(no_of_steps_in_latent_space=1),
-#     "neuragem_lu_first": dict(no_of_steps_in_latent_space=1, update_latent_before_weights=True),
+#     "neuragem_Z_first": dict(no_of_steps_in_latent_space=1, update_latent_before_weights=True),
 #     "neuragem_slow":     dict(no_of_steps_in_latent_space=1, Z_lr=0.2, Z_decay=5e-5),
 #     "neuragem_fast":     dict(no_of_steps_in_latent_space=1, Z_lr=0.7, Z_decay=8e-4),
 # }
@@ -86,7 +86,7 @@ CONDITION_INFO: Dict[str, ConditionInfo] = {
 # CONDITION_INFO_CANONICAL: Dict[str, ConditionInfo] = {
 #     "rnn":               ConditionInfo("RNN",                        COLOR_SCHEME.short_horizon_rnn),
 #     "neuragem":          ConditionInfo("NeuraGEM",                   COLOR_SCHEME.neuragem),
-#     "neuragem_lu_first": ConditionInfo("NeuraGEM LU-first",          plt.cm.tab10(2)),
+#     "neuragem_Z_first": ConditionInfo("NeuraGEM LU-first",          plt.cm.tab10(2)),
 #     "neuragem_slow":     ConditionInfo(r"NeuraGEM slow (Z_lr=0.2)", plt.cm.tab10(1)),
 #     "neuragem_fast":     ConditionInfo(r"NeuraGEM fast (Z_lr=0.7)", plt.cm.tab10(3)),
 # }

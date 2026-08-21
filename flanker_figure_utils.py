@@ -22,6 +22,7 @@ is the unit of analysis. Sizes always come from `plot_style.FigSize` — never a
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import numpy as np
@@ -29,10 +30,12 @@ import matplotlib.pyplot as plt
 
 import plot_style
 plot_style.set_plot_style()
+from plot_style import FigSize
 
 from flanker_analyses import extract_trials, lagged_factors
 from flanker_metrics import session_effects
-from flanker_sweep import (load_condition, load_pretrain_curve, pretrain_tag, result_path)
+from flanker_sweep import (SWEEP_RUNS, describe_runs, load_condition,
+                           load_pretrain_curve, pretrain_tag, result_path, use_run)
 from flanker_sweep_config import RT_THRESHOLD, SEEDS
 
 
@@ -49,6 +52,11 @@ CELLS = [('near_cong', 'near\ncong'), ('far_cong', 'far\ncong'),
 
 
 # ── Loading ───────────────────────────────────────────────────────────────────
+
+#: Backwards-compatible alias — the implementation now lives in flanker_sweep, next to
+#: RUN_NAME itself, so there is one place that knows which runs exist.
+sweep_run = use_run
+
 
 def out_dir_for(p_congruent, variant='baseline'):
     """Directory that holds one condition's results — where its figures belong too."""
@@ -204,13 +212,51 @@ def bars_with_seeds(ax, groups, ylabel, baseline=None, connect=False, rotation=0
     if baseline is not None:
         ax.axhline(baseline, color='k', linewidth=0.6, linestyle=':', alpha=0.5)
     ax.set_xticks(x)
-    ax.set_xticklabels([lbl for _, lbl, _ in groups], fontsize=5,
+    ax.set_xticklabels([lbl for _, lbl, _ in groups],
                        rotation=rotation, ha='center' if rotation == 0 else 'right')
     ax.set_ylabel(ylabel)
     if title:
-        ax.set_title(title, fontsize=6)
+        ax.set_title(title)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+
+
+def _label_width(label):
+    """Rough width of a tick label, in inches, at the current tick font size."""
+    try:
+        pt = float(plt.rcParams['xtick.labelsize'])
+    except (TypeError, ValueError):
+        pt = 6.0
+    longest = max(len(line) for line in str(label).split('\n'))
+    return 0.62 * pt * longest / 72 + 0.06        # mean advance of sans-serif + a gap
+
+
+def bar_panel_width(groups, margin=0.55, min_slot=0.28):
+    """Paper-ready width for one bar panel: enough for the tick labels it has to carry."""
+    slot = max(min_slot, max(_label_width(lbl) for _, lbl, _ in groups))
+    return margin + slot * len(groups)
+
+
+def bar_row(panels, height=2.0):
+    """
+    A row of bar panels, each as wide as its own labels need — draws them and returns
+    (fig, axes).
+
+    panels : list of (groups, kwargs), where `groups` and `kwargs` are what
+             `bars_with_seeds` takes.
+
+    A row of equal-width panels is the wrong shape for bar charts: it leaves a two-bar
+    panel half empty while a four-bar panel crushes its tick labels together, and the
+    figure ends up far wider than the ink in it. Widths come from the labels instead, via
+    `FigSize.custom`, so the dev/paper switch keeps working.
+    """
+    widths = [bar_panel_width(groups) for groups, _ in panels]
+    fig, axes = plt.subplots(1, len(panels), figsize=FigSize.custom(sum(widths), height),
+                             gridspec_kw={'width_ratios': widths})
+    axes = np.atleast_1d(axes)
+    for ax, (groups, kw) in zip(axes, panels):
+        bars_with_seeds(ax, groups, **kw)
+    return fig, axes
 
 
 def band(ax, x, arr, label, color, linestyle='-'):
@@ -256,10 +302,61 @@ def dots_with_ci(ax, y, values, color, label=None, marker='o', filled=True):
     return mean
 
 
+def compact_legend(ax, **kw):
+    """
+    In-axes legend that fits a paper-sized panel.
+
+    No frame and tight spacing, so the legend costs a corner of the axes rather than
+    pushing the data around. Font size is left to rcParams — never pass `fontsize=`.
+    """
+    kw.setdefault('frameon', False)
+    kw.setdefault('handlelength', 1.0)
+    kw.setdefault('handletextpad', 0.4)
+    kw.setdefault('borderpad', 0.2)
+    kw.setdefault('labelspacing', 0.25)
+    return ax.legend(**kw)
+
+
+def share_ylim(*axes, hide_inner=True):
+    """
+    Put a group of panels on one y scale, so their heights can be read against each other.
+
+    Applied after plotting rather than through `sharey=` at subplot creation, because only
+    some panels in a row measure the same thing — sharing the whole row would squash the
+    rest. `hide_inner` drops the repeated y-label and tick labels from every panel but the
+    first, which is only right when the panels are genuinely side by side.
+    """
+    lo = min(ax.get_ylim()[0] for ax in axes)
+    hi = max(ax.get_ylim()[1] for ax in axes)
+    for i, ax in enumerate(axes):
+        ax.set_ylim(lo, hi)
+        if hide_inner and i:
+            ax.set_ylabel('')
+            ax.tick_params(labelleft=False)
+
+
+def _interactive_kernel():
+    """True inside a Jupyter / VS Code interactive kernel, where figures can be shown."""
+    try:
+        from IPython import get_ipython
+    except ImportError:
+        return False
+    ip = get_ipython()
+    return ip is not None and hasattr(ip, 'kernel')
+
+
 def save(fig, path, note=None):
-    """Save at paper size and report where it went (and how big it actually is)."""
+    """
+    Save at paper size and report where it went (and how big it actually is).
+
+    In a Jupyter / VS Code interactive window the figure is also displayed before it is
+    closed, so running a figure script there shows the panels as well as writing the PDF.
+    """
     fig.savefig(path, bbox_inches='tight')
     w, h = fig.get_size_inches()
     print(f'Exported: {path}  [{w:.1f}x{h:.1f} in]' + (f'  — {note}' if note else ''))
+    if _interactive_kernel():
+        from IPython.display import display
+        display(fig)
     plt.close(fig)
     return path

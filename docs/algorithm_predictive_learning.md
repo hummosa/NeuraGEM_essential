@@ -312,15 +312,15 @@ Called when `run_test_phase=True`.
 |---|---|---|
 | `no_of_steps_in_latent_space` | 1 | Inner LU iterations per batch |
 | `no_of_steps_in_weight_space` | 1 | WU iterations per batch |
-| `LU_lr` | 0.1 | Z learning rate |
+| `Z_lr` | 0.1 | Z learning rate |
 | `WU_lr` | 0.001 | Weight learning rate |
 | `latent_aggregation_op` | `'exponential_increase'` | Gradient aggregation scheme |
 | `exponential_increase_steepness` | `[2]` | Per-chunk steepness; 0 = uniform |
 | `pass_previous_latent` | `True` | Carry Z across batches |
 | `loss_reduction_LU` | `'sum'` | How to reduce loss before `.backward()` |
 | `l2_loss` | 0 | L2 regularization weight on Z |
-| `LU_optimizer` | `'Adam'` | Optimizer for Z |
-| `LU_Adam_betas` | `(0.9, 0.999)` | Adam betas for LU |
+| `Z_optimizer` | `'Adam'` | Optimizer for Z |
+| `Z_Adam_betas` | `(0.9, 0.999)` | Adam betas for LU |
 
 ---
 
@@ -331,7 +331,7 @@ Called when `run_test_phase=True`.
 latent_aggregation_op = 'exponential_increase'
 exponential_increase_steepness = [2]
 latent_activation = 'softmax'
-LU_lr = 0.8
+Z_lr = 0.8
 WU_lr = 0.001
 use_mul_gating = True
 pre_gating = True

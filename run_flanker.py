@@ -61,6 +61,13 @@ from flanker_analyses import (
 
 fig_gaussian = False   # whether to overlay a Gaussian fit on RT PMFs
 
+# Result 6 (trial-history regression). False prints the ~6 rows that are results — the
+# human signatures and the mediation. True adds every model's full coefficient table and
+# the collinearity check, including the nuisance regressors that are in the design to be
+# controlled for rather than read. Turn it on when auditing a fit or comparing against
+# the human coefficients in code_shared/STA_BH.
+regression_detail = False
+
 # Congruency drives colour, distance drives line style, throughout.
 COL = dict(
     cong    = '#4393c3',
@@ -544,5 +551,55 @@ fig7.suptitle('What drives the Z update (measured on the trial itself)', fontsiz
 fig7.tight_layout()
 fig7.savefig(test_config.export_path + 'flanker_z_update_drivers.pdf', bbox_inches='tight')
 print(f'Exported: {test_config.export_path + "flanker_z_update_drivers.pdf"}')
+
+#%%
+# ── Result 6: trial-history regression ────────────────────────────────────────
+#
+# The cell contrasts above each condition on one factor at a time, so they cannot
+# separate effects that travel together: an error is followed by a slow trial, but
+# errors also happen mostly on incongruent trials, after slow trials, and later in the
+# session. This estimates everything at once, mirroring the regression run on the human
+# data (code_shared/STA_BH/Regression_on_Behavior.m, Fischer et al. 2018).
+#
+#   M1  the human design, minus RSI (no analogue here)
+#   M2  + the lab's extended sequential terms, lag-2 history, target repetition
+#   M3  + focus_in — does the control state absorb the history effects?
+#
+# Accuracy DV is ACC (1 = correct), so positive = more accurate. The RT model keeps
+# error trials and controls for them with is_error, exactly as the human code does.
+
+from flanker_regression import (SUMMARY_TERMS, build_design, fit_session,
+                                plot_coefficients, report_session)
+
+# M1 is only needed to compare against the human coefficients, so it is fitted only in
+# detail mode; M2 carries the signatures and M3 adds the control state.
+specs = ('M1', 'M2', 'M3') if regression_detail else ('M2', 'M3')
+design = build_design(trials)
+reg = {spec: fit_session(trials, spec=spec, design=design) for spec in specs}
+
+report_session(reg, detail=regression_detail, design=design)
+
+# Figure: M2 against M3, so the mediation is visible rather than tabulated. Plotted as
+# t/z values (what STA_BH plots) because accuracy is in log-odds and RT in log timesteps,
+# and the congruency effect is an order of magnitude larger than everything else.
+terms_to_plot = ([t for t in reg['M3']['rt']['term'] if t != 'Intercept']
+                 if regression_detail else SUMMARY_TERMS)
+fig8, axes8 = plt.subplots(1, 2, figsize=FigSize.custom(6.6, 3.4 if regression_detail else 2.2))
+for ax, dv, name in [(axes8[0], 'acc', 'Accuracy (1 = correct)'),
+                     (axes8[1], 'rt', 'log RT')]:
+    plot_coefficients(ax, reg['M2'][dv], title=name, order=terms_to_plot,
+                      color=COL['incong'], y_offset=+0.16)
+    plot_coefficients(ax, reg['M3'][dv], title=name, order=terms_to_plot,
+                      color=COL['neutral'], y_offset=-0.16)
+    ax.set_xlabel('t / z value  (dotted = ±1.96)')
+axes8[0].legend(handles=[
+    plt.Line2D([], [], color=COL['incong'], marker='o', markersize=3, linewidth=0.9,
+               label='M2 (behaviour only)'),
+    plt.Line2D([], [], color=COL['neutral'], marker='o', markersize=3, linewidth=0.9,
+               label='M3 (+ inherited Z focus)')], fontsize=5, loc='lower left')
+fig8.suptitle('Trial-history regression — one session', fontsize=7)
+fig8.tight_layout()
+fig8.savefig(test_config.export_path + 'flanker_regression_coefficients.pdf', bbox_inches='tight')
+print(f'Exported: {test_config.export_path + "flanker_regression_coefficients.pdf"}')
 
 # %%

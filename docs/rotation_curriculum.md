@@ -96,7 +96,7 @@ value on disk meant half what it said.
 | value | optimizer `weight_decay` | manual grad term | |
 |---|---|---|---|
 | `'grad'` | `0.0` | applied | **what this experiment uses.** Honours `chunk_l2_losses`, and means the same thing under Adam / AdamW / SGD |
-| `'optimizer'` | `Z_decay` | skipped | coupled for Adam, decoupled for AdamW — the meaning changes with `LU_optimizer` |
+| `'optimizer'` | `Z_decay` | skipped | coupled for Adam, decoupled for AdamW — the meaning changes with `Z_optimizer` |
 | `'both'` | `Z_decay` | applied | the historical behaviour, and still the default so existing results stay reproducible. Marked deprecated |
 
 The default was left at `'both'` deliberately: flipping it globally would silently change every
@@ -217,8 +217,8 @@ is why `'uniform'` is a reasonable simplification rather than a confound.
 
 ## Why this should be less brittle than the original
 
-The reference's own comments record the trouble: *"`LU_lr = 0.9` too high / `0.1` too low"*,
-*"Takes 3e3. Waaay too long"*, *"for NG LU_lr=0.1, it is hard to train! fails just the same as a
+The reference's own comments record the trouble: *"`Z_lr = 0.9` too high / `0.1` too low"*,
+*"Takes 3e3. Waaay too long"*, *"for NG Z_lr=0.1, it is hard to train! fails just the same as a
 fresh model"*, *"this extended training does weird things to converged NG"*. Several of the
 causes are structurally absent here:
 
@@ -232,7 +232,7 @@ causes are structurally absent here:
 - **No input augmentation.** The reference fed previous action and reward into the input, which
   competed with Z as a context route — and left them on despite its header saying otherwise.
 - **The field names are the ones the model reads.** `Z_lr` / `Z_decay` here; in the RL repo those
-  two attributes were silently ignored in favour of `LU_lr` / `l2_loss`.
+  two attributes were silently ignored in favour of `Z_lr` / `l2_loss`.
 - **The dose-response is already measured** on this exact task (see Grids).
 
 What is *not* solved by any of this, and is what the pilot exists to check, is whether the cued

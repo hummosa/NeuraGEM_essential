@@ -19,6 +19,7 @@ Loading results for analysis:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pickle
 import sys
@@ -36,6 +37,79 @@ from flanker_sweep_config import (
     GATING, Z_INIT_SCALE, PRETRAIN_OVERRIDES, TEST_OVERRIDES, VARIANTS,
     RUN_NAME, EXPORT_ROOT, SKIP_EXISTING,
 )
+
+
+# ── Which sweep run to read ───────────────────────────────────────────────────
+#
+# RUN_NAME (from flanker_sweep_config) is the single source of truth for which sweep every
+# loader and figure script reads. Change it there to change what a fresh run writes; use
+# `use_run(...)` or an entry point's --run flag to read a different one without editing
+# the config. Reading the wrong run silently is easy and has bitten this project, so every
+# entry point prints the run it used.
+
+SWEEP_RUNS = {
+    'sweep_v1': 'Adam latent optimizer (Z_lr 0.3, decay 1e-4 applied twice via '
+                'decay_mode="both"), temporal decay 0.7, arrow noise 1.3. The original '
+                'sweep; momentum suppresses the lag-1 conflict effect.',
+    'sweep_sgd': 'SGD latent optimizer (Z_lr 300, decay 2.6e-4 on the gradient), '
+                 'temporal decay 0.7, arrow noise 1.3. Same seeds and task as sweep_v1, '
+                 'so the pair isolates the optimizer.',
+    'sweep_td03': 'As sweep_sgd but temporal decay 0.3 — a flatter within-trial loss '
+                  'weighting, so later timesteps count for more.',
+    'sweep_td03_n10': 'As sweep_td03 but arrow noise 1.0 instead of 1.3, i.e. the target '
+                      'slot misleads less often. The test of whether stimulus noise is '
+                      'what breaks the post-error signatures.',
+}
+
+
+@contextlib.contextmanager
+def use_run(name):
+    """
+    Temporarily read from a different sweep run. Restores the previous name on exit.
+
+        with use_run('sweep_v1'):
+            adam = load_condition(0.5, variant='spatial_steep')
+    """
+    global RUN_NAME
+    previous = RUN_NAME
+    RUN_NAME = name or previous
+    try:
+        yield RUN_NAME
+    finally:
+        RUN_NAME = previous
+
+
+def describe_runs(root=None):
+    """
+    Every sweep on disk, read from the stored configs rather than from SWEEP_RUNS.
+
+    Returns a DataFrame: the parameters that actually differ between runs, how many
+    conditions and seeds are present, and the prose note if there is one. Notes go stale;
+    the configs do not.
+    """
+    import glob
+    import pandas as pd
+
+    root = root or os.path.join(EXPORT_ROOT)
+    keys = ['Z_optimizer', 'Z_lr', 'Z_decay', 'Z_decay_mode', 'arrow_noise_std',
+            'temporal_decay_factor', 'n_trials', 'arrows_duration']
+    rows = []
+    for run in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        run_dir = os.path.join(root, run)
+        conds = sorted(d for d in os.listdir(run_dir) if d.startswith('p_congruent'))
+        if not conds:
+            continue
+        files = glob.glob(os.path.join(run_dir, conds[0], 'results_seed-*.pkl'))
+        if not files:
+            continue
+        with open(files[0], 'rb') as fh:
+            config = pickle.load(fh)['config']
+        row = {'run': run, 'conditions': len(conds), 'seeds': len(files),
+               'current': run == RUN_NAME}
+        row.update({k: getattr(config, k, None) for k in keys})
+        row['note'] = SWEEP_RUNS.get(run, '(not in SWEEP_RUNS)')
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 # ── Safe writes ───────────────────────────────────────────────────────────────

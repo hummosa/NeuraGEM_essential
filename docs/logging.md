@@ -37,10 +37,10 @@ Shape convention per entry: `(batch_size, stride, var_dim)` — *except* the fir
 | `latent_values` | `(B, stride, Z_dim)` | Z after LU optimization |
 | `latent_gradients` | `(B, stride, Z_dim)` | Raw ∂L/∂Z before aggregation |
 | `gradients_corrections` | `(B, stride, Z_dim)` | `model.Z.grad` after aggregation |
-| `latent_updating_losses` | `(LU_steps,)` per batch | Loss at each LU iteration |
-| `latent_updating_latents` | `(LU_steps, B, seq, Z_dim)` | Z trajectory during LU |
-| `latent_updating_outputs` | `(LU_steps, B, seq, out)` | Outputs during LU |
-| `latent_updating_combined_inputs` | `(LU_steps, ...)` | Combined inputs during LU |
+| `latent_updating_losses` | `(Z_steps,)` per batch | Loss at each LU iteration |
+| `latent_updating_latents` | `(Z_steps, B, seq, Z_dim)` | Z trajectory during LU |
+| `latent_updating_outputs` | `(Z_steps, B, seq, out)` | Outputs during LU |
+| `latent_updating_combined_inputs` | `(Z_steps, ...)` | Combined inputs during LU |
 
 #### Context / Task IDs
 

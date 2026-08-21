@@ -46,10 +46,9 @@ class Config:
 
         # ── Latent Optimizer (LU) ──────────────────────────────────────────────
         self.Z_lr = 0.4
-        self.LU_optimizer = 'Adam'        # 'Adam', 'AdamW', or 'SGD'
-        self.Z_optimizer = self.LU_optimizer  # alias for clarity
-        self.LU_Adam_betas = (0.6, 0.7)   # For faster dynamics (0.9, 0.999)
-        self.LU_momentum = 0.0            # only used when LU_optimizer='SGD'
+        self.Z_optimizer = 'Adam'        # 'Adam', 'AdamW', or 'SGD'
+        self.Z_Adam_betas = (0.6, 0.7)   # For faster dynamics (0.9, 0.999)
+        self.Z_momentum = 0.0            # only used when Z_optimizer='SGD'
         self.Z_decay = 0.0001                  # L2 regularization weight on Z (weight decay)
         # Which code path applies Z_decay. There are two, and historically BOTH ran:
         #   'grad'      — added to the gradient in RNN_with_latent._apply_chunk_lr_and_decay, and
@@ -57,7 +56,7 @@ class Config:
         #                 and behaves identically under Adam / AdamW / SGD. Prefer this.
         #   'optimizer' — the Z optimizer's own weight_decay, manual term skipped. Coupled for
         #                 Adam, decoupled for AdamW, so the meaning of Z_decay changes with
-        #                 LU_optimizer. Offered for completeness.
+        #                 Z_optimizer. Offered for completeness.
         #   'both'      — DEPRECATED, and the default only so that existing runs stay
         #                 reproducible. Under Adam both paths add decay*Z to the gradient, so the
         #                 effective decay is 2 * Z_decay and every tuned Z_decay on disk means
@@ -196,7 +195,7 @@ class Config:
         # Backward-compat: old names redirect to current names
         if name == 'l2_loss' or name == 'Z_l2_loss':
             name = 'Z_decay'
-        elif name == 'LU_lr':
+        elif name == 'Z_lr':
             name = 'Z_lr'
         super().__setattr__(name, value)
 
@@ -269,9 +268,9 @@ class ContextualSwitchingTaskConfig(Config):
         self.pass_previous_latent = True
         self.no_of_steps_in_latent_space = 1
         self.Z_lr = 0.8
-        self.LU_Adam_betas = (0.6, 0.7)
+        self.Z_Adam_betas = (0.6, 0.7)
         self.Z_decay = 0.0001
-        self.LU_optimizer = 'Adam'
+        self.Z_optimizer = 'Adam'
         self.exponential_increase_steepness = [2] * self.latent_chunks
 
         # ── Weight optimizer ──────────────────────────────────────────────
@@ -358,7 +357,7 @@ class SeqLearnConfig(Config):
         self.no_of_steps_in_latent_space = 10
         self.Z_decay = 0
         self.Z_lr = 0.1
-        self.LU_optimizer = 'Adam'
+        self.Z_optimizer = 'Adam'
         self.WU_lr = 0.001
         self.loss_reduction_LU = 'mean'
         self.loss_reduction_WU = 'mean'
@@ -653,7 +652,7 @@ class FlankerTaskConfig(Config):
         # ── Speed pressure: temporal discount loss (Option A) ─────────────────
         # temporal_decay_factor=0 → equal weights; larger → concentrate at t=1.
         self.response_start_timestep = 1
-        self.temporal_decay_factor   = 0.7
+        self.temporal_decay_factor   = 0.3
         self._set_temporal_weights()    # populates self.temporal_loss_weights
 
         # ── Flanker stimulus parameters ───────────────────────────────────────
@@ -680,7 +679,7 @@ class FlankerTaskConfig(Config):
 
 
 
-        self.arrow_noise_std    = 1.3
+        self.arrow_noise_std    = 1.0
         self.bg_noise_std       = 0.1
         self.signal_strength    = 1.0
 
@@ -691,12 +690,14 @@ class FlankerTaskConfig(Config):
         self.latent_dims        = [5]   # Z_dim=5 matches n_slots; softmax → one-hot over slots
         self.latent_chunks      = 1
         self.exponential_increase_steepness = [2]
-        self.Z_lr               = 0.3
-        self.Z_decay            = 0.0001
-        self.LU_optimizer = 'SGD'
-        if self.LU_optimizer in ('sgd', 'SGD'):
-            self.Z_lr               = 3.
-            self.Z_decay            = 0.02
+        self.Z_decay_mode = 'grad'
+        self.Z_optimizer = 'SGD'
+        if self.Z_optimizer in ('sgd', 'SGD'):
+            self.Z_lr               = 300.
+            self.Z_decay            = 2.6e-4
+        else:
+            self.Z_lr               = 0.3
+            self.Z_decay            = 0.0001
         # ── Derived NeuraGEM internal params (from user-facing names above) ───
         self.block_size             = self.trials_per_context_block * self.arrows_duration
         self.no_of_blocks           = self.n_training_contexts
@@ -785,7 +786,7 @@ class FlankerRandomTrialsConfig(FlankerTaskConfig):
         # varies it to test the list-wide proportion-congruent prediction.
         self.p_congruent = 0.5
         self.p_near      = 0.5
-        # self.LU_optimizer = 'SGD' # HAS no effect, model already built by the time this config comes to play
+        # self.Z_optimizer = 'SGD' # HAS no effect, model already built by the time this config comes to play
 
         self.update_export_path()
         self._validate()

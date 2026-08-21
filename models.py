@@ -94,7 +94,7 @@ class RNN_with_latent(nn.Module):
 
         # Legacy aliases — kept for external scripts; use W_optimizer / Z_optimizer in new code
         self.WU_optimizer = self.W_optimizer
-        self.LU_optimizer = self.Z_optimizer
+        self.Z_optimizer = self.Z_optimizer
 
     # ── Construction helpers ───────────────────────────────────────────────────
 
@@ -218,7 +218,7 @@ class RNN_with_latent(nn.Module):
 
     def _rebuild_Z_optimizer(self) -> None:
         self.Z_optimizer = self._build_Z_optimizer()
-        self.LU_optimizer = self.Z_optimizer
+        self.Z_optimizer = self.Z_optimizer
 
     # ── Optimisers ─────────────────────────────────────────────────────────────
 
@@ -243,18 +243,18 @@ class RNN_with_latent(nn.Module):
 
     def _build_Z_optimizer(self):
         lr = float(self.config.Z_lr)
-        opt_name = self.config.LU_optimizer.lower()
+        opt_name = self.config.Z_optimizer.lower()
         # Under 'grad' the decay is added to the gradient in _apply_chunk_lr_and_decay instead;
         # passing it here as well is what made the effective decay 2 * Z_decay.
         decay = (float(self.config.Z_decay or 0.0)
                  if self._z_decay_mode() in ("optimizer", "both") else 0.0)
         if opt_name in ("adam", "adamw"):
-            betas = self.config.LU_Adam_betas
+            betas = self.config.Z_Adam_betas
             cls = torch.optim.Adam if opt_name == "adam" else torch.optim.AdamW
             return cls([self.Z], lr=lr, betas=betas, weight_decay=decay)
         if opt_name in ("sgd", "SGD"):
-            return torch.optim.SGD([self.Z], lr=lr, momentum=float(self.config.LU_momentum), weight_decay=decay)
-        raise ValueError(f"Unsupported LU_optimizer '{self.config.LU_optimizer}'.")
+            return torch.optim.SGD([self.Z], lr=lr, momentum=float(self.config.Z_momentum), weight_decay=decay)
+        raise ValueError(f"Unsupported Z_optimizer '{self.config.Z_optimizer}'.")
 
     # ── Latent activation ──────────────────────────────────────────────────────
 
@@ -644,7 +644,7 @@ class RNN_with_latent(nn.Module):
         """
         Optionally scale gradients per chunk, and add the L2 decay on Z as a gradient term.
 
-        The per-chunk LR scaling is inert unless config.chunk_LU_lrs is set. The **decay is
+        The per-chunk LR scaling is inert unless config.chunk_Z_lrs is set. The **decay is
         not**: `base_decay` falls back to config.Z_decay, so this runs on every standard LU step
         whenever Z_decay is non-zero. (An earlier docstring claimed the whole method was a no-op
         in standard runs — it never was, which is how Z_decay came to be applied twice.)
@@ -656,7 +656,7 @@ class RNN_with_latent(nn.Module):
 
         grad = self.Z.grad
         base_lr = float(self.config.Z_lr) or 1.0
-        chunk_lrs = getattr(self.config, "chunk_LU_lrs", None)
+        chunk_lrs = getattr(self.config, "chunk_Z_lrs", None)
         apply_decay = self._z_decay_mode() in ("grad", "both")
         base_decay = float(self.config.Z_decay or 0.0) if apply_decay else 0.0
         chunk_decays = getattr(self.config, "chunk_l2_losses", None) if apply_decay else None
@@ -702,7 +702,7 @@ class RNN_with_latent(nn.Module):
     def get_WU_optimizer(self):
         return self.W_optimizer
 
-    def get_LU_optimizer(self):
+    def get_Z_optimizer(self):
         return self.Z_optimizer
 
     def adjust_latent_grads(self, *args, **kwargs):

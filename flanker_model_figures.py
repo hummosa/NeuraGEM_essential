@@ -47,6 +47,10 @@ from flanker_sweep_figures import fig_within_trial
 DEFAULT_VARIANT = 'spatial_steep'
 DEFAULT_P       = 0.5
 
+#: Sweep run to read and write. None follows flanker_sweep_config.RUN_NAME;
+#: see flanker_sweep.SWEEP_RUNS for what each run contains.
+RUN = None
+
 #: Training-gradient series: (variant, x = p_corr[1] − p_corr[2] gap, label)
 SPATIAL_SERIES = [('spatial_flat', 0.00, 'flat'), ('baseline', 0.10, 'default'),
                   ('spatial_steep', 0.23, 'steep'), ('spatial_steeper', 0.34, 'steeper')]
@@ -443,26 +447,35 @@ def build_series(variant=DEFAULT_VARIANT, p=DEFAULT_P):
     fig_decay_series(out_dir, p)
 
 
-def main(variant=DEFAULT_VARIANT, p=DEFAULT_P, card=True, do_series=True):
-    if card:
-        build_card(variant, p)
-    if do_series:
-        build_series(variant, p)
+def main(variant=DEFAULT_VARIANT, p=DEFAULT_P, card=True, do_series=True, run=None):
+    from flanker_sweep import use_run
+
+    # Everything below resolves paths through RUN_NAME, so one context manager
+    # steers both what is read and where the figures are written.
+    with use_run(run or RUN or None) as active:
+        print(f'sweep run: {active}')
+        if card:
+            build_card(variant, p)
+        if do_series:
+            build_series(variant, p)
 
 
 def args_from_argv():
     """`--variant <name> --p <level> [--card-only|--series-only]`, ignoring kernel args."""
-    variant, p, card, do_series, argv = DEFAULT_VARIANT, DEFAULT_P, True, True, sys.argv[1:]
+    variant, p, card, do_series, run, argv = (DEFAULT_VARIANT, DEFAULT_P, True, True,
+                                              None, sys.argv[1:])
     for i, arg in enumerate(argv):
         if arg == '--variant' and i + 1 < len(argv):
             variant = argv[i + 1]
+        elif arg == '--run' and i + 1 < len(argv):
+            run = argv[i + 1]
         elif arg == '--p' and i + 1 < len(argv):
             p = float(argv[i + 1])
         elif arg == '--card-only':
             do_series = False
         elif arg == '--series-only':
             card = False
-    return variant, p, card, do_series
+    return variant, p, card, do_series, run
 
 
 if __name__ == '__main__':

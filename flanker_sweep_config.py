@@ -58,10 +58,12 @@ VARIANTS = {
     # 1x is the baseline (Z_decay = 1e-4). 2x fills the large gap between 1x and 5x,
     # and should land near the control level the mostly-congruent list produces, which
     # makes it the matched-focus comparison against p_congruent=0.8.
-    'decay2x':    dict(overrides={'Z_decay': 2e-4},     p_levels=[0.5]),
-    'decay5x':    dict(overrides={'Z_decay': 5e-4},     p_levels=[0.5]),
-    'decay25x':   dict(overrides={'Z_decay': 2.5e-3},   p_levels=[0.5]),
-    'decay100x':  dict(overrides={'Z_decay': 1e-2},     p_levels=[0.5]),
+    # Multiples of the CURRENT baseline decay. These were absolute values tuned to the
+    # Adam-era baseline (1e-4); under the SGD settings the baseline is 2.6e-4, so the
+    # same absolute numbers would no longer be the multiples their names claim.
+    # 25x and 100x are dropped: they were only ever the degenerate "no control" limit.
+    'decay2x':    dict(overrides={'Z_decay': 5.2e-4},   p_levels=[0.5]),
+    'decay5x':    dict(overrides={'Z_decay': 1.3e-3},   p_levels=[0.5]),
 
     # ── how steep the spatial gradient is during TRAINING ────────────────────
     # These change Stage 1, so each gets its own pretrained models.
@@ -86,7 +88,38 @@ VARIANTS = {
 }
 
 # ── I/O ───────────────────────────────────────────────────────────────────────
-RUN_NAME      = 'sweep_v1'
+# ── Which run this is ─────────────────────────────────────────────────────────
+# RUN_NAME is the single switch: it decides where a sweep writes AND which sweep every
+# analysis and figure script reads. Change it here and everything follows. Every entry
+# point prints the run it used, and `flanker_sweep.describe_runs()` lists what is on disk
+# with the parameters read from the stored configs (notes go stale; configs do not).
+#
+#   sweep_v1        Adam latent optimizer (Z_lr 0.3, decay 1e-4 via decay_mode='both'),
+#                   temporal decay 0.7, arrow noise 1.3. The original sweep.
+#   sweep_sgd       SGD (Z_lr 300, decay 2.6e-4 on the gradient), temporal decay 0.7,
+#                   arrow noise 1.3. Same seeds/task as sweep_v1, so the pair isolates
+#                   the optimizer: SGD restores the lag-1 conflict effect Adam suppressed.
+#   sweep_td03      As sweep_sgd but temporal decay 0.3 — flatter within-trial loss
+#                   weighting, so later timesteps count for more.
+#   sweep_td03_n10  As sweep_td03 but arrow noise 1.0 instead of 1.3, i.e. the target slot
+#                   misleads less often. Tests whether stimulus noise is what breaks the
+#                   post-error signatures.
+#
+# A run name is never reused for different settings: the latent optimizer is baked into
+# the pretrained model at construction and mirror_to_model can only patch lr/decay, so
+# reusing a cache across optimizers would silently run the old one.
+#
+# Bumped from 'sweep_v1' when the latent optimizer changed from Adam to SGD
+# (configs.py: Z_optimizer='SGD', Z_lr=300, Z_decay=2.6e-4). The optimizer is baked into
+# the model object at construction and mirror_to_model can only patch lr/decay, not the
+# optimizer type — so reusing the sweep_v1 cache would have run Adam at lr=300. A new run
+# name forces the models to be rebuilt and keeps the Adam results intact for comparison.
+# 'sweep_sgd'   = SGD latent optimizer, temporal_decay_factor 0.7 (weights [1, .50, .25, .12])
+# 'sweep_td03'  = same, but decay 0.3 (weights [1, .74, .55, .41]). The steep decay trained
+#   the model to commit at the first response timestep, which made RT a decidedness measure
+#   rather than a speed one; this flattens the incentive across the response window. It
+#   changes Stage 1, so the models are retrained rather than reused.
+RUN_NAME      = 'sweep_td03_n10'   # decay 0.3, arrow_noise_std 1.0 (was 1.3)
 EXPORT_ROOT   = './exports/flanker_random/sweeps'
 SKIP_EXISTING = True        # resume: skip jobs whose result pickle already exists
 

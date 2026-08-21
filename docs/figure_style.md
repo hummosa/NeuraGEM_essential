@@ -91,6 +91,39 @@ fig, axes = plt.subplots(2, 3, figsize=FigSize.grid(2, 3))
 fig, axes = plt.subplots(3, 2, figsize=FigSize.grid(3, 2, FigSize.wide))
 ```
 
+### Bar rows, legends and shared scales — `flanker_figure_utils`
+
+The flanker figures build on three helpers that live next to the panel primitives in
+`flanker_figure_utils.py`, because they encode layout decisions this guide asks for:
+
+```python
+from flanker_figure_utils import bar_row, compact_legend, share_ylim
+
+# One row of bar panels; each panel gets width in proportion to the tick labels it
+# carries, so a two-bar panel is not padded out to the width of a four-bar one.
+fig, axes = bar_row([(groups_a, dict(ylabel='Accuracy', baseline=0.5)),
+                     (groups_b, dict(ylabel='RT (timesteps)'))])
+
+compact_legend(ax, loc='lower center', ncol=3)   # frameless, tight, rcParams font size
+share_ylim(axes[1], axes[2])                     # one scale for panels that measure the same thing
+```
+
+`share_ylim` is applied after plotting rather than through `sharey=` at subplot creation,
+so a row can share a scale within a pair of panels without dragging along neighbours that
+measure something else. It drops the repeated y-label and tick labels from all but the
+first panel, which only reads correctly when the panels are side by side.
+
+Use it wherever two panels answer the same question — RT after each history cell,
+accuracy in stage 1 vs stage 2 — and *not* when the two quantities differ by an order of
+magnitude, since the smaller panel then flattens into its baseline.
+
+### Figures in the interactive window
+
+`save()` writes the PDF, then displays the figure when it detects a Jupyter / VS Code
+kernel, so running a figure script in the interactive window shows the panels instead of
+only printing export paths. Batch runs (`python flanker_sweep_figures.py`) are unchanged.
+Paper sizes still look small on screen — that is what `FigSize.dev()` is for.
+
 ## Rules of thumb
 
 - **Never hard-code `figsize`** — always use a `FigSize` preset (or `FigSize.custom`) so that resizing is a one-line change.

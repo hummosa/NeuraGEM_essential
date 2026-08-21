@@ -57,7 +57,7 @@ if attempt_two_attractors_as_before:
     config.output_loss_mask = [1, 0] # IMPORTANT: controls whether model learns to predict the ground truth latent mean (dim 1) or the next observation (dim 0) or both.
     ##
 ##
-# config.LU_optimizer = 'adam'
+# config.Z_optimizer = 'adam'
 # config.Z_decay = 8e-4
 # config.Z_lr   = 0.9
 # config.loss_reduction_LU = 'sum'    # how to reduce per-element loss before backward: 'sum' or 'mean'

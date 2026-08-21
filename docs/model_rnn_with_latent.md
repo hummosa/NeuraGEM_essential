@@ -206,9 +206,9 @@ Supports `'adam'` and `'sgd'`. Adam is default. `weight_decay` is set from `conf
 ### Latent Optimizer (`Z_optimizer`)
 Optimizes only `model.Z`:
 ```python
-Z_optimizer = Adam([Z], lr=LU_lr, betas=LU_Adam_betas)
+Z_optimizer = Adam([Z], lr=Z_lr, betas=Z_Adam_betas)
 # or
-Z_optimizer = SGD([Z], lr=LU_lr, momentum=LU_momentum)
+Z_optimizer = SGD([Z], lr=Z_lr, momentum=Z_momentum)
 ```
 Rebuilt whenever Z is re-initialized (shape change clears Adam moments).
 
@@ -311,7 +311,7 @@ These aliases exist for backward compatibility with older experiment scripts:
 | `update_latent()` | `update_Z()` |
 | `adjust_latent_grads()` | `adjust_Z_grads()` |
 | `get_WU_optimizer()` | returns `W_optimizer` |
-| `get_LU_optimizer()` | returns `Z_optimizer` |
+| `get_Z_optimizer()` | returns `Z_optimizer` |
 
 ---
 
@@ -326,7 +326,7 @@ These aliases exist for backward compatibility with older experiment scripts:
 | `use_mul_gating`, `pre_gating`, `post_gating` | Gating mode |
 | `use_add_gating` | Concatenation mode |
 | `P_gates_bernoulli_prob` | Sparsity of gating masks |
-| `LU_lr`, `LU_optimizer`, `LU_Adam_betas` | Z optimizer |
+| `Z_lr`, `Z_optimizer`, `Z_Adam_betas` | Z optimizer |
 | `WU_lr`, `WU_optimizer`, `WU_momentum` | Weight optimizer |
 | `l2_loss` | L2 on weights; also per-chunk L2 on Z |
 | `latent_aggregation_op` | Gradient aggregation scheme |

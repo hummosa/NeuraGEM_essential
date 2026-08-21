@@ -239,6 +239,56 @@ def control_effects(trials, m):
     return e
 
 
+# ── Block 6: why errors fail to recruit control ───────────────────────────────
+
+def error_diagnosis_effects(trials, m):
+    """
+    Split incongruent errors by *what caused them*, and ask what each kind teaches Z.
+
+    arrow_noise_std is 1.3 against a signal of 1.0, so the target slot's own samples
+    point the wrong way on a sizeable minority of trials. Two very different things
+    therefore produce an error:
+
+      - the centre slot itself was misleading (`_noisy`), in which case attending the
+        centre *less* genuinely lowers this trial's prediction error, or
+      - the centre was fine and the flankers simply won (`_clean`), where attending the
+        centre more is the fix.
+
+    The latent update minimises this trial's prediction error, so it cannot tell the two
+    apart the way an error monitor would. These keys quantify the consequence: the split
+    is a median split on `centre_evidence` taken within incongruent trials, so 0.5 of
+    them fall either side by construction and `frac_err_noisy` above 0.5 means poor
+    centre evidence is over-represented among errors.
+    """
+    dfoc, foc_in = trials['delta_focus'], trials['focus_in']
+    centre_ev, flank_ev = trials['centre_evidence'], trials['flanker_evidence']
+    z_grad = trials.get('z_grad')
+    inc = m['incong']
+
+    e = {}
+    for cn in CONGRUENCY:
+        for on, om in (('corr', m['corr']), ('err', m['err'])):
+            e[f'centre_ev_{cn}_{on}'] = _mean(centre_ev, m[cn] & om)
+            e[f'flank_ev_{cn}_{on}']  = _mean(flank_ev,  m[cn] & om)
+
+    median = np.nanmedian(centre_ev[inc]) if inc.any() else np.nan
+    noisy, clean = centre_ev < median, centre_ev >= median
+    groups = {'err_noisy':  inc & m['err']  & noisy, 'err_clean':  inc & m['err']  & clean,
+              'corr_noisy': inc & m['corr'] & noisy, 'corr_clean': inc & m['corr'] & clean}
+    for name, mask in groups.items():
+        e[f'dfocus_{name}']   = _mean(dfoc, mask)
+        e[f'focus_in_{name}'] = _mean(foc_in, mask)
+        e[f'n_{name}']        = float(mask.sum())
+        if z_grad is not None:
+            e[f'zgrad_centre_{name}'] = _mean(z_grad[:, CENTRE_SLOT], mask)
+
+    n_err = float((inc & m['err']).sum())
+    e['frac_err_noisy'] = float(groups['err_noisy'].sum()) / n_err if n_err else np.nan
+    # Positive = flanker-driven errors teach more control than noise-driven ones do.
+    e['dfocus_err_clean_minus_noisy'] = e['dfocus_err_clean'] - e['dfocus_err_noisy']
+    return e
+
+
 # ── Composition ───────────────────────────────────────────────────────────────
 
 def session_effects(trials):
@@ -246,7 +296,7 @@ def session_effects(trials):
     m = condition_masks(trials)
     e = {}
     for block in (behaviour_effects, rt_outcome_effects, history_effects,
-                  post_error_effects, control_effects):
+                  post_error_effects, control_effects, error_diagnosis_effects):
         e.update(block(trials, m))
     return e
 

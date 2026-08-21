@@ -63,11 +63,11 @@ A task may expose `oracle_context_values` as a property so it tracks a run scrip
 
 | Field | Default | Description |
 |---|---|---|
-| `LU_lr` | 0.1 | Z learning rate |
-| `LU_optimizer` | `'Adam'` | `'Adam'`, `'AdamW'`, or `'SGD'` |
-| `LU_Adam_betas` | `(0.9, 0.999)` | Adam beta parameters |
-| `LU_momentum` | 0.0 | SGD momentum (only used when `LU_optimizer='SGD'`) |
-| `l2_loss` | 0 | L2 regularization weight on Z (alias for `Z_decay`; `LU_lr` likewise aliases `Z_lr`) |
+| `Z_lr` | 0.1 | Z learning rate |
+| `Z_optimizer` | `'Adam'` | `'Adam'`, `'AdamW'`, or `'SGD'` |
+| `Z_Adam_betas` | `(0.9, 0.999)` | Adam beta parameters |
+| `Z_momentum` | 0.0 | SGD momentum (only used when `Z_optimizer='SGD'`) |
+| `l2_loss` | 0 | L2 regularization weight on Z (alias for `Z_decay`; `Z_lr` likewise aliases `Z_lr`) |
 | `Z_decay_mode` | `'both'` | Which code path applies `Z_decay` — see below |
 | `loss_reduction_LU` | `'sum'` | How to reduce per-element loss before backward: `'sum'` or `'mean'` |
 | `latent_aggregation_op` | `'exponential_increase'` | Gradient aggregation across the time dimension before each LU step. Options: `'exponential_increase'`, `'average'`, `'last'`, `'none'` |
@@ -85,7 +85,7 @@ A task may expose `oracle_context_values` as a property so it tracks a run scrip
 > | `Z_decay_mode` | optimizer `weight_decay` | manual grad term | |
 > |---|---|---|---|
 > | `'grad'` | `0.0` | applied | Prefer this. Honours `chunk_l2_losses`, and means the same thing under Adam / AdamW / SGD |
-> | `'optimizer'` | `Z_decay` | skipped | Coupled for Adam, decoupled for AdamW — the meaning changes with `LU_optimizer` |
+> | `'optimizer'` | `Z_decay` | skipped | Coupled for Adam, decoupled for AdamW — the meaning changes with `Z_optimizer` |
 > | `'both'` | `Z_decay` | applied | The historical behaviour, and still the default so existing results stay reproducible. Deprecated |
 >
 > The default is deliberately left at `'both'`: flipping it globally would silently change every
@@ -277,10 +277,10 @@ The `experiment_to_run` argument applies a named preset. Presets are implemented
 | `latent_activation` | `'softmax'` |
 | `latent_aggregation_op` | `'exponential_increase'` |
 | `exponential_increase_steepness` | `[2]` |
-| `LU_lr` | `0.8` |
+| `Z_lr` | `0.8` |
 | `WU_lr` | `0.001` |
 | `l2_loss` | `0.0001` |
-| `LU_Adam_betas` | `(0.6, 0.7)` |
+| `Z_Adam_betas` | `(0.6, 0.7)` |
 | `blocked_phase_length` | `850` |
 | `seq_len` | `4` |
 | `block_size` | `25` (= 25 × task_length) |
