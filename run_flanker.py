@@ -15,12 +15,12 @@ confound condition with time-in-block and with adaptation-to-switch, so they are
 longer used; the old blocked stages live in archive/run_flanker_blocked.py.
 
 Three analysis conventions, all enforced in flanker_analyses.py:
-  - RT is the threshold crossing: interpolated inside the response window, and
-    extrapolated (least-squares projection, capped at 10 timesteps) for trials that
-    never cross. No trial is dropped, because failing to cross is ~4x more common on
-    incongruent trials and censoring them biased incongruent RT downward. About half
-    the extrapolated trials are not rising at all and land on the cap, so RT partly
-    encodes failure-to-decide — `report_extraction` prints the extrapolated fraction.
+  - RT is the threshold crossing, interpolated inside the response window. A trial
+    that never crosses did not respond: it is given rt = arrows_duration, so those
+    trials pile into the last bin instead of being dropped (which censored incongruent
+    trials, ~4x more likely to fail) or projected to an invented value. The failure
+    rate is its own measure — `report_extraction` prints it, and `dec_*` carries it
+    per cell.
   - Z is reported activated (softmax across slots) via the scalar `focus` index.
   - `focus_in` is the state a trial *inherited*; `delta_focus` is the update it
     produced. Z is logged after the LU step, so a trial's own Z already contains
@@ -30,8 +30,8 @@ Three analysis conventions, all enforced in flanker_analyses.py:
 in a single 5000-trial session did not survive ten seeds, and one reversed sign. Use
 these figures to see mechanism and shape; take the statistics from the group scripts:
 
-    python flanker_sweep_analysis.py                                 # across-seed tables
-    python flanker_model_figures.py --variant spatial_steep --p 0.5  # model card
+    python flanker_sweep_analysis.py            # across-seed tables
+    python flanker_sweep_figures.py            # the group figure set
 
 Analysis utilities live in flanker_analyses.py; per-seed measures in flanker_metrics.py.
 """
@@ -42,13 +42,16 @@ if 'get_ipython' in globals():
     get_ipython().run_line_magic('autoreload', '2')
 
 #%%
+import textwrap
+
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 import plot_style
 plot_style.set_plot_style()
 
-from plot_style import FigSize
+from plot_style import FLANKER_COLORS as COL, FigSize
 from functions_and_utils import *
 from configs import FlankerTaskConfig, FlankerRandomTrialsConfig
 from train_and_infer_functions import *
@@ -68,14 +71,34 @@ fig_gaussian = False   # whether to overlay a Gaussian fit on RT PMFs
 # the human coefficients in code_shared/STA_BH.
 regression_detail = False
 
-# Congruency drives colour, distance drives line style, throughout.
-COL = dict(
-    cong    = '#4393c3',
-    incong  = '#d6604d',
-    correct = '#4393c3',
-    error   = '#8b0000',
-    neutral = '#777777',
-)
+# The palette is defined once in plot_style.FLANKER_COLORS and used by every flanker
+# figure, single-session and group alike. Three orthogonal channels:
+#
+#     hue    congruency   blue = congruent, red = incongruent
+#     shade  distance     dark = near flankers, light = far flankers
+#     fill   outcome      filled bar / solid line = correct,
+#                         hollow bar / dashed line = error
+#
+# Outcome deliberately rides on fill rather than on a third hue, so it reads the same way
+# on a bar as on a line and costs no colour. Where a panel puts a *different* factor on
+# shade — trial-history panels use it for the previous trial — that is called out locally.
+
+
+# Every figure exported below is also queued here, together with a short caption drawn
+# from the section comment above it, so a single combined PDF — one figure page followed
+# by one caption page, in script order — can be written at the end. This is additive: it
+# does not change how any individual figure is saved or displayed.
+report_entries = []
+
+
+def export_fig(fig, filename, cfg, caption=None):
+    """Save fig to <cfg.export_path>/filename (unchanged behaviour) and, if a caption is
+    given, queue (fig, filename, caption) for the combined report PDF."""
+    path = cfg.export_path + filename
+    fig.savefig(path, bbox_inches='tight')
+    print(f'Exported: {path}')
+    if caption is not None:
+        report_entries.append((fig, filename, caption))
 
 
 def learning_curve(acc, mask=None, n_bins=20):
@@ -99,19 +122,20 @@ config = FlankerTaskConfig(experiment_to_run='default')
 config.run_name = 'flanker_pretrain_v1'
 config.env_seed = 42
 
-config.Z_optimizer = 'SGD'
-# Session length is specified in trials, not timesteps, so it stays correct if
-# arrows_duration ever changes.
-n_pretrain_trials = 2000
-config.blocked_phase_length = n_pretrain_trials * config.arrows_duration
+training_noise_std = 0.9
+testing_noise_std = 0.9
+config.arrow_noise_std = training_noise_std
+def update_config(cfg): 
+    pass
+update_config(config)
+# n_pretrain_trials (4000) and post-gating are FlankerTaskConfig defaults; override here
+# only if this run needs to deviate, e.g. config.set_n_pretrain_trials(2000).
 
-gating = 'post'   # 'pre' or 'post'
-config.pre_gating  = (gating == 'pre')
-config.post_gating = (gating == 'post')
+
 
 # ── Stage 1: train ────────────────────────────────────────────────────────────
 
-print(f'Stage 1 | seed={config.env_seed}  trials={n_pretrain_trials}  '
+print(f'Stage 1 | seed={config.env_seed}  trials={config.n_pretrain_trials}  '
       f'arrows_duration={config.arrows_duration}')
 print(f'  temporal_loss_weights={[round(w, 3) for w in config.temporal_loss_weights]}')
 print(f'  p_corr_by_distance={config.p_corr_by_distance}')
@@ -125,8 +149,12 @@ logger, model, config, figs = train_model(
 panel_order = [ 'latent_2d', 'corrects']
 _=fig = plot_logger_panels(logger, config, panel_order, x2=None,
                          annotate_phases='corrects', width=5, legends=False, dpi=140)
-fig.savefig(config.export_path + 'flanker_pretrain_results.pdf', bbox_inches='tight')
-print(f'Exported: {config.export_path + "flanker_pretrain_results.pdf"}')
+export_fig(fig, 'flanker_pretrain_results.pdf', config, caption=(
+    "Stage 1 training. Left: 2D projection of the latent Z trajectory across training. "
+    "Right: P(target) accuracy across trials, with block boundaries annotated. Oracle Z "
+    "(the true target slot, handed to the model as a one-hot latent) drives training so "
+    "the weights learn to use it. This is a training diagnostic, not a result — nothing "
+    "here is analysed."))
 
 #%%
 # ── Stage 1 sanity check: did training work? ──────────────────────────────────
@@ -134,8 +162,8 @@ print(f'Exported: {config.export_path + "flanker_pretrain_results.pdf"}')
 # 1: learning curve — accuracy against training trial, split by congruency. Watch
 #    whether the incongruent curve has actually plateaued before the weights are
 #    frozen; if it is still climbing, the spatial weighting is not yet settled.
-# 2: accuracy by training third (early/mid/late), across timesteps within a trial.
-# 3: accuracy split by congruency (Stage 1 hlcids = congruency flag).
+# 2: P(target) by training third (early/mid/late), across timesteps within a trial.
+# 3: P(target) split by congruency (Stage 1 hlcids = congruency flag).
 # 4: RT distribution, late trials only.
 #
 # This is a training diagnostic, not a result — Stage 1 is blocked and oracle-driven.
@@ -174,7 +202,7 @@ ax_thirds.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.4)
 ax_thirds.axvspan(-0.5, config.response_start_timestep - 0.5, alpha=0.08, color='k')
 ax_thirds.set_xticks(range(trials1['ad']))
 ax_thirds.set_xlabel('Timestep within trial')
-ax_thirds.set_ylabel('Accuracy')
+ax_thirds.set_ylabel('P(target)')
 ax_thirds.set_ylim(0.3, 1.05)
 ax_thirds.legend(fontsize=5)
 
@@ -189,8 +217,13 @@ plot_accuracy_by_timestep(ax_cong, trials1, cong_specs,     config)
 plot_rt_distribution(ax_rt,       trials1, cong_late_specs, config, fit_gaussian=fig_gaussian)
 
 fig_acc.tight_layout()
-fig_acc.savefig(config.export_path + 'flanker_pretrain_sanity.pdf', bbox_inches='tight')
-print(f'Exported: {config.export_path + "flanker_pretrain_sanity.pdf"}')
+export_fig(fig_acc, 'flanker_pretrain_sanity.pdf', config, caption=(
+    "Stage 1 sanity check: did training work? (1) Learning curve, accuracy against "
+    "training trial, split by congruency — watch whether the incongruent curve has "
+    "plateaued before the weights are frozen. (2) P(target) by training third "
+    "(early/mid/late) across timesteps within a trial. (3) P(target) split by congruency "
+    "(Stage 1 congruency flag). (4) RT distribution, late trials only. This is a training "
+    "diagnostic, not a result — Stage 1 is blocked and oracle-driven."))
 
 #%%
 # ── Stage 2: frozen weights, self-inferred Z, randomly interleaved trials ─────
@@ -204,9 +237,9 @@ test_config = FlankerRandomTrialsConfig(experiment_to_run='default')
 test_config.run_name = 'flanker_random_v1'
 test_config.env_seed = config.env_seed
 test_config.set_n_trials(5000)
-test_config.p_congruent = 0.5          # matches the human task
 test_config.no_of_steps_in_latent_space = 1
-
+update_config(config)
+test_config.arrow_noise_std = testing_noise_std
 sync_gating(test_config, config)
 mirror_to_model(model, test_config)
 reset_Z_uniform(model, scale=0.2, seed=test_config.env_seed)
@@ -221,7 +254,7 @@ logger_t, model_t, test_config, figs_t = train_model(
     run_test_phase=False,
 )
 
-plot_logger_panels(logger_t, test_config, ['latent_2d', 'corrects'], x2=None,
+_=plot_logger_panels(logger_t, test_config, ['latent_2d', 'corrects'], x2=None,
                    annotate_phases='corrects', width=5, legends=False, dpi=140)
 
 #%%
@@ -259,11 +292,15 @@ print(f'  errors: congruent {(~trials["correct_at_decision"] & cong).sum()}  '
 # blocks. Prediction: incongruent is slower and less accurate, and the cost is
 # larger for near flankers than far ones.
 
+# Ordered congruent pair first, then incongruent, near before far inside each — so the
+# congruency effect the figure is about sits side by side and distance is the within-pair
+# step. Shade carries distance; the line style repeats it for the curve panels, where two
+# shades of one hue are harder to separate than two dash patterns.
 conditions = [
-    (near & cong,   'near-cong',   COL['cong'],   '-'),
-    (near & incong, 'near-incong', COL['incong'], '-'),
-    (far  & cong,   'far-cong',    COL['cong'],   '--'),
-    (far  & incong, 'far-incong',  COL['incong'], '--'),
+    (near & cong,   'near-cong',   COL['near_cong'],   '-'),
+    (far  & cong,   'far-cong',    COL['far_cong'],    '--'),
+    (near & incong, 'near-incong', COL['near_incong'], '-'),
+    (far  & incong, 'far-incong',  COL['far_incong'],  '--'),
 ]
 specs_cd = [(m, lbl, c) for m, lbl, c, _ in conditions]
 ls_cd    = [ls for _, _, _, ls in conditions]
@@ -275,8 +312,12 @@ plot_rt_continuous(ax1b,        trials, specs_cd, test_config, linestyles=ls_cd)
 plot_rt_distribution(ax1c,      trials, specs_cd, test_config,
                      fit_gaussian=fig_gaussian, linestyles=ls_cd)
 fig1.tight_layout()
-fig1.savefig(test_config.export_path + 'flanker_congruency_distance.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_congruency_distance.pdf"}')
+export_fig(fig1, 'flanker_congruency_distance.pdf', test_config, caption=(
+    "Result 1: congruency x distance — the headline behavioural fingerprint, from "
+    "Stage-2 randomly interleaved trials. Accuracy by timestep, continuous RT, and the "
+    "RT distribution for the four near/far x congruent/incongruent cells. Prediction: "
+    "incongruent trials are slower and less accurate, and the cost is larger for near "
+    "flankers than far ones."))
 
 # Z panel uses delta_focus, not focus. Trials are i.i.d., so what a trial *inherits*
 # (focus_in) cannot differ by its own condition — that panel is flat by construction.
@@ -288,8 +329,11 @@ plot_scalar_bars(ax1e, trials, specs_cd, measure='rt_interp')
 plot_scalar_bars(ax1f, trials, specs_cd, measure='delta_focus', baseline=0.0)
 fig1b.suptitle('Congruency × distance — mean ± SEM', fontsize=7)
 fig1b.tight_layout()
-fig1b.savefig(test_config.export_path + 'flanker_congruency_distance_bars.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_congruency_distance_bars.pdf"}')
+export_fig(fig1b, 'flanker_congruency_distance_bars.pdf', test_config, caption=(
+    "Result 1, bar summary: mean +/- SEM accuracy, RT, and delta_focus for the four "
+    "congruency x distance cells. delta_focus (the update a trial produced), not focus, "
+    "is plotted — trials are i.i.d., so the state a trial inherits (focus_in) cannot "
+    "differ by its own condition; delta_focus isolates the update itself."))
 
 #%%
 # ── Result 1b: session stability and RT by outcome ────────────────────────────
@@ -316,15 +360,20 @@ ax1c_curve.set_ylabel('Accuracy')
 ax1c_curve.legend(fontsize=5)
 ax1c_curve.set_title('Frozen weights: session stability', fontsize=6)
 
-for ax, base, title in [(ax1c_cong, cong, 'Congruent'), (ax1c_incong, incong, 'Incongruent')]:
-    specs_out = [(base & correct_dec, 'correct', COL['correct']),
-                 (base & error_dec,   'error',   COL['error'])]
+for ax, base, title, col in [(ax1c_cong, cong, 'Congruent', COL['cong']),
+                             (ax1c_incong, incong, 'Incongruent', COL['incong'])]:
+    specs_out = [(base & correct_dec, 'correct', col),
+                 (base & error_dec,   'error',   col)]
     plot_rt_continuous(ax, trials, specs_out, test_config, linestyles=['-', '--'])
     ax.set_title(title, fontsize=6)
 
 fig1c.tight_layout()
-fig1c.savefig(test_config.export_path + 'flanker_session_and_rt_by_outcome.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_session_and_rt_by_outcome.pdf"}')
+export_fig(fig1c, 'flanker_session_and_rt_by_outcome.pdf', test_config, caption=(
+    "Result 1b: session stability and RT by outcome. (1) Accuracy across the Stage-2 "
+    "test session — weights are frozen, so drift here is Z settling into the list "
+    "statistics, not learning. (2-3) RT distributions for correct vs. error responses, "
+    "within congruent and within incongruent trials — errors should be fast on "
+    "incongruent trials if they are flanker-driven."))
 
 #%%
 # ── Result 2: within-trial evidence accumulation ──────────────────────────────
@@ -358,8 +407,12 @@ ax2.set_ylabel('Output toward final decision\n(sign-normalised)')
 ax2.set_ylim(-1.1, 1.1)
 ax2.legend(fontsize=5)
 fig2.tight_layout()
-fig2.savefig(test_config.export_path + 'flanker_accumulation.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_accumulation.pdf"}')
+export_fig(fig2, 'flanker_accumulation.pdf', test_config, caption=(
+    "Result 2: within-trial evidence accumulation. Output is sign-normalised by the "
+    "model's own final decision, so left and right decisions align on one axis; positive "
+    "= accumulating toward whatever the model eventually chose. The model's analogue of "
+    "the human beta-power lateralisation signal — incongruent trials should dip early "
+    "(flankers pull away from the eventual choice) and reverse late on correct trials."))
 
 #%%
 # ── Result 3: sequential congruency, all four history cells ───────────────────
@@ -385,8 +438,8 @@ def history_cell(c2, c1, current):
     m &= (cong       if current else incong)
     return m
 
-hist_cells = [(True, True, 'CC'), (True, False, 'CI'),
-              (False, True, 'IC'), (False, False, 'II')]
+hist_cells = [(True, True, 'CC'), (False, True, 'IC'),
+              (True, False, 'CI'), (False, False, 'II')]
 
 specs_hist = (
     [(history_cell(c2, c1, False), f'{lbl}→I', COL['incong']) for c2, c1, lbl in hist_cells]
@@ -400,22 +453,12 @@ plot_scalar_bars(ax3b, trials, specs_hist, measure='rt_interp', group_spacing=[4
 plot_scalar_bars(ax3c, trials, specs_hist, measure='focus_in',  group_spacing=[4])
 fig3.suptitle('Sequential congruency — history (t-2, t-1) → t, post-correct only', fontsize=7)
 fig3.tight_layout()
-fig3.savefig(test_config.export_path + 'flanker_sequential_congruency.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_sequential_congruency.pdf"}')
-
-# Same cells as time courses rather than summary bars — accuracy builds within the
-# trial, and history should show up as a shift in that build-up, not only in its endpoint.
-hist_shades = ['#c6dbef', '#6baed6', '#3182bd', '#08519c']
-specs_hist_I = [(history_cell(c2, c1, False), f'{lbl}→I', sh)
-                for (c2, c1, lbl), sh in zip(hist_cells, hist_shades)]
-
-fig3b, (ax3b_acc, ax3b_rt) = plt.subplots(1, 2, figsize=(FigSize.large[0] * 2, FigSize.large[1]))
-plot_accuracy_by_timestep(ax3b_acc, trials, specs_hist_I, test_config)
-plot_rt_continuous(ax3b_rt,        trials, specs_hist_I, test_config)
-fig3b.suptitle('Sequential congruency — within-trial time course, → incongruent', fontsize=7)
-fig3b.tight_layout()
-fig3b.savefig(test_config.export_path + 'flanker_sequential_timecourse.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_sequential_timecourse.pdf"}')
+export_fig(fig3, 'flanker_sequential_congruency.pdf', test_config, caption=(
+    "Result 3: sequential congruency, all four (t-2, t-1) -> t history cells (CC, CI, "
+    "IC, II), restricted to trials where both preceding trials were correct (so the "
+    "effect isn't confounded with post-error adaptation). CI and IC are kept separate "
+    "rather than pooled, since they are opposite trajectories. II->C vs CC->C is where "
+    "the predicted speed-accuracy dissociation lives (faster but more error-prone)."))
 
 #%%
 # ── Result 3b: does the sequential effect survive response repetition? ────────
@@ -434,11 +477,13 @@ def prev_cell(c1, current, extra):
 fig4, axes4 = plt.subplots(2, 2, figsize=(FigSize.large[0] * 2, FigSize.large[1] * 2))
 for col, (rep_mask, rep_label) in enumerate([(switched, 'response switched'),
                                              (repeated, 'response repeated')]):
+    # Hue = the current trial's congruency; shade = the previous trial's (dark = the
+    # conflict trial). Distance is not shown in this panel, so shade is free to carry it.
     specs_rep = [
-        (prev_cell(True,  False, rep_mask), 'C→I', COL['incong']),
-        (prev_cell(False, False, rep_mask), 'I→I', COL['error']),
-        (prev_cell(True,  True,  rep_mask), 'C→C', COL['cong']),
-        (prev_cell(False, True,  rep_mask), 'I→C', '#084594'),
+        (prev_cell(True,  False, rep_mask), 'C→I', COL['far_incong']),
+        (prev_cell(False, False, rep_mask), 'I→I', COL['near_incong']),
+        (prev_cell(True,  True,  rep_mask), 'C→C', COL['far_cong']),
+        (prev_cell(False, True,  rep_mask), 'I→C', COL['near_cong']),
     ]
     print_cell_counts(specs_rep, label=f'Gratton 2×2 | {rep_label}:')
     plot_scalar_bars(axes4[0, col], trials, specs_rep, measure='accuracy', baseline=0.5)
@@ -447,8 +492,12 @@ for col, (rep_mask, rep_label) in enumerate([(switched, 'response switched'),
 
 fig4.suptitle('Sequential congruency split by response repetition (post-correct)', fontsize=7)
 fig4.tight_layout()
-fig4.savefig(test_config.export_path + 'flanker_sequential_by_repetition.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_sequential_by_repetition.pdf"}')
+export_fig(fig4, 'flanker_sequential_by_repetition.pdf', test_config, caption=(
+    "Result 3b: does the sequential effect survive response repetition? Splits the "
+    "classic Gratton 2x2 (C->I, I->I, C->C, I->C accuracy and RT) by whether the "
+    "response repeated or switched, to rule out the repetition-priming confound (Mayr, "
+    "Awh & Laurey 2003) — if the interaction only appears when repetitions are pooled "
+    "in, it is priming, not control."))
 
 #%%
 # ── Result 4: post-error effects ──────────────────────────────────────────────
@@ -466,33 +515,44 @@ print(f'Exported: {test_config.export_path + "flanker_sequential_by_repetition.p
 #
 # Z panel uses focus_in: the state B inherited, before B's own update.
 
+# Hue = trial B's congruency, which is what the bar is measuring. Trial A's outcome is
+# the fill: hollow after an error, filled after a correct response.
 post_specs = [
-    (valid & prev_incong & prev_error   & incong, 'A err → I',  COL['error']),
-    (valid & prev_incong & prev_error   & cong,   'A err → C',  '#f4a582'),
+    (valid & prev_incong & prev_error   & incong, 'A err → I',  COL['incong']),
+    (valid & prev_incong & prev_error   & cong,   'A err → C',  COL['cong']),
     (valid & prev_incong & prev_correct & incong, 'A corr → I', COL['incong']),
     (valid & prev_incong & prev_correct & cong,   'A corr → C', COL['cong']),
 ]
+post_hollow = [True, True, False, False]
 print_cell_counts(post_specs, label='Post-error (incongruent A only):')
 
 fig5, (ax5a, ax5b, ax5c) = plt.subplots(1, 3, figsize=(FigSize.large[0] * 3, FigSize.large[1]))
-plot_scalar_bars(ax5a, trials, post_specs, measure='accuracy',  group_spacing=[2], baseline=0.5)
-plot_scalar_bars(ax5b, trials, post_specs, measure='rt_interp', group_spacing=[2])
-plot_scalar_bars(ax5c, trials, post_specs, measure='focus_in',  group_spacing=[2])
+plot_scalar_bars(ax5a, trials, post_specs, measure='accuracy',  group_spacing=[2],
+                 baseline=0.5, hollow=post_hollow)
+plot_scalar_bars(ax5b, trials, post_specs, measure='rt_interp', group_spacing=[2],
+                 hollow=post_hollow)
+plot_scalar_bars(ax5c, trials, post_specs, measure='focus_in',  group_spacing=[2],
+                 hollow=post_hollow)
 fig5.suptitle('Post-error effects — incongruent trial A, trial B split by congruency', fontsize=7)
 fig5.tight_layout()
-fig5.savefig(test_config.export_path + 'flanker_post_error.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_post_error.pdf"}')
+export_fig(fig5, 'flanker_post_error.pdf', test_config, caption=(
+    "Result 4: post-error effects. Trial A (the preceding trial, incongruent only) "
+    "split by outcome; trial B split by congruency. Accuracy, RT, and focus_in (the "
+    "state B inherited, before B's own update) for the four A-outcome x B-congruency "
+    "cells."))
 
 # Time courses for the same four cells
 fig5b, (ax5b_acc, ax5b_rt) = plt.subplots(1, 2, figsize=(FigSize.large[0] * 2, FigSize.large[1]))
-plot_accuracy_by_timestep(ax5b_acc, trials, post_specs, test_config,
-                          linestyles=['-', '--', '-', '--'])
-plot_rt_continuous(ax5b_rt,        trials, post_specs, test_config,
-                   linestyles=['-', '--', '-', '--'])
+# Dashed = trial A was an error, the line-plot counterpart of the hollow bars above.
+post_ls = ['--', '--', '-', '-']
+plot_accuracy_by_timestep(ax5b_acc, trials, post_specs, test_config, linestyles=post_ls)
+plot_rt_continuous(ax5b_rt,        trials, post_specs, test_config, linestyles=post_ls)
 fig5b.suptitle('Post-error effects — within-trial time course', fontsize=7)
 fig5b.tight_layout()
-fig5b.savefig(test_config.export_path + 'flanker_post_error_timecourse.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_post_error_timecourse.pdf"}')
+export_fig(fig5b, 'flanker_post_error_timecourse.pdf', test_config, caption=(
+    "Result 4, time course: the same four post-error cells as within-trial accuracy and "
+    "RT time courses. Dashed = trial A was an error, the line-plot counterpart of the "
+    "hollow bars in the previous figure."))
 
 #%%
 # ── Result 4b: near vs far errors ─────────────────────────────────────────────
@@ -502,24 +562,76 @@ print(f'Exported: {test_config.export_path + "flanker_post_error_timecourse.pdf"
 # meaningful within incongruent trials — with congruent flankers there is nothing
 # to be misled by — so A is incongruent throughout.
 
+# Hue = trial B's congruency, shade = trial A's flanker distance (the factor under test
+# here, so it takes the shade channel), fill = trial A's outcome.
 nearfar_specs = [
-    (valid & prev_incong & prev_near & prev_error   & incong, 'near err → I',  COL['error']),
-    (valid & prev_incong & prev_near & prev_error   & cong,   'near err → C',  '#f4a582'),
-    (valid & prev_incong & prev_far  & prev_error   & incong, 'far err → I',   '#74add1'),
-    (valid & prev_incong & prev_far  & prev_error   & cong,   'far err → C',   '#abd9e9'),
-    (valid & prev_incong & prev_near & prev_correct & incong, 'near corr → I', COL['incong']),
-    (valid & prev_incong & prev_far  & prev_correct & incong, 'far corr → I',  COL['neutral']),
+    (valid & prev_incong & prev_near & prev_error   & incong, 'near err → I',  COL['near_incong']),
+    (valid & prev_incong & prev_near & prev_error   & cong,   'near err → C',  COL['near_cong']),
+    (valid & prev_incong & prev_far  & prev_error   & incong, 'far err → I',   COL['far_incong']),
+    (valid & prev_incong & prev_far  & prev_error   & cong,   'far err → C',   COL['far_cong']),
+    (valid & prev_incong & prev_near & prev_correct & incong, 'near corr → I', COL['near_incong']),
+    (valid & prev_incong & prev_far  & prev_correct & incong, 'far corr → I',  COL['far_incong']),
 ]
+nearfar_hollow = [True, True, True, True, False, False]
 print_cell_counts(nearfar_specs, label='Near vs far errors (incongruent A only):')
 
 fig6, (ax6a, ax6b, ax6c) = plt.subplots(1, 3, figsize=(FigSize.large[0] * 3.4, FigSize.large[1]))
-plot_scalar_bars(ax6a, trials, nearfar_specs, measure='accuracy',  group_spacing=[2, 4], baseline=0.5)
-plot_scalar_bars(ax6b, trials, nearfar_specs, measure='rt_interp', group_spacing=[2, 4])
-plot_scalar_bars(ax6c, trials, nearfar_specs, measure='focus_in',  group_spacing=[2, 4])
+plot_scalar_bars(ax6a, trials, nearfar_specs, measure='accuracy',  group_spacing=[2, 4],
+                 baseline=0.5, hollow=nearfar_hollow)
+plot_scalar_bars(ax6b, trials, nearfar_specs, measure='rt_interp', group_spacing=[2, 4],
+                 hollow=nearfar_hollow)
+plot_scalar_bars(ax6c, trials, nearfar_specs, measure='focus_in',  group_spacing=[2, 4],
+                 hollow=nearfar_hollow)
 fig6.suptitle('Near vs far flanker errors — incongruent trial A', fontsize=7)
 fig6.tight_layout()
-fig6.savefig(test_config.export_path + 'flanker_post_error_near_far.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_post_error_near_far.pdf"}')
+export_fig(fig6, 'flanker_post_error_near_far.pdf', test_config, caption=(
+    "Result 4b: near vs. far errors. Tests whether near-flanker errors on trial A "
+    "(incongruent throughout) drive a larger control correction than far-flanker "
+    "errors, since near slots carry more prediction weight. Accuracy, RT, and focus_in "
+    "split by trial A's distance and outcome, trial B's congruency."))
+
+#%%
+# ── Result 4c: the circularity behind the missing post-error improvement ──────
+#
+# Result 4 asks what happens *after* an error. This asks what was already true *before*
+# it, and the answer undercuts the usual reading: a trial that goes wrong already
+# inherited a lower control state, so conditioning on the outcome and then reading the
+# state is circular — the low state is what produced the error.
+#
+# The error's own update is real and much larger than a correct trial's. Whether the next
+# trial still starts behind depends on whether that update covers the gap, which panel 2
+# measures. Replicates here are individual error events within this one session, so the
+# error bars are trial-level; the group version (one dot per seed) is
+# flanker_sweep_figures.fig_circularity.
+
+from flanker_metrics import event_locked
+from flanker_figure_utils import plot_circularity
+
+ev = event_locked(trials)
+ev_plot = dict(ev)
+for key in ('start_gap', 'upd_err', 'upd_corr',
+            'frac_err_noisy', 'frac_err_clean',
+            'dfocus_err_noisy', 'dfocus_err_clean'):    # scalars -> one replicate
+    ev_plot[key] = np.array([ev[key]])
+for key in ('curve_x', 'curve_y'):
+    ev_plot[key] = [ev[key]]
+
+fig4c, axes4c = plt.subplots(1, 5, figsize=(FigSize.large[0] * 5, FigSize.large[1]))
+plot_circularity(axes4c, ev_plot)
+fig4c.suptitle('Post-error control — the deficit precedes the error', fontsize=7)
+fig4c.tight_layout()
+export_fig(fig4c, 'flanker_pia_circularity.pdf', test_config, caption=(
+    "Result 4c: the circularity behind the missing post-error improvement. (1) What was "
+    "already true *before* an error: a trial that goes wrong already inherited a lower "
+    "control state, so conditioning on the outcome and then reading the state is "
+    "circular. (2-3) Why the average post-error update is unreliable: incongruent errors "
+    "split (median split on centre_evidence) into noise-driven — the centre slot's own "
+    "evidence misled the model — and flanker-driven — centre evidence was clean, the "
+    "flankers just won. Panel 3 shows each kind's own delta_focus update against a "
+    "correct trial's; the two kinds teach Z in opposite directions, which is why the "
+    "pooled correction in panel (1)'s gap does not reliably close it. (4-5) The "
+    "behavioural cost: accuracy after an error vs. after a correct trial, and the "
+    "exchange rate between inherited control and accuracy."))
 
 #%%
 # ── Result 5: what drives the control update ──────────────────────────────────
@@ -533,24 +645,33 @@ print(f'Exported: {test_config.export_path + "flanker_post_error_near_far.pdf"}'
 #
 # Masks here index trial A itself, not the trial after it.
 
+# Every cell is incongruent, so hue is constant and the two channels that vary are the
+# ones being contrasted: shade = distance, fill = outcome.
 drive_specs = [
-    (near & incong & ~correct_dec, 'near-incong err',  COL['error']),
-    (far  & incong & ~correct_dec, 'far-incong err',   '#74add1'),
-    (near & incong &  correct_dec, 'near-incong corr', COL['incong']),
-    (far  & incong &  correct_dec, 'far-incong corr',  COL['neutral']),
+    (near & incong & ~correct_dec, 'near-incong err',  COL['near_incong']),
+    (far  & incong & ~correct_dec, 'far-incong err',   COL['far_incong']),
+    (near & incong &  correct_dec, 'near-incong corr', COL['near_incong']),
+    (far  & incong &  correct_dec, 'far-incong corr',  COL['far_incong']),
 ]
+drive_hollow = [True, True, False, False]
 print_cell_counts(drive_specs, label='Z update drivers:')
 
 fig7, axes7 = plt.subplots(1, 2, figsize=(FigSize.large[0] * 2, FigSize.large[1]))
-plot_scalar_bars(axes7[0], trials, drive_specs, measure='delta_focus', group_spacing=[2], baseline=0.0)
+plot_scalar_bars(axes7[0], trials, drive_specs, measure='delta_focus', group_spacing=[2],
+                 baseline=0.0, hollow=drive_hollow)
 if trials['pe'] is not None:
-    plot_scalar_bars(axes7[1], trials, drive_specs, measure='pe', group_spacing=[2])
+    plot_scalar_bars(axes7[1], trials, drive_specs, measure='pe', group_spacing=[2],
+                     hollow=drive_hollow)
 else:
     axes7[1].set_visible(False)
 fig7.suptitle('What drives the Z update (measured on the trial itself)', fontsize=7)
 fig7.tight_layout()
-fig7.savefig(test_config.export_path + 'flanker_z_update_drivers.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_z_update_drivers.pdf"}')
+export_fig(fig7, 'flanker_z_update_drivers.pdf', test_config, caption=(
+    "Result 5: what drives the control update. delta_focus (the update a trial "
+    "generated, not the Z level) grouped by the trial's own near/far x outcome, "
+    "incongruent trials only — a description of the learning rule rather than of its "
+    "consequence, so grouping it by the trial's own properties is legitimate, unlike "
+    "reading a post-outcome Z level."))
 
 #%%
 # ── Result 6: trial-history regression ────────────────────────────────────────
@@ -599,7 +720,37 @@ axes8[0].legend(handles=[
                label='M3 (+ inherited Z focus)')], fontsize=5, loc='lower left')
 fig8.suptitle('Trial-history regression — one session', fontsize=7)
 fig8.tight_layout()
-fig8.savefig(test_config.export_path + 'flanker_regression_coefficients.pdf', bbox_inches='tight')
-print(f'Exported: {test_config.export_path + "flanker_regression_coefficients.pdf"}')
+export_fig(fig8, 'flanker_regression_coefficients.pdf', test_config, caption=(
+    "Result 6: trial-history regression, mirroring the human GLM "
+    "(code_shared/STA_BH/Regression_on_Behavior.m, Fischer et al. 2018). M2 = "
+    "behavioural history terms only; M3 = + focus_in (the inherited control state), "
+    "testing whether the control state mediates the history effects. Plotted as t/z "
+    "values, since accuracy is in log-odds and RT in log timesteps; dotted lines at "
+    "+/-1.96."))
+
+#%%
+# ── Combined report: every figure above, one per page, with a caption page after each ──
+#
+# Purely additive — every figure is still saved and displayed exactly as above; this just
+# collects the same figure objects (in the order they were created) into one PDF for
+# skimming the whole session end to end. Written to the Stage-2 export folder, since most
+# of the figures — and the run this document is really about — live there.
+
+def _caption_page(title, caption, figsize=(8.27, 3.0)):
+    """A text-only page: the export filename as a heading, the section comment as body."""
+    fig = plt.figure(figsize=figsize)
+    wrapped = textwrap.fill(caption, width=100)
+    fig.text(0.06, 0.90, title, ha='left', va='top', fontsize=9, fontweight='bold')
+    fig.text(0.06, 0.78, wrapped, ha='left', va='top', fontsize=7, family='monospace')
+    return fig
+
+report_path = test_config.export_path + 'flanker_all_figures_report.pdf'
+with PdfPages(report_path) as pdf:
+    for fig, filename, caption in report_entries:
+        pdf.savefig(fig, bbox_inches='tight')
+        cap_fig = _caption_page(filename, caption)
+        pdf.savefig(cap_fig)
+        plt.close(cap_fig)
+print(f'Exported combined report ({len(report_entries)} figures): {report_path}')
 
 # %%

@@ -632,10 +632,20 @@ class FlankerTaskConfig(Config):
         self.dataset_name        = 'flanker_pretrain'
         self.experiment_to_run   = experiment_to_run
 
+        # Post-gating (apply the multiplicative Z gate after each RNN step, rather than
+        # before) is what the pretraining behind every current flanker result actually
+        # used. Overrides Config's pre_gating=True/post_gating=False default.
+        self.pre_gating  = False
+        self.post_gating = True
+
         # ── Trial structure (user-facing names) ───────────────────────────────
         self.arrows_duration          = 5    # timesteps per trial → sets seq_len & stride
         self.trials_per_context_block = 2   # trials with the same target slot per block
-        self.n_training_contexts      = 100  # number of context blocks in training
+        # Total Stage-1 trials. Session length is specified in trials, not timesteps, so
+        # it stays correct if arrows_duration ever changes; call set_n_pretrain_trials()
+        # to change it after construction, which keeps the derived block counts in sync.
+        self.n_pretrain_trials        = 4000
+        self.n_training_contexts      = self.n_pretrain_trials // self.trials_per_context_block
 
         # ── Task dimensions ───────────────────────────────────────────────────
         self.input_size  = 6   # 5 noisy slot observations + 1 hidden target direction
@@ -679,7 +689,7 @@ class FlankerTaskConfig(Config):
 
 
 
-        self.arrow_noise_std    = 1.0
+        self.arrow_noise_std    = .9
         self.bg_noise_std       = 0.1
         self.signal_strength    = 1.0
 
@@ -706,6 +716,14 @@ class FlankerTaskConfig(Config):
 
         self.update_export_path()
         self._validate()
+
+    def set_n_pretrain_trials(self, n_pretrain_trials):
+        """Set Stage-1 session length in trials and keep the derived block counts consistent."""
+        self.n_pretrain_trials    = int(n_pretrain_trials)
+        self.n_training_contexts  = self.n_pretrain_trials // self.trials_per_context_block
+        self.no_of_blocks         = self.n_training_contexts
+        self.blocked_phase_length = self.no_of_blocks * self.block_size
+        return self
 
     def _set_temporal_weights(self):
         """Compute temporal_loss_weights from response_start_timestep and temporal_decay_factor."""

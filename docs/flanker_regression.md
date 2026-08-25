@@ -7,11 +7,11 @@ Code: `flanker_regression.py`. Interactively:
 
     import flanker_regression as reg
     reg.describe_runs()               # every sweep on disk, with the params that differ
-    reg.RUN = 'sweep_td03_n10'        # notes on each run are in reg.SWEEP_RUNS
-    summaries = reg.group_report()    # signature table + M2 vs M3, across sessions
+    reg.RUN = 'sweep_noise'           # notes on each run are in reg.SWEEP_RUNS
+    summaries = reg.group_report(variant='noise10')   # signatures + M2 vs M3
     fig = reg.fig_group_coefficients(summaries)
 
-or `python flanker_regression.py --variant spatial_steep --p 0.5 [--run sweep_sgd]`.
+or `python flanker_regression.py --variant noise10 [--run sweep_noise]`.
 Either way each session plays the role of one participant, as in the human analysis.
 `run_flanker.py` (Result 6 cell) fits a single session, which is one synthetic subject:
 useful for seeing shape and mechanism, not for evidence.
@@ -126,7 +126,7 @@ LogRT ~ Congruence + Distance + RSI + Error + Hand + PostError + PostIncom + Pos
 
 | human | ours |
 |---|---|
-| `LogRT` | `log(rt_interp)` — timesteps, extrapolated trials included (capped at 10) |
+| `LogRT` | `log(rt_interp)` — timesteps; undecided trials sit at the trial end |
 | `ACC` | `correct_at_decision` |
 | `Congruence` | `incong` (0/1) |
 | `Distance` | `far` (0/1); note **0 = close** in their raw data |
@@ -188,35 +188,45 @@ one synthetic subject.
 
 ---
 
-## 7. Why PIA and PERI fail — the diagnosis
+## 7. Why PIA and PERI fail — and what fixes them
 
-`flanker_error_diagnosis.py` (figure: `error_diagnosis.pdf`). Two candidate explanations
-were tested against matched sweeps — same seeds, same task, only the latent optimizer
-differs (`sweep_v1` = Adam, `sweep_sgd` = SGD).
+Figure: `group_7_noise_series.pdf`, built by `flanker_sweep_figures.fig_noise_series`.
 
-**Not the optimizer.** Adam's momentum was suspected of smearing control across trials,
-and it was: switching to SGD doubles the lag-1 conflict-adaptation contrast
-(0.014 ns → 0.030, p=0.005; paired p=0.001) while leaving lag-2 untouched, so lag-1 and
-lag-2 are no longer reliably different. That was a real problem and it is now fixed. But
-PIA (−0.032 → −0.048) and PERI (−0.432 → −0.404) do not move.
+`arrow_noise_std` is the SD of the per-timestep noise on each arrow against a signal of
+1.0. When it is large the *target slot's own samples* frequently point the wrong way, so
+two very different things cause an error: the target misled (bad luck) or the flankers won
+(too little control). The latent update minimises this trial's prediction error, so it
+cannot tell them apart — on a bad-luck error, attending the target *less* genuinely does
+lower the error. Locally correct, globally anti-adaptive.
 
-**The actual cause: an error does not mean what the update assumes it means.**
-`arrow_noise_std` is 1.3 against a signal of 1.0, so the target slot's own samples
-frequently point the wrong way. Two different things cause an error:
+The noise sweep is the test, everything else held fixed. The table below is a snapshot —
+**regenerate it before quoting it**, with `python flanker_sweep_figures.py` (which writes
+`group_7_noise_series.pdf`) or `flanker_sweep_analysis.py` per level. What matters is the
+*pattern*, which has been stable: every row moves monotonically with noise, and the
+mechanism row crosses zero where the behaviour does.
 
-| error type | share | Δ focus it produces | dL/dZ at the centre |
-|---|---|---|---|
-| centre slot misled (noise-driven) | 64% | **−0.025** (p<0.001) | **+0.0002** → descent *lowers* centre weight |
-| centre fine, flankers won | 36% | +0.003 (ns) | −0.0001 → raises it |
+| measure | noise 1.3 | 1.0 | 0.7 | 0.4 |
+|---|---|---|---|---|
+| share of errors that are bad luck | 0.626 | 0.605 | 0.575 | 0.524 |
+| Δ focus after a bad-luck error | **−0.035** | +0.037 | +0.282 | +0.565 |
+| PIA | −0.066 | −0.064 | +0.008 | **+0.120** |
+| PERI | −0.059 | +0.057 | +0.279 | **+0.630** |
+| conflict adaptation (lag 1) | 0.035 | 0.062 | 0.127 | 0.161 |
+| PES | +0.424 | +0.191 | −0.282 | **−0.833** |
 
-The latent update minimises *this trial's* prediction error. When the centre sample was
-misleading, attending the centre less genuinely does reduce that error — the gradient is
-locally correct and globally anti-adaptive. Because the noise-driven kind is both more
-common and several times larger, the average post-error update is negative, and every
-signature that depends on errors recruiting control inverts.
+Everything moves monotonically, and the mechanism crosses zero where the behaviour does:
+below about noise 1.0 a bad-luck error stops loosening control, and PIA and PERI turn
+positive. Conflict adaptation quadruples over the same range.
 
-**This is a structural limitation, not a tuning problem.** The model has no error monitor;
-it has a prediction-error minimiser, and the two disagree exactly when performance is
-poor. A model that reproduced PIA and PERI would need a signal that distinguishes "I was
-unlucky" from "I was not controlling enough" — which is what the human anterior cingulate
-account posits and what this architecture does not have.
+**But PES inverts.** At low noise the model responds *faster* after an error, 0/20 seeds in
+the human direction. No single noise level gives all three post-error signatures at once:
+high noise buys PES at the cost of PIA and PERI, low noise the reverse. That is a real
+limitation of this architecture rather than a parameter to tune — the model has no error
+monitor, only a prediction-error minimiser, and the two coincide only by accident.
+
+Two caveats on the low-noise end: the congruency effect shrinks (0.258 → 0.191) and the
+distance effect disappears (−0.136 → −0.006), so the fingerprint the model was built to
+reproduce weakens as the post-error signatures appear. And the accuracy regression stops
+converging in 3 of 20 sessions at noise 0.4 because the congruent cells approach ceiling —
+`group_report` prints a warning when that happens, and those coefficients should not be
+read.

@@ -25,7 +25,7 @@ from plot_style import FigSize
 from flanker_analyses import extract_trials
 from flanker_metrics import session_effects
 from flanker_sweep import load_condition, result_path
-from flanker_sweep_config import P_CONGRUENT_LEVELS, RT_THRESHOLD, SEEDS
+from flanker_sweep_config import RT_THRESHOLD, SEEDS, VARIANTS
 
 import os
 
@@ -36,18 +36,18 @@ import os
 # across seeds: t-tests, paired contrasts, and the printed tables.
 
 
-def collect_by_seed(p_congruent, rt_threshold=RT_THRESHOLD):
-    """Load every seed at one congruency level. Returns {seed: effects dict}."""
+def collect_by_seed(variant, rt_threshold=RT_THRESHOLD):
+    """Load every seed of one variant. Returns {seed: effects dict}."""
     out = {}
-    for res in load_condition(p_congruent):
+    for res in load_condition(variant):
         trials = extract_trials(res['train_logger'], res['config'], rt_threshold=rt_threshold)
         out[res['seed']] = session_effects(trials)
     return out
 
 
-def collect(p_congruent, rt_threshold=RT_THRESHOLD):
-    """Load every seed at one congruency level and stack per-seed effects."""
-    by_seed = collect_by_seed(p_congruent, rt_threshold)
+def collect(variant, rt_threshold=RT_THRESHOLD):
+    """Load every seed of one variant and stack per-seed effects."""
+    by_seed = collect_by_seed(variant, rt_threshold)
     if not by_seed:
         return {}
     rows = [by_seed[s] for s in sorted(by_seed)]
@@ -100,19 +100,19 @@ def paired(effects, key_a, key_b, label):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main(reference_p=0.8):
-    export_dir = os.path.dirname(os.path.dirname(result_path(0, reference_p)))
+def main(variant=None):
+    variant = variant or next(iter(VARIANTS))
     print('=' * 84)
-    print(f'ACROSS-SUBJECT SUMMARY  (each seed = one subject, reference p_congruent={reference_p})')
+    print(f'ACROSS-SUBJECT SUMMARY  (each seed = one subject, variant={variant})')
     print('=' * 84)
 
-    eff = collect(reference_p)
+    eff = collect(variant)
     if not eff:
         print('No results found — run flanker_sweep.py first.')
         return
 
     report(eff, [('acc_overall', 'overall accuracy'),
-                 ('extrapolated_frac', 'extrapolated RT fraction'),
+                 ('undecided_frac', 'undecided fraction'),
                  ('focus_all', 'Z focus (control state)')],
            'Session quality')
 
@@ -183,59 +183,9 @@ def main(reference_p=0.8):
                  ('dfocus_near_minus_far_err', 'near - far (errors)')],
            'RESULT 5 — what drives the control update')
 
-    # ── Proportion-congruent manipulation ─────────────────────────────────────
-    print('\n' + '=' * 84)
-    print('LIST-WIDE PROPORTION CONGRUENT  (Aim 2 prediction: effects shrink as C gets common)')
-    print('=' * 84)
-    levels, acc_m, acc_s, rt_m, rt_s = [], [], [], [], []
-    by_level = {}
-    for p in P_CONGRUENT_LEVELS:
-        by_level[p] = collect_by_seed(p)
-        ep = collect(p)
-        if not ep:
-            continue
-        sa, sr = summarize(ep['cong_effect_acc']), summarize(ep['cong_effect_rt'])
-        levels.append(p)
-        acc_m.append(sa['mean']); acc_s.append(sa['sem'])
-        rt_m.append(sr['mean']);  rt_s.append(sr['sem'])
-        print(f'  p_congruent={p}:  accuracy effect {sa["mean"]:.4f} ± {sa["sem"]:.4f}   '
-              f'RT effect {sr["mean"]:.4f} ± {sr["sem"]:.4f}   (n={sa["n"]} seeds)  '
-              f'extrapolated {summarize(ep["extrapolated_frac"])["mean"]:.3f}')
-
-    # The same pretrained model is tested at every level, so this is a within-subject
-    # manipulation and the paired contrast is the statistic that matters.
-    if len(levels) >= 2:
-        lo, hi = min(levels), max(levels)
-        shared = sorted(set(by_level[lo]) & set(by_level[hi]))
-        print(f'\n  Paired within-subject contrast, p={hi} minus p={lo}  (n={len(shared)} seeds)')
-        print(f'  {"effect":<32} {"mean":>9} {"SEM":>8} {"t":>7} {"p":>9}')
-        for key, label in [('cong_effect_acc', 'congruency effect, accuracy'),
-                           ('cong_effect_rt',  'congruency effect, RT')]:
-            diff = np.array([by_level[hi][s][key] - by_level[lo][s][key] for s in shared])
-            s = summarize(diff)
-            star = '***' if s['p'] < 0.001 else '**' if s['p'] < 0.01 else '*' if s['p'] < 0.05 else ''
-            print(f'  {label:<32} {s["mean"]:9.4f} {s["sem"]:8.4f} {s["t"]:7.2f} {s["p"]:9.5f} {star:>4}')
-        print('  Positive = larger congruency effect in the mostly-congruent list, i.e. the '
-              'classic\n  list-wide proportion-congruent direction (control relaxes when '
-              'conflict is rare).')
-
-    if levels:
-        fig, axes = plt.subplots(1, 2, figsize=(FigSize.large[0] * 2, FigSize.large[1]))
-        for ax, mu, se, ylabel in [(axes[0], acc_m, acc_s, 'Congruency effect (accuracy)'),
-                                   (axes[1], rt_m, rt_s, 'Congruency effect (RT)')]:
-            ax.errorbar(levels, mu, yerr=se, marker='o', markersize=4,
-                        color='#4393c3', capsize=3, linewidth=0.9)
-            ax.set_xlabel('P(congruent)')
-            ax.set_ylabel(ylabel)
-            ax.set_xticks(levels)
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-        fig.suptitle(f'List-wide proportion congruent — mean ± SEM across {SEEDS} seeds', fontsize=7)
-        fig.tight_layout()
-        out = os.path.join(export_dir, 'flanker_proportion_congruent.pdf')
-        fig.savefig(out, bbox_inches='tight')
-        print(f'\nExported: {out}')
-
 
 if __name__ == '__main__':
-    main()
+    # `python flanker_sweep_analysis.py noise04` for one variant; no argument uses the
+    # first in flanker_sweep_config.VARIANTS.
+    import sys
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

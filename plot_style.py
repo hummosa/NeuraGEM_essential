@@ -158,6 +158,90 @@ def get_model_color(name):
     return _assigned_fallbacks[key]
 
 
+# ── Flanker condition palette ─────────────────────────────────────────────────
+#
+# Three orthogonal visual channels, so any flanker panel can be read without a legend:
+#
+#     hue          congruency   blue = congruent, red = incongruent
+#     shade        distance     dark = near flankers, light = far flankers
+#     fill/dash    outcome      solid/filled = correct, dashed/hollow = error
+#
+# Keeping outcome on fill rather than on hue is what makes the scheme work across mark
+# types: a dashed line and a hollow bar carry the same meaning, and neither costs a
+# colour. It also survives greyscale printing, since shade already varies.
+#
+# The hues are ColorBrewer RdBu — the pooled congruent/incongruent colours are the
+# mid-tones, and near/far bracket each one darker/lighter, so a pooled line sits visually
+# between its own two cells rather than beside them.
+
+FLANKER_COLORS = {
+    # pooled by congruency
+    'cong':        '#4393c3',
+    'incong':      '#d6604d',
+    # congruency × distance
+    'near_cong':   '#2166ac',   # dark blue
+    'far_cong':    '#92c5de',   # light blue
+    'near_incong': '#b2182b',   # dark red
+    'far_incong':  '#f4a582',   # light red
+    # outcome, when a panel pools over congruency and only contrasts correct vs error
+    'correct':     '#4393c3',
+    'error':       '#b2182b',
+    # non-condition roles
+    'neutral':     '#777777',
+    'pass_':       '#2166ac',
+    'fail':        '#b2182b',
+    'null':        '#999999',
+}
+
+#: Canonical cell order for every congruency × distance panel: congruent pair first,
+#: then incongruent, near before far within each. Grouping by congruency (rather than
+#: interleaving near/far) puts the comparison the figure is about — the congruency
+#: effect — side by side, and leaves the distance contrast as the within-pair step.
+FLANKER_CELLS = [('near_cong', 'near\ncong'), ('far_cong', 'far\ncong'),
+                 ('near_incong', 'near\nincong'), ('far_incong', 'far\nincong')]
+
+
+def flanker_color(cong, near=None):
+    """
+    Colour for a flanker condition.
+
+    cong : True congruent / False incongruent
+    near : True near flankers / False far / None to pool over distance
+    """
+    stem = 'cong' if cong else 'incong'
+    if near is None:
+        return FLANKER_COLORS[stem]
+    return FLANKER_COLORS[f'{"near" if near else "far"}_{stem}']
+
+
+def outcome_style(correct, kind='bar', color=None):
+    """
+    Matplotlib kwargs marking a group as a correct-response or error cell.
+
+    Outcome rides on fill, never on hue, so the same call works for every mark type:
+
+        kind='bar'     filled vs hollow (coloured edge, no face)
+        kind='line'    solid vs dashed
+        kind='marker'  filled vs open marker face
+
+    `color` is the condition colour from `flanker_color`; it is only needed for 'bar'
+    and 'marker', which have to keep the hue on the edge when the face goes away.
+    """
+    if kind == 'line':
+        return dict(linestyle='-' if correct else '--')
+    if kind == 'marker':
+        return dict(markerfacecolor=color if correct else 'none',
+                    markeredgecolor=color)
+    if kind == 'bar':
+        if correct:
+            return dict(color=color, alpha=0.65, linewidth=0)
+        # Hollow: the face is dropped entirely rather than lightened, so an error bar can
+        # never be mistaken for a far-flanker (lighter) cell of the same hue.
+        return dict(facecolor='none', edgecolor=color, alpha=1.0, linewidth=1.2,
+                    hatch=None)
+    raise ValueError(f'unknown kind {kind!r}')
+
+
 class Color_scheme:
     def __init__(self):
         self.short_horizon_rnn = 'tab:green'

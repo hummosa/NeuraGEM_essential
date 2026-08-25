@@ -44,14 +44,14 @@ Interactively (the intended way — set the run once, then call):
 
     import flanker_regression as reg
     reg.describe_runs()                     # what is on disk and how each run differs
-    reg.RUN = 'sweep_td03_n10'              # see SWEEP_RUNS below for the options
+    reg.RUN = 'sweep_noise'                 # see SWEEP_RUNS below for the options
 
     summaries = reg.group_report()          # signatures + M2 vs M3, across sessions
     fig = reg.fig_group_coefficients(summaries)
 
 From a shell:
 
-    python flanker_regression.py --variant spatial_steep --p 0.5 [--run sweep_sgd]
+    python flanker_regression.py --variant noise10 [--run sweep_noise]
 
 Both fit every session in one sweep condition and t-test each coefficient across
 sessions. `run_flanker.py` fits a single session, which is one synthetic subject and
@@ -271,7 +271,7 @@ def fit_session(trials, spec='M1', decided_only=False, design=None):
 
     decided_only : restrict to trials that crossed threshold inside the window. The
                    default (False) matches the human data, where every trial has a
-                   response; our never-crossed trials carry an extrapolated RT.
+                   response; our never-crossed trials sit at the trial end.
 
     Returns {'acc': tidy table, 'rt': tidy table, 'design': the DataFrame used}.
     """
@@ -343,8 +343,28 @@ def fit_sessions(trials_list, spec='M1', decided_only=False):
         n_ok = int(np.sum(np.sign(v) == exp)) if exp is not None else np.nan
         out.append(dict(dv=dv, term=term, label=term_label(term), mean=v.mean(),
                         sem=v.std(ddof=1) / np.sqrt(len(v)) if len(v) > 1 else np.nan,
-                        t=t, p=p, n_sessions=len(v), expected=exp, n_expected_sign=n_ok))
+                        t=t, p=p, n_sessions=len(v), expected=exp, n_expected_sign=n_ok,
+                        n_converged=int(group['converged'].sum())))
     return per_session, pd.DataFrame(out)
+
+
+def convergence_warning(summary, spec=''):
+    """
+    Print a warning when the logistic fits did not all converge.
+
+    At low stimulus noise the congruent cells approach ceiling, which separates the
+    logistic model: the likelihood has no finite maximum and the coefficients drift. Those
+    sessions still contribute a number, and it is not trustworthy — so say so rather than
+    letting it disappear into a group mean.
+    """
+    rows = summary[summary.dv == 'acc']
+    if rows.empty:
+        return
+    n_conv, n_sess = int(rows['n_converged'].max()), int(rows['n_sessions'].max())
+    if n_conv < n_sess:
+        print(f'  WARNING [{spec}] accuracy model converged in only {n_conv}/{n_sess} '
+              f'sessions — near-ceiling cells separate the logistic fit. Treat the '
+              f'accuracy coefficients as unreliable here; the RT model is unaffected.')
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
@@ -541,7 +561,7 @@ def print_group_signatures(summary, title=None):
     print('  (mean across sessions; "signs" = sessions with the human-predicted direction)')
 
 
-def group_report(p_congruent=0.5, variant='spatial_steep', run=None, specs=('M2', 'M3'),
+def group_report(variant='noise10', run=None, specs=('M2', 'M3'),
                  terms=None, signatures=True):
     """
     Fit every session in one condition, then t-test each coefficient across sessions.
@@ -557,7 +577,7 @@ def group_report(p_congruent=0.5, variant='spatial_steep', run=None, specs=('M2'
     from flanker_analyses import extract_trials
 
     with use_run(run or RUN or flanker_sweep.RUN_NAME) as run_label:
-        results = flanker_sweep.load_condition(p_congruent, variant=variant)
+        results = flanker_sweep.load_condition(variant)
         trials = [extract_trials(r['train_logger'], r['config']) for r in results]
 
     if not trials:
@@ -567,13 +587,14 @@ def group_report(p_congruent=0.5, variant='spatial_steep', run=None, specs=('M2'
     summaries = {}
     for spec in specs:
         _, summary = fit_sessions(trials, spec=spec)
+        convergence_warning(summary, spec)
         summaries[spec] = summary.set_index(['dv', 'term'])
 
     terms = terms or (SIGNATURE_TERMS + ['prev_incong', 'prev2_incong', 'prev2_error'])
     star = lambda q: '***' if q < 0.001 else '**' if q < 0.01 else '*' if q < 0.05 else 'ns'
     head, extra = specs[0], specs[1] if len(specs) > 1 else None
 
-    print(f'\n{variant}, p(congruent)={p_congruent}, run={run_label}, '
+    print(f'\n{variant}, run={run_label}, '
           f'{len(trials)} sessions x {trials[0]["n_trials"]} trials')
     if signatures and head in summaries:
         print_group_signatures(summaries[head],
@@ -691,12 +712,10 @@ def fig_group_coefficients(summaries, terms=None, title=None, path=None):
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _argv_options():
-    opts = {'p_congruent': 0.5, 'variant': 'spatial_steep', 'run': None}
+    opts = {'variant': 'noise10', 'run': None}
     argv = sys.argv[1:]
     for i, arg in enumerate(argv):
-        if arg == '--p' and i + 1 < len(argv):
-            opts['p_congruent'] = float(argv[i + 1])
-        elif arg == '--variant' and i + 1 < len(argv):
+        if arg == '--variant' and i + 1 < len(argv):
             opts['variant'] = argv[i + 1]
         elif arg == '--run' and i + 1 < len(argv):
             opts['run'] = argv[i + 1]

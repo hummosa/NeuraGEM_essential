@@ -339,7 +339,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             ax.plot(ma, color='k', linewidth=0.75, alpha=0.9, label=f'MA({ma_window})')
             ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.3)
             ax.set_ylim(0.0, 1.1)
-            ax.set_ylabel('Accuracy')
+            ax.set_ylabel('P(target)')
             ax.legend(loc='lower right', fontsize=6)
 
         else:

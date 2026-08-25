@@ -1,15 +1,17 @@
 """Eyeball one curriculum tree stage by stage with plot_logger_panels.
 
-Loads a pickle written by rotation_curriculum_sweep.py and draws S1, S2 and S3 for one branch,
-so the three stages can be compared on the same panels.
+Loads a pickle written by rotation_curriculum_sweep.py and draws S1, S2 and S3 for one
+individual (one Z_lr, carried unchanged through every stage), so the three stages can be
+compared on the same panels.
 
 Interactive:
     from inspect_curriculum_run import *
-    tree = load_tree(0.2)                       # trait arm; 'RNN' also works
+    tree = load_tree(0.2)                       # one Z_lr; 'RNN' also works
     list_stages(tree)
-    show_stitched(tree, 'oracle_z', 0.2)        # all three stages on ONE axis
-    show_curriculum(tree, cue_mode='oracle_z', z_lr_test=0.2, x2=6000)   # one fig per stage
-    show_stage(tree, ('S3', 'oracle_z', None))  # any single stage
+    show_stitched(tree, 'oracle_z')             # all three stages on ONE axis
+    show_curriculum(tree, cue_mode='oracle_z', x2=6000)   # one fig per stage
+    show_stage(tree, ('S3', 'oracle_z'))        # any single stage
+    show_stage(tree, ('S3pinned', 'oracle_z'))  # the Z-pinned sanity branch
 
 > **The curriculum stages are not phases.** `logger.phases` records only the phases inside one
 > train_model call, and each stage is a separate call with its own logger. S1 therefore shows
@@ -21,10 +23,9 @@ Interactive:
 
 Command line:
     python inspect_curriculum_run.py --list-runs
-    python inspect_curriculum_run.py --train 0.2 --cue oracle_z --z-lr-test 0.2 --x2 6000
+    python inspect_curriculum_run.py --train 0.2 --cue oracle_z --x2 6000
     python inspect_curriculum_run.py --train RNN --panels rotating_targets_behavior latent_2d loss
-    python inspect_curriculum_run.py --train 0.2 --run-name sep60_16800-8400-8400_head-off_decay-grad
-    python inspect_curriculum_run.py --train 0.2 --run-name sep60_2000-4000-3000_head-off_decay-grad
+    python inspect_curriculum_run.py --train 0.2 --run-name sep60_16800-8400-8400_head-off_decay-grad_zgrid1
 
 Which run is read comes from rotation_curriculum_config.RUN_NAME, which is built from the stage
 lengths, the head setting and the decay mode — so changing S1/S2/S3_LENGTH points everything at a
@@ -48,7 +49,8 @@ deliberately runs without.
 > into `model.Z`, so what the panel shows is whatever S1 left there. A flat line in S2 is not
 > evidence that the cued stage has no latent dynamics — it has no latent *parameter* dynamics by
 > construction, and the gate driving the network is not plotted. show_stage() warns about this.
-> (A flat Z in the `z_lr_test=None` S3 fork *is* meaningful: there the latent really is pinned.)
+> (A flat Z in the `('S3pinned', cue)` sanity branch *is* meaningful: there the latent really is
+> pinned.)
 """
 
 from __future__ import annotations
@@ -76,7 +78,7 @@ import plot_style
 from functions_and_utils import plot_logger_panels
 from rotation_curriculum_analysis import _get_stage, stage_label
 from rotation_curriculum_config import (
-    CUE_MODES, EXPORT_ROOT, Z_LR_TEST, Z_LR_TRAIN, result_path, train_key,
+    CUE_MODES, EXPORT_ROOT, Z_LR, result_path, train_key,
 )
 
 plot_style.set_plot_style()
@@ -103,7 +105,7 @@ def refresh():
     importlib.reload(_cfg)
     importlib.reload(_an)
     globals().update(
-        CUE_MODES=_cfg.CUE_MODES, Z_LR_TEST=_cfg.Z_LR_TEST, Z_LR_TRAIN=_cfg.Z_LR_TRAIN,
+        CUE_MODES=_cfg.CUE_MODES, Z_LR=_cfg.Z_LR,
         EXPORT_ROOT=_cfg.EXPORT_ROOT, RUNS_DIR=_cfg.EXPORT_ROOT.parent,
         result_path=_cfg.result_path, train_key=_cfg.train_key,
         _get_stage=_an._get_stage, stage_label=_an.stage_label,
@@ -125,22 +127,26 @@ def list_runs(runs_dir: Path | None = None) -> list:
     return names
 
 
-def load_tree(z_lr_train: Any = 0.2, noise_std: float = 0.20, seed: int = 0,
+def load_tree(z_lr: Any = 0.2, noise_std: float = 0.20, seed: int = 0,
               run_name: str | None = None) -> dict:
-    """Load one (trait arm, noise, seed) tree.
+    """Load one (Z_lr, noise, seed) tree — one individual, carried through S1-S3.
 
     `run_name` overrides the directory the config currently resolves to — useful for comparing a
     new short run against an older one, and for sidestepping a stale interactive session (see
     refresh()). Defaults to whatever RUN_NAME is now.
+
+    Note: this only reads trees written under the current (unified Z_lr grid) shape. A tree
+    written before the rework has payload['S3'] keyed by (cue_mode, z_lr_test) tuples rather than
+    cue_mode alone, and no payload['S3_pinned'] — read those with raw pickle access instead.
     """
-    path = (result_path(z_lr_train, noise_std, seed) if run_name is None else
-            Path(RUNS_DIR) / run_name / train_key(z_lr_train) / f'noise_std-{noise_std}'
+    path = (result_path(z_lr, noise_std, seed) if run_name is None else
+            Path(RUNS_DIR) / run_name / train_key(z_lr) / f'noise_std-{noise_std}'
             / f'results_seed-{seed}.pkl')
     if not path.exists():
         print(f'Not found: {path}\nRuns on disk:')
         list_runs()
         raise FileNotFoundError(
-            f'{path}\nTrait arms: {Z_LR_TRAIN}. Pass run_name=... to pick a different run, or '
+            f'{path}\nZ_lr grid: {Z_LR}. Pass run_name=... to pick a different run, or '
             f'call refresh() if you edited the config in this session.')
     with path.open('rb') as f:
         tree = pickle.load(f)
@@ -155,7 +161,8 @@ def load_tree(z_lr_train: Any = 0.2, noise_std: float = 0.20, seed: int = 0,
 
 def list_stages(tree: dict) -> list:
     """Every stage key in the tree, printed and returned."""
-    stages = ['S1'] + [('S2', c) for c in tree['S2']] + [('S3', *k) for k in tree['S3']]
+    stages = (['S1'] + [('S2', c) for c in tree['S2']] + [('S3', c) for c in tree['S3']]
+             + [('S3pinned', c) for c in tree.get('S3_pinned', {})])
     for s in stages:
         print(f'  {str(s):<28} {stage_label(s)}')
     return stages
@@ -164,7 +171,7 @@ def list_stages(tree: dict) -> list:
 def show_stage(tree: dict, stage: Any, panels: Sequence[str] | None = None,
                annotate_phases: str = 'latent_2d', width: float = 6, dpi: int = 200,
                x1: int = 0, x2: int | None = None, save_dir: Path | None = None, **kw):
-    """Draw one stage. `stage` is 'S1', ('S2', cue) or ('S3', cue, z_lr_test)."""
+    """Draw one stage. `stage` is 'S1', ('S2', cue), ('S3', cue) or ('S3pinned', cue)."""
     logger, config = _get_stage(tree, stage)
     if logger is None:
         raise KeyError(f'{stage!r} is not in this tree; see list_stages().')
@@ -196,10 +203,10 @@ def show_stage(tree: dict, stage: Any, panels: Sequence[str] | None = None,
     return fig
 
 
-def show_curriculum(tree: dict, cue_mode: str = 'oracle_z', z_lr_test: Any = 0.2, **kw):
-    """S1 -> S2 -> S3 for one branch, one figure per stage."""
+def show_curriculum(tree: dict, cue_mode: str = 'oracle_z', **kw):
+    """S1 -> S2 -> S3 for one individual, one figure per stage."""
     return [show_stage(tree, s, **kw) for s in
-            ('S1', ('S2', cue_mode), ('S3', cue_mode, z_lr_test))]
+            ('S1', ('S2', cue_mode), ('S3', cue_mode))]
 
 
 # ── The three stages on one axis ──────────────────────────────────────────────
@@ -260,12 +267,12 @@ def stitch_stages(tree: dict, stages: Sequence[Any], labels: Sequence[str] | Non
     return out, parts[0][1]
 
 
-def show_stitched(tree: dict, cue_mode: str = 'oracle_z', z_lr_test: Any = 0.2,
+def show_stitched(tree: dict, cue_mode: str = 'oracle_z',
                   panels: Sequence[str] | None = None, annotate_phases: str = 'latent_2d',
                   width: float = 9, dpi: int = 200, x1: int = 0, x2: int | None = None, **kw):
     """S1 -> S2 -> S3 on a single continuous axis, with the stage boundaries annotated."""
-    stages = ('S1', ('S2', cue_mode), ('S3', cue_mode, z_lr_test))
-    labels = ['S1 uncued', f'S2 {cue_mode}', f'S3 {cue_mode} a_z={z_lr_test}']
+    stages = ('S1', ('S2', cue_mode), ('S3', cue_mode))
+    labels = ['S1 uncued', f'S2 {cue_mode}', f'S3 {cue_mode}']
     logger, config = stitch_stages(tree, stages, labels)
     panels = list(DEFAULT_PANELS if panels is None else panels)
     if annotate_phases and annotate_phases not in panels:
@@ -277,15 +284,13 @@ def show_stitched(tree: dict, cue_mode: str = 'oracle_z', z_lr_test: Any = 0.2,
 def main(argv: Sequence[str] | None = None) -> None:
     """CLI entry point. Also callable as main() from IPython, where it uses the defaults."""
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument('--train', default='0.2', help=f'trait arm, one of {Z_LR_TRAIN}')
+    p.add_argument('--train', default='0.2', help=f'Z_lr, one of {Z_LR}')
     p.add_argument('--noise', type=float, default=0.20)
     p.add_argument('--seed', type=int, default=0)
-    p.add_argument('--run-name', default='sep60_2000-4000-3000_head-off_decay-grad',
+    p.add_argument('--run-name', default='sep60_2000-4000-3000_head-off_decay-grad_zgrid1',
                    help='run directory to read; default is whatever the config resolves to')
     p.add_argument('--list-runs', action='store_true', help='list runs on disk and exit')
     p.add_argument('--cue', default='oracle_z', choices=list(CUE_MODES))
-    p.add_argument('--z-lr-test', default='0.2',
-                   help=f"S3 fork, one of {Z_LR_TEST} ('None' for the frozen-Z control)")
     p.add_argument('--panels', nargs='+', default=DEFAULT_PANELS)
     p.add_argument('--x1', type=int, default=0)
     p.add_argument('--x2', type=int, default=None)
@@ -313,7 +318,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         list_stages(tree)
         return
 
-    show_curriculum(tree, cue_mode=args.cue, z_lr_test=_num(args.z_lr_test),
+    show_curriculum(tree, cue_mode=args.cue,
                     panels=args.panels, x1=args.x1, x2=args.x2, width=args.width,
                     dpi=args.dpi, save_dir=args.save_dir)
     if args.save_dir is None:

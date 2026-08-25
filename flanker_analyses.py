@@ -28,6 +28,8 @@ import sys
 
 import numpy as np
 
+from plot_style import outcome_style
+
 
 # ── Console output ────────────────────────────────────────────────────────────
 
@@ -85,35 +87,34 @@ def _lag(arr, k):
 
 # ── Reaction time ─────────────────────────────────────────────────────────────
 
-#: Ceiling, in timesteps, for a trial whose decision variable never reaches threshold
-#: inside the observation window. Its RT is projected forward (see _interpolated_rt) and
-#: clipped here, so no trial is dropped from an RT analysis.
-RT_CAP = 10.0
-
-
-def _interpolated_rt(output_traj, threshold, search_from, rt_cap=RT_CAP):
+def _interpolated_rt(output_traj, threshold, search_from):
     """
-    Continuous threshold-crossing time, for every trial.
+    Continuous threshold-crossing time; trials that never decide sit at the trial end.
 
-    The decision variable is sampled once per timestep, so an integer RT can take
-    only a handful of values. Linearly interpolate the crossing between the two
-    bracketing samples:
+    The decision variable is sampled once per timestep, so an integer RT can take only a
+    handful of values. Linearly interpolate the crossing between the two bracketing
+    samples:
 
         rt = (t-1) + (threshold - |o(t-1)|) / (|o(t)| - |o(t-1)|)
 
-    Trials whose decision variable never reaches threshold inside the window are
-    **extrapolated, not dropped**. Discarding them censors conditions unequally —
-    incongruent trials fail to cross roughly three times as often as congruent ones —
-    which biases every observed incongruent RT downward and shrinks the very effects
-    being measured. Instead, the response window is fitted with a least-squares line
-    and projected forward to the threshold:
+    A trial whose decision variable never reaches threshold inside the window did not
+    respond, and there is no honest number for when it would have. It is given
+    `rt = arrows_duration` — the end of the trial — so those trials pile up in one visible
+    bin instead of being dropped or projected to an invented value.
 
-        rt = (threshold - intercept) / slope,   clipped to [ad - 1, rt_cap]
+    Two conventions were tried before this one and both distorted the RT effects:
 
-    A flat or falling trace (slope <= 0) would never cross, so it takes the cap. The
-    cap keeps a near-flat trace from producing an arbitrarily large RT that would
-    dominate a mean. `decided` still marks which trials crossed inside the window, so
-    any analysis can report the extrapolated fraction or exclude them deliberately.
+    - **Dropping them (NaN).** Failing to cross is roughly four times more common on
+      incongruent trials, so censoring them biased incongruent RT downward and shrank the
+      congruency effect.
+    - **Extrapolating to a cap of 10.** About half of those trials are not rising at all,
+      so they landed on the cap and dominated every mean: the congruency effect on RT read
+      1.54 timesteps that way against 0.33 on decided trials alone. RT was mostly reporting
+      failure-to-decide.
+
+    Piling them at the trial end keeps every trial in the analysis, keeps the axis inside
+    the range the model actually ran, and leaves the failure rate visible as its own
+    quantity: `decided` marks them per trial and `undecided_frac` reports the rate.
 
     Parameters
     ----------
@@ -121,11 +122,10 @@ def _interpolated_rt(output_traj, threshold, search_from, rt_cap=RT_CAP):
     threshold   : |output| level counted as a decision
     search_from : first timestep eligible to be a response (config.response_start_timestep);
                   earlier timesteps carry zero loss weight so their output is unconstrained.
-    rt_cap      : ceiling in timesteps for extrapolated trials
 
     Returns
     -------
-    rt_interp : (n,) float — crossing time; extrapolated (never NaN) if it never crossed
+    rt_interp : (n,) float — crossing time; arrows_duration if it never crossed
     rt_int    : (n,) float — integer crossing timestep; ad if never crossed
     decided   : (n,) bool  — crossed inside the observation window
     cross_idx : (n,) int   — crossing timestep, clamped to the last timestep if not decided
@@ -145,21 +145,8 @@ def _interpolated_rt(output_traj, threshold, search_from, rt_cap=RT_CAP):
     denom = cur_val - prev_val
     frac  = np.where(denom > 0, (threshold - prev_val) / np.where(denom > 0, denom, 1.0), 0.0)
     frac  = np.clip(frac, 0.0, 1.0)
-    rt_observed = (cross_idx - 1) + frac
 
-    # Least-squares slope of |output| over the response window, per trial.
-    ts        = np.arange(search_from, ad, dtype=float)
-    win       = a[:, search_from:]
-    centred   = ts - ts.mean()
-    denom_ts  = max(float((centred ** 2).sum()), 1e-12)
-    slope     = (win * centred).sum(axis=1) / denom_ts
-    intercept = win.mean(axis=1) - slope * ts.mean()
-    with np.errstate(divide='ignore', invalid='ignore'):
-        projected = (threshold - intercept) / slope
-    projected = np.where(slope > 0, projected, np.inf)   # never rising -> take the cap
-    rt_extrap = np.clip(projected, ad - 1, rt_cap)
-
-    rt_interp = np.where(decided, rt_observed, rt_extrap)
+    rt_interp = np.where(decided, (cross_idx - 1) + frac, float(ad))
     rt_int    = np.where(decided, cross_idx.astype(float), float(ad))
     cross_idx = np.where(decided, cross_idx, ad - 1)
 
@@ -168,7 +155,7 @@ def _interpolated_rt(output_traj, threshold, search_from, rt_cap=RT_CAP):
 
 # ── Trial extraction ──────────────────────────────────────────────────────────
 
-def extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=RT_CAP):
+def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
     """
     Unpack a logger into per-trial aligned arrays.
 
@@ -181,8 +168,6 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=RT
     search_from  : first timestep eligible as a response.
                    Defaults to config.response_start_timestep — timesteps before it
                    carry zero loss weight, so a "crossing" there is unconstrained noise.
-    rt_cap       : ceiling in timesteps for trials that never cross inside the window;
-                   their RT is extrapolated rather than dropped (see _interpolated_rt).
 
     Returns
     -------
@@ -198,8 +183,8 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=RT
         correct_at_decision  (n,)     bool — correct at the threshold-crossing timestep
         resp_at_decision     (n,)     ±1 — response emitted at the crossing timestep
         rt                   (n,)     integer crossing timestep; ad if never crossed
-        rt_interp            (n,)     crossing time, interpolated inside the window and
-                                      extrapolated (capped at rt_cap) beyond it — never NaN
+        rt_interp            (n,)     crossing time, interpolated inside the window;
+                                      arrows_duration when the trial never decided
         decided              (n,)     bool — threshold was crossed inside the window
         cross_idx            (n,)     crossing timestep index (clamped when not decided)
 
@@ -255,7 +240,7 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=RT
     z_traj      = z_flat[:n_ts].reshape(n_trials, ad, -1)
 
     rt_interp, rt_int, decided, cross_idx = _interpolated_rt(
-        output_traj, rt_threshold, search_from, rt_cap
+        output_traj, rt_threshold, search_from
     )
 
     # Sign-normalize output by the model's own final decision (sign of output at t=-1).
@@ -340,7 +325,6 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=RT
         z_grad = z_grad,
         # scalars
         rt_threshold = rt_threshold,
-        rt_cap       = float(rt_cap),
         search_from  = search_from,
         ad           = ad,
         n_trials     = n_trials,
@@ -364,13 +348,13 @@ def _optional_channel(entries, n_ts, ad, dim):
 def report_extraction(trials, label=''):
     """Print the diagnostics that should be eyeballed before trusting any figure."""
     n = trials['n_trials']
-    extrap = int((~trials['decided']).sum())
-    print(f'{label}trials={n}  extrapolated RT={extrap} ({100*extrap/max(n,1):.1f}%)  '
+    undecided = int((~trials['decided']).sum())
+    print(f'{label}trials={n}  undecided={undecided} ({100*undecided/max(n,1):.1f}%)  '
           f'accuracy={trials["correct_at_decision"].mean():.3f}  '
           f'Z within-trial spread={trials["z_within_trial_spread"]:.4f}')
     rt = trials['rt_interp']
     print(f'{label}RT (all trials): mean={rt.mean():.2f}  '
-          f'min={rt.min():.2f}  max={rt.max():.2f}  cap={trials["rt_cap"]:.0f}')
+          f'min={rt.min():.2f}  max={rt.max():.2f}  (undecided sit at {trials["ad"]})')
     if trials['decided'].any():
         rt_d = rt[trials['decided']]
         print(f'{label}RT (crossed in window): mean={rt_d.mean():.2f}  '
@@ -592,7 +576,20 @@ def _style_trial_ax(ax, ad, response_start):
 
 def plot_accuracy_by_timestep(ax, trials, specs, config, linestyles=None):
     """
-    Plot mean accuracy per timestep for multiple trial groups.
+    Plot P(target) per timestep for multiple trial groups.
+
+    P(target) is the fraction of trials whose decision variable currently has the sign of
+    the target — `trials['correct']`, evaluated at every timestep. It is **not** accuracy
+    in the sense the bar panels use: there is no threshold and no commitment, so a trial
+    that crossed threshold three timesteps ago still contributes its current sign, and one
+    that never crossed contributes at every timestep. The decision variable keeps
+    integrating after the response is emitted and often flips back toward the target
+    (~4% of decided congruent trials, ~14% of decided incongruent ones), which this curve
+    counts and the emitted response does not.
+
+    The curve's last point therefore equals `measure='accuracy_final'`, not
+    `measure='accuracy'` (`correct_at_decision`); expect the two to differ by a few points,
+    and by more on incongruent trials.
 
     specs : list of (mask, label, color) — mask is boolean (n_trials,)
     """
@@ -606,118 +603,97 @@ def plot_accuracy_by_timestep(ax, trials, specs, config, linestyles=None):
                     label=f'{label} (n={mask.sum()})')
     ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.4)
     _style_trial_ax(ax, ad, config.response_start_timestep)
-    ax.set_ylabel('Accuracy')
+    ax.set_ylabel('P(target)')
     ax.set_ylim(0.3, 1.05)
 
 
-def plot_rt_distribution(ax, trials, specs, config, fit_gaussian=True, linestyles=None,
-                         undecided='extra_bin'):
+def plot_rt(ax, trials, specs, config, interpolate=False, fit_gaussian=False,
+            linestyles=None, bin_width=0.25):
     """
-    Plot RT as an empirical probability mass function over integer timesteps
-    (markers connected by lines) plus an optional Gaussian fit (dashed overlay).
+    RT for each spec, with the trials that never decided kept as their own `und.` category.
 
-    PMF sums to 1.0; undecided trials are always included.
-    See plot_rt_continuous for the interpolated-RT version.
+    interpolate=False (default)
+        Empirical PMF over the integer crossing timestep, markers joined by lines, plus a
+        final `und.` point carrying the trials that never crossed. Nothing is smoothed or
+        interpolated: each point is the proportion of that condition's trials that crossed
+        at exactly that timestep. With only four eligible timesteps this is the honest
+        resolution, and the undecided pile reads as the separate outcome it is.
 
-    Parameters
-    ----------
-    undecided : 'extra_bin'  — add a t=ad bin to the right for undecided trials (default)
-                'last_bin'   — stack undecided trials onto the last existing bin (t=ad-1)
+    interpolate=True
+        Density of the interpolated crossing time over the trials that *did* decide,
+        scaled so its area is the decided proportion, plus the same `und.` marker at the
+        right. Sub-timestep structure becomes visible at the cost of implying more
+        precision than four samples per trial support.
+
+    Either way the undecided trials are shown rather than folded into the last real bin —
+    that pile is a condition effect in its own right (roughly 5% of congruent trials
+    against 16% of incongruent), and hiding it inside the RT axis makes a non-response
+    look like a slow response.
 
     specs : list of (mask, label, color) — mask is boolean (n_trials,)
-    linestyles : applied to the empirical PMF line; Gaussian always plotted dashed.
+    fit_gaussian : overlay a Gaussian fit on the decided part (PMF mode only)
     """
-    rt           = trials['rt']
-    ad           = trials['ad']
-    rt_threshold = trials['rt_threshold']
+    ad, rt_threshold = trials['ad'], trials['rt_threshold']
+    decided_all = trials['decided']
     if linestyles is None:
         linestyles = ['-'] * len(specs)
 
-    use_extra = (undecided == 'extra_bin')
-    x_bins = list(range(ad + 1)) if use_extra else list(range(ad))
-
-    for (mask, label, color), ls in zip(specs, linestyles):
-        if not mask.any():
-            continue
-        n_total   = int(mask.sum())
-        rt_m      = rt[mask]
-        decided   = rt_m < ad
-        n_decided = int(decided.sum())
-
-        if use_extra:
-            # decided bins 0..ad-1, undecided bin = ad
-            pmf = np.array([(rt_m == t).sum() / n_total for t in range(ad + 1)])
-        else:
-            # decided bins 0..ad-2, undecided stacked into bin ad-1
-            pmf = np.array([(rt_m == t).sum() / n_total for t in range(ad - 1)]
-                           + [(rt_m >= ad - 1).sum() / n_total])
-
-        ax.plot(x_bins, pmf, marker='o', markersize=4, color=color,
-                linestyle=ls, linewidth=0.8, label=f'{label} (n={n_total})', zorder=3)
-
-        if fit_gaussian and n_decided >= 3:
-            try:
-                from scipy.stats import norm
-                p_decided = n_decided / n_total
-                mu, sigma = norm.fit(rt_m[decided])
-                x_fine = np.linspace(-0.5, ad - 0.5, 300)
-                y_fine = norm.pdf(x_fine, mu, sigma) * p_decided
-                ax.plot(x_fine, y_fine, color=color, linestyle='--',
-                        linewidth=1.2, alpha=0.7, zorder=2)
-            except Exception:
-                pass
-
-    # x-axis: decided bins always labelled by timestep; extra bin labelled 'und.'
-    if use_extra:
-        tick_labels = [str(t) for t in range(ad)] + ['und.']
-        ax.set_xticks(x_bins)
-        ax.set_xticklabels(tick_labels, fontsize=6)
-        ax.set_xlabel('Timestep within trial')
-        ax.axvspan(-0.5, config.response_start_timestep - 0.5, alpha=0.08, color='k')
-        ax.legend(fontsize=5)
-    else:
-        _style_trial_ax(ax, ad, config.response_start_timestep)
-    ax.set_ylabel(f'P(RT = t)  [threshold = {rt_threshold}]')
-    ax.set_ylim(bottom=0)
-
-
-def plot_rt_continuous(ax, trials, specs, config, bin_width=0.25, linestyles=None):
-    """
-    Plot the distribution of interpolated RTs — the continuous counterpart to
-    plot_rt_distribution. Trials that never crossed inside the window carry an
-    extrapolated RT (capped at trials['rt_cap']) rather than being dropped, so the axis
-    runs past the trial and the legend reports what fraction sits in that tail.
-
-    specs : list of (mask, label, color) — mask is boolean (n_trials,)
-    """
-    rt   = trials['rt_interp']
-    ad   = trials['ad']
-    hi   = float(trials.get('rt_cap', ad))
-    lo   = max(int(trials['search_from']) - 1, 0)
-    bins = np.arange(lo, hi + bin_width, bin_width)
-    ctrs = 0.5 * (bins[:-1] + bins[1:])
-    if linestyles is None:
-        linestyles = ['-'] * len(specs)
+    # The undecided marker sits one slot right of the axis proper, in both modes.
+    und_x = ad + (0.5 if interpolate else 0.0)
 
     for (mask, label, color), ls in zip(specs, linestyles):
         if not mask.any():
             continue
         n_total = int(mask.sum())
-        vals    = rt[mask]
-        vals    = vals[~np.isnan(vals)]
-        if len(vals) == 0:
-            continue
-        extrap  = 100.0 * float((~trials['decided'][mask]).mean())
-        dens, _ = np.histogram(vals, bins=bins, density=True)
-        ax.plot(ctrs, dens, color=color, linestyle=ls, linewidth=0.9,
-                label=f'{label} (n={n_total}, {extrap:.0f}% extrap.)')
+        dec_m   = decided_all[mask]
+        p_und   = float((~dec_m).mean())
 
-    ax.axvspan(lo - 0.5, config.response_start_timestep - 0.5, alpha=0.08, color='k')
-    ax.set_xlabel('RT (timesteps)')
-    ax.set_ylabel(f'Density  [threshold = {trials["rt_threshold"]}]')
+        if interpolate:
+            vals = trials['rt_interp'][mask][dec_m]
+            lo   = max(int(trials['search_from']) - 1, 0)
+            bins = np.arange(lo, float(ad) + bin_width, bin_width)
+            ctrs = 0.5 * (bins[:-1] + bins[1:])
+            if len(vals):
+                dens, _ = np.histogram(vals, bins=bins, density=True)
+                ax.plot(ctrs, dens * (1.0 - p_und), color=color, linestyle=ls,
+                        linewidth=0.9, label=f'{label} (n={n_total})')
+            ax.plot([und_x], [p_und], marker='o', markersize=4, color=color, zorder=3)
+            ax.set_ylabel(f'Density  [threshold = {rt_threshold}]')
+        else:
+            rt_m = trials['rt'][mask]
+            pmf  = np.array([(rt_m == t).sum() / n_total for t in range(ad)] + [p_und])
+            ax.plot(list(range(ad)) + [und_x], pmf, marker='o', markersize=4, color=color,
+                    linestyle=ls, linewidth=0.8, label=f'{label} (n={n_total})', zorder=3)
+            if fit_gaussian and dec_m.sum() >= 3:
+                try:
+                    from scipy.stats import norm
+                    mu, sigma = norm.fit(rt_m[dec_m])
+                    x_fine = np.linspace(-0.5, ad - 0.5, 300)
+                    ax.plot(x_fine, norm.pdf(x_fine, mu, sigma) * (1.0 - p_und), color=color,
+                            linestyle='--', linewidth=1.2, alpha=0.7, zorder=2)
+                except Exception:
+                    pass
+            ax.set_ylabel(f'P(RT = t)  [threshold = {rt_threshold}]')
+
+    ax.set_xticks(list(range(ad)) + [und_x])
+    ax.set_xticklabels([str(t) for t in range(ad)] + ['und.'], fontsize=6)
+    ax.set_xlabel('Timestep within trial')
+    ax.axvspan(-0.5, config.response_start_timestep - 0.5, alpha=0.08, color='k')
     ax.set_ylim(bottom=0)
-    # The density peaks at the left, where the legend used to sit.
-    ax.legend(fontsize=5, loc='upper right', framealpha=0.85)
+    ax.legend(fontsize=5)
+
+
+def plot_rt_distribution(ax, trials, specs, config, fit_gaussian=True, linestyles=None,
+                         undecided='extra_bin'):
+    """Deprecated name for `plot_rt(..., interpolate=False)`; `undecided` is ignored."""
+    return plot_rt(ax, trials, specs, config, interpolate=False,
+                   fit_gaussian=fit_gaussian, linestyles=linestyles)
+
+
+def plot_rt_continuous(ax, trials, specs, config, bin_width=0.25, linestyles=None):
+    """Deprecated name for `plot_rt(..., interpolate=True)`."""
+    return plot_rt(ax, trials, specs, config, interpolate=True,
+                   linestyles=linestyles, bin_width=bin_width)
 
 
 def plot_z_by_timestep(ax, trials, specs, z_dim, config, linestyles=None):
@@ -742,7 +718,8 @@ def plot_z_by_timestep(ax, trials, specs, z_dim, config, linestyles=None):
     ax.set_ylabel(f'Z dim {z_dim}')
 
 
-def plot_scalar_bars(ax, trials, specs, measure, group_spacing=None, baseline=None):
+def plot_scalar_bars(ax, trials, specs, measure, group_spacing=None, baseline=None,
+                     hollow=None):
     """
     Bar chart with mean ± SEM for a scalar-per-trial measure.
 
@@ -756,6 +733,11 @@ def plot_scalar_bars(ax, trials, specs, measure, group_spacing=None, baseline=No
     group_spacing : list of int, optional
                     Extra gap (in bar-widths) inserted before the bar at each listed index.
     baseline : float, optional — horizontal reference line (e.g. 0.5 for accuracy)
+    hollow  : list of bool, optional — one per spec. True draws the bar as an outline
+              rather than a filled block. This is the house convention for an *error*
+              cell (`plot_style.outcome_style`): hue stays on congruency and shade on
+              distance, so outcome rides on fill and costs no colour. The bar-chart
+              counterpart of the dashed line used for errors in the time-course panels.
 
     Returns
     -------
@@ -763,7 +745,9 @@ def plot_scalar_bars(ax, trials, specs, measure, group_spacing=None, baseline=No
     """
     values_all, ylabel = trial_measure(trials, measure)
 
-    means, sems, labels, colors, valid_idx = [], [], [], [], []
+    hollow_all = [False] * len(specs) if hollow is None else list(hollow)
+
+    means, sems, labels, colors, is_hollow, valid_idx = [], [], [], [], [], []
     for i, spec in enumerate(specs):
         mask, label, color = spec[0], spec[1], spec[2]
         v = values_all[mask]
@@ -774,6 +758,7 @@ def plot_scalar_bars(ax, trials, specs, measure, group_spacing=None, baseline=No
         sems.append(v.std(ddof=1) / np.sqrt(len(v)) if len(v) > 1 else 0.0)
         labels.append(f'{label}\n(n={len(v)})')
         colors.append(color)
+        is_hollow.append(bool(hollow_all[i]))
         valid_idx.append(i)
 
     if not means:
@@ -789,7 +774,11 @@ def plot_scalar_bars(ax, trials, specs, measure, group_spacing=None, baseline=No
         pos += 1.0
     x = np.array(x)
 
-    ax.bar(x, means, color=colors, alpha=0.75, width=0.6, zorder=2)
+    for xi, mean, color, hol in zip(x, means, colors, is_hollow):
+        style = outcome_style(not hol, kind='bar', color=color)
+        if not hol:
+            style['alpha'] = 0.75
+        ax.bar(xi, mean, width=0.6, zorder=2, **style)
     ax.errorbar(x, means, yerr=sems, fmt='none', color='k',
                 capsize=3, linewidth=1, zorder=3)
     ax.set_xticks(x)

@@ -14,11 +14,11 @@ Human dataset: Fischer et al. 2018 / Kirschner et al. 2024 flanker EEG (N ≈ 13
 | `run_flanker.py` | Main experiment script (`#%%` cells) — two stages plus all analyses |
 | `flanker_analyses.py` | Trial extraction, factor construction, plotting, config/model helpers |
 | `flanker_metrics.py` | Every per-seed scalar effect, grouped by question; `SIGNATURES` registry |
-| `flanker_sweep.py` / `flanker_sweep_config.py` | Seeds × congruency-proportion sweep |
+| `flanker_regression.py` | Trial-level GLM on accuracy and RT, mirroring the human analysis — see `flanker_regression.md` |
+| `flanker_sweep.py` / `flanker_sweep_config.py` | Seeds × stimulus-noise sweep; `flanker_sweep_config.py` holds every setting |
 | `flanker_sweep_analysis.py` | Across-subject statistics: one-sample t-tests on the per-seed effects |
 | `flanker_figure_utils.py` | Panel primitives (`bars_with_seeds`, `band`, `series`) and variant-aware loading |
-| `flanker_sweep_figures.py` | The standing group figures for one condition |
-| `flanker_model_figures.py` | Model card (congruency, distance, RT×outcome, adaptation, scorecard) + manipulation series |
+| `flanker_sweep_figures.py` | The seven group figures, in the order the story is told |
 | `train_and_infer_functions.py` | `train_model()` training loop |
 | `functions_and_utils.py` | `plot_logger_panels()`, `Logger` class |
 | `archive/run_flanker_blocked.py` | Retired blocked Stage 2/3 — see "Why blocks were dropped" |
@@ -35,7 +35,7 @@ Human dataset: Fischer et al. 2018 / Kirschner et al. 2024 flanker EEG (N ≈ 13
 | Weights | Plastic (BPTT) | **Frozen** (`no_of_steps_in_weight_space = 0`) |
 | Z | Oracle — `context_ids` = target slot, fed as a one-hot | `'self'` — inferred by LU, one update per trial |
 | Target slot | Rotates across blocks | Always centre (slot 2) |
-| Length | `n_pretrain_trials` (2000) | `n_trials` (5000) |
+| Length | `n_pretrain_trials` | `n_trials` (`config.set_n_trials`) |
 | Analysed? | No — training diagnostic only | **Yes, everything** |
 
 Stage 1 teaches the weights to use a spatial-attention latent. Stage 2 freezes them and
@@ -89,13 +89,15 @@ output_loss_mask = [0, 0, 0, 0, 0, 1]   # loss only on dim 5 (direction)
 `predict_first_frame=True` → t=0 gets a zero frame; the response window starts at t=1.
 
 ```
-temporal_loss_weights = [0, 1.0, e^-λ, e^-2λ, e^-3λ]   (λ = 0.7)
-                      = [0, 1.0, 0.50, 0.25, 0.12]
+temporal_loss_weights = [0, 1.0, e^-λ, e^-2λ, e^-3λ]     λ = temporal_decay_factor
 ```
 
-`temporal_decay_factor = 0` → uniform weights. **If `arrows_duration` is ever changed,
-λ must change with it** — at 15 timesteps λ=0.7 drives the tail to ~1e-4 and forces
-near-instant responses. Parameterize by the end-of-window weight instead:
+Responding early is worth more than responding late, which is what makes RT a meaningful
+measure at all. `temporal_decay_factor = 0` → uniform weights.
+
+**If `arrows_duration` is ever changed, λ must change with it.** λ is a per-timestep
+decay, so stretching the window drives the tail toward zero and forces near-instant
+responses. Parameterize by the end-of-window weight instead:
 `temporal_decay_factor ≈ 2.1 / n_response_steps`.
 
 ---
@@ -117,23 +119,27 @@ Stage 2 trial types: `0` near-cong, `1` near-incong, `2` far-cong, `3` far-incon
 
 ---
 
-## Key Config Parameters (`FlankerTaskConfig` defaults)
+## Key Config Parameters
 
-| Parameter | Value | Notes |
-|---|---|---|
-| `arrows_duration` | 5 | Timesteps per trial = `seq_len` = `stride` |
-| `trials_per_context_block` | 2 | Trials per block, Stage 1 only |
-| `signal_strength` | 1.0 | Arrow amplitude |
-| `arrow_noise_std` | 1.3 | Noise on active slots |
-| `bg_noise_std` | 0.1 | Noise on inactive slots |
-| `p_corr_by_distance` | `[1.0, 0.65, 0.55, 0.25, 0.1]` | Companion correlation by slot distance |
-| `temporal_decay_factor` | 0.7 | Speed pressure; 0 = uniform |
-| `latent_dims` | `[5]` | Z_dim = 5, one unit per slot |
-| `latent_activation` | `'softmax'` | Applied across slots before Z is used |
-| `Z_lr` | 0.3 | LU step size |
-| `Z_decay` | 1e-4 | L2 on Z |
-| `hidden_size` | 64 | LSTM units |
-| `p_congruent` / `p_near` | 0.5 / 0.5 | Stage 2 trial-type proportions |
+**Read the values from `configs.py`** (`FlankerTaskConfig`, `FlankerRandomTrialsConfig`) —
+they are tuned and re-tuned, and a number copied into this file goes stale silently. What
+follows is what each knob *does* and why it matters, which does not drift. For a sweep,
+`flanker_sweep.describe_runs()` reports the values a run on disk actually used.
+
+| Parameter | What it controls |
+|---|---|
+| `arrows_duration` | Timesteps per trial = `seq_len` = `stride`. Sets how many usable response steps exist, so it bounds RT resolution |
+| `trials_per_context_block` | Trials per block, Stage 1 only |
+| `signal_strength` | Arrow amplitude on active slots |
+| `arrow_noise_std` | Per-timestep noise on active slots. **The consequential one**: it decides how often the *target slot itself* misleads, which is what separates a bad-luck error from a control failure. The noise sweep is built on it |
+| `bg_noise_std` | Noise on inactive slots |
+| `p_corr_by_distance` | Companion correlation by slot distance in Stage 1. The gap between index 1 and 2 is the *only* thing that teaches the model near ≠ far, so it sets the ceiling on any distance effect |
+| `temporal_decay_factor` | Speed pressure; 0 = uniform. Must be rescaled with `arrows_duration` |
+| `latent_dims` | `[5]` — Z_dim matches the number of slots, one unit each |
+| `latent_activation` | `'softmax'`, applied across slots, so Z is a normalised attention gate |
+| `Z_lr`, `Z_optimizer`, `Z_decay`, `Z_decay_mode` | The latent update. `Z_decay` sets *where* the control state settles (it pulls raw Z toward zero, and zero is a uniform softmax); `Z_lr` sets how fast it moves and how much it jitters, not its operating point. `Z_lr` is on a scale set by the optimizer — an SGD value and an Adam value are not comparable |
+| `hidden_size` | LSTM units |
+| `p_congruent` / `p_near` | Stage 2 trial-type proportions |
 
 ---
 
@@ -141,32 +147,34 @@ Stage 2 trial types: `0` near-cong, `1` near-incong, `2` far-cong, `3` far-incon
 
 These are enforced in `flanker_analyses.py`; ignoring them produces wrong Z conclusions.
 
-**1. RT is interpolated inside the window and extrapolated beyond it.**
-The decision variable is sampled once per timestep, so an integer RT takes only ~4
-values. `rt_interp` linearly interpolates the threshold crossing between the bracketing
-samples. Only crossings at or after `response_start_timestep` count; earlier timesteps
-carry zero loss weight so their output is unconstrained.
+**Plotting RT.** `plot_rt(ax, trials, specs, config, interpolate=False)` is the one
+entry point. `interpolate=False` (default) draws the empirical PMF over the integer
+crossing timestep with a final `und.` point; `interpolate=True` draws the sub-timestep
+density over decided trials, scaled so its area is the decided proportion, with the same
+`und.` marker. Either way the non-responses are a labelled category rather than a spike
+inside the RT axis. `plot_rt_distribution` and `plot_rt_continuous` are kept as thin
+aliases for the two modes.
 
-Trials that never cross are **extrapolated, not dropped**. Failing to cross is
-condition-dependent (~6% congruent vs ~21% incongruent), so discarding those trials
-censored incongruent RTs *downward* and shrank the very effects being measured. The
-response window is fitted with a least-squares line and projected forward to the
-threshold, clipped to `[ad - 1, rt_cap]` with `rt_cap = 10` timesteps
-(`flanker_analyses.RT_CAP`); a flat or falling trace takes the cap.
+**1. RT is interpolated inside the window; trials that never decide sit at the end.**
+The decision variable is sampled once per timestep, so an integer RT takes only ~4 values.
+`rt_interp` linearly interpolates the threshold crossing between the bracketing samples.
+Only crossings at or after `response_start_timestep` count; earlier timesteps carry zero
+loss weight so their output is unconstrained.
 
-Two consequences to hold in mind:
+A trial that never crosses did not respond, and there is no honest number for when it
+would have. It is given `rt = arrows_duration`, so those trials pile into one visible bin
+at the end of the axis. Two earlier conventions both distorted the RT effects:
 
-- About half of the extrapolated trials are not rising at all and land exactly on the
-  cap, so RT distributions have a spike at 10 and RT partly encodes *failure to decide*.
-  Every RT cell in `flanker_metrics` is paired with a `dec_*` decided fraction for this
-  reason, and `cong_effect_rt_decided` gives the crossed-in-window comparison.
-- RT effects are therefore much larger than under the old censored convention (at
-  baseline p=0.5, congruency effect 1.55 vs 0.33 timesteps) and one conclusion changes
-  sign: PERI goes from null (−0.005, p=0.84) to reliably negative (−0.43, p=0.0005),
-  i.e. interference *grows* after an error once slow trials are counted.
+- **Dropping them (NaN).** Failing to cross is ~4x more common on incongruent trials, so
+  censoring them biased incongruent RT downward and shrank the congruency effect.
+- **Extrapolating to a cap of 10.** About half of those trials are not rising at all, so
+  they landed on the cap and dominated every mean — the congruency effect on RT read 1.54
+  timesteps that way against 0.33 on decided trials alone.
 
-`decided` still marks which trials crossed inside the window; `report_extraction()`
-prints the extrapolated fraction.
+Failing to decide is itself a condition effect (~5% of congruent trials against ~16% of
+incongruent), so it is reported as its own quantity rather than folded into RT:
+`undecided_frac` per session, `dec_*` per cell, and the last bin of every RT density.
+`decided` marks it per trial and `report_extraction()` prints the rate.
 
 **2. Z is one value per trial, and it is logged *after* the update.**
 The LU step aggregates the latent gradient over the trial's timesteps and broadcasts one
@@ -194,7 +202,7 @@ corrects, leaving frozen noise on the gate.
 
 ## `flanker_analyses.py` API
 
-### `extract_trials(logger, config, rt_threshold=0.5, search_from=None, rt_cap=10.0)`
+### `extract_trials(logger, config, rt_threshold=0.5, search_from=None)`
 
 Returns a dict of per-trial aligned arrays. Key groups:
 
@@ -204,7 +212,7 @@ Returns a dict of per-trial aligned arrays. Key groups:
 | Conditions | `trial_type` (hlcids), `context_id`, `trial_idx` |
 | Latent | `z_raw`, `z_act`, `z_in`, `delta_z`, `focus`, `focus_in`, `delta_focus`, `z_traj`, `z_within_trial_spread` |
 | Optional | `pe` (pre-LU prediction error), `z_grad` (aggregated dL/dZ) — `None` if not logged |
-| Scalars | `rt_threshold`, `rt_cap`, `search_from`, `ad`, `n_trials`, `center_slot` |
+| Scalars | `rt_threshold`, `search_from`, `ad`, `n_trials`, `center_slot` |
 
 `correct_at_decision` / `resp_at_decision` evaluate at the threshold-crossing timestep —
 that is the response the model actually emitted. `is_correct` / `response_side` use the
@@ -239,12 +247,22 @@ trial_measure(trials, measure)                  # measure spec -> (values, ylabe
 All take `specs = [(mask, label, color), ...]` and an optional `linestyles` list.
 
 ```python
-plot_accuracy_by_timestep(ax, trials, specs, config, linestyles=None)
+plot_accuracy_by_timestep(ax, trials, specs, config, linestyles=None)   # P(target), see below
 plot_rt_distribution(ax, trials, specs, config, fit_gaussian=True, undecided='extra_bin')
 plot_rt_continuous(ax, trials, specs, config, bin_width=0.25)   # interpolated RT density
 plot_z_by_timestep(ax, trials, specs, z_dim, config)            # flat by construction; archive only
 plot_scalar_bars(ax, trials, specs, measure, group_spacing=None, baseline=None)
 ```
+
+**`plot_accuracy_by_timestep` plots P(target), not accuracy.** It shows `trials['correct']`
+— the fraction of trials whose decision variable currently has the target's sign — at every
+timestep. There is no threshold and no commitment in it: a trial that crossed threshold three
+timesteps ago still contributes its *current* sign, and one that never crossed contributes
+throughout. The decision variable keeps integrating after the response is emitted and often
+flips back toward the target (~4% of decided congruent trials, ~14% of decided incongruent
+ones), which this curve counts and the emitted response does not. Its last point equals
+`measure='accuracy_final'`; the bar panels use `measure='accuracy'` (`correct_at_decision`),
+so the two differ by a few points and by more on incongruent trials.
 
 `plot_scalar_bars` measures: `'accuracy'`, `'accuracy_final'`, `'rt'`, `'rt_interp'`,
 `'focus'`, `'focus_in'`, `'delta_focus'`, `'pe'`, `('z', d)`, `('z_in', d)`,
@@ -301,73 +319,77 @@ reset_Z_uniform(model, scale=0.2, seed=None)   # re-seed Z, shared across timest
 
 ---
 
-## Sweep: seeds × congruency proportion
+## Sweep: seeds × stimulus noise
 
-`flanker_sweep.py` treats each seed as a synthetic subject — its own Stage-1 pretraining,
-cached to disk — and tests that same frozen model at every `p_congruent` level, making
-congruency proportion a *within-subject* manipulation as in the human design.
+`flanker_sweep.py` treats each seed as a synthetic subject with its own Stage-1
+pretraining, cached to disk, and runs one test session per (seed, variant).
 
 ```bash
+python flanker_sweep.py pretrain        # populate the model cache first
 python flanker_sweep.py                 # sequential, resumable
 SLURM_ARRAY_TASK_ID=7 python flanker_sweep.py   # one array element
 ```
 
-Settings live in `flanker_sweep_config.py` (`SEEDS`, `N_TEST_TRIALS`,
-`P_CONGRUENT_LEVELS`, …). Results are pickled per (seed, p_congruent, variant) and
-reloaded with:
+Every setting lives in `flanker_sweep_config.py` — `SEEDS`, `N_TEST_TRIALS`,
+`P_CONGRUENT`, `VARIANTS`, and `RUN_NAME`. `RUN_NAME` is the single switch: it decides
+where a sweep writes *and* which run every analysis and figure script reads. Never reuse
+a run name for different settings; the latent optimizer is baked into the pretrained
+model at construction, so a reused cache would silently run the old one.
+
+Results are pickled per (seed, variant) and reloaded with:
 
 ```python
-from flanker_sweep import load_result, load_condition
-results = load_condition(p_congruent=0.5)                      # baseline
-results = load_condition(p_congruent=0.5, variant='decay5x')   # a variant
+from flanker_sweep import load_result, load_condition, describe_runs
+describe_runs()                        # every run on disk, read from the stored configs
+results = load_condition('noise10')    # every available seed for one variant
 ```
 
-**Variants** add test-stage config overrides as extra sets of sessions, each with its
-own `p_levels`. They reuse the cached pretrained models, so only the test session is
-re-run. `'baseline'` keeps the original export paths; other variants get a
-`p_congruent-X__name` folder, so adding one never invalidates existing results.
+**Variants** are named sets of config overrides. `overrides` are test-stage only and reuse
+the baseline pretrained models; `pretrain_overrides` change Stage 1 and get their own
+model cache, and are also applied to the test config, because stimulus parameters must
+match across stages. Adding a variant never invalidates existing results.
 
-```python
-VARIANTS = {
-    'baseline': dict(overrides={},                  p_levels=P_CONGRUENT_LEVELS),
-    'decay5x':  dict(overrides={'Z_decay': 5e-4},   p_levels=[0.5]),
-}
-```
+The current axis is `arrow_noise_std`, because it is the parameter the model's one clear
+failure turns on — see `flanker_regression.md` §7 for the argument and the result. It is a
+stimulus parameter, so it must match across stages, which makes the comparison across
+noise *between*-subject rather than within.
 
-`Z_decay` is the knob that sets *where* the control state settles — it pulls raw Z
-toward zero, and zero is a uniform softmax, i.e. fully diffuse attention. `Z_lr` would
-change how fast Z moves and how much it jitters, but not its operating point: with
-Adam the stationary Z is where the task gradient balances the decay term, which is
-independent of the learning rate.
+`flanker_sweep_analysis.py` computes every effect within a seed and then one-sample
+t-tests it across seeds. `flanker_metrics.SIGNATURES` is the registry of human benchmark
+effects with the sign each should take — the single source of truth for the scorecard and
+any pass/fail table, so read a verdict from there rather than hard-coding a list.
 
-Ten seeds turn every bar into a mean ± SEM **across subjects** rather than across trials
-within one model — the error bar that corresponds to the human analyses.
-
-`flanker_sweep_analysis.py` computes every effect *within* a seed and then tests it
-across seeds with a one-sample t-test, plus a paired within-subject contrast across
-`p_congruent` levels (the same pretrained model is tested at each level, so pairing is
-valid and much more powerful).
-
-**Single-seed results are not trustworthy here.** Several effects that looked clear in
-one 5000-trial session — the near/far interaction, post-error reduction of interference,
-a near-vs-far difference in the Z update — did not survive across ten seeds, and one
-(which repetition condition carries the accuracy SCE) reversed sign. Always check an
-effect against `flanker_sweep_analysis.py` before reporting it.
+**Single-seed results are not trustworthy here.** Effects that looked clear in one
+5000-trial session have repeatedly failed to survive across seeds, and at least one
+reversed sign. A split-half check showed a large share of the across-seed spread in the
+sequential and post-error measures is within-session noise at ten seeds, which is why
+`SEEDS` was raised. Always check an effect against `flanker_sweep_analysis.py`, and report
+the count of seeds with the predicted sign alongside the mean — an effect carried by 9/10
+seeds is a different animal from one carried by 5/10 with two outliers doing the work.
 
 ### Group figures
 
-`flanker_sweep_figures.py` writes six figures next to the sweep results. Every panel is
-a mean across seeds with SEM, plus one dot per seed; within-subject contrasts also get
-thin lines connecting each seed across conditions.
+`flanker_sweep_figures.py` writes the group figures next to the sweep results, numbered in
+the order the story is told. Every panel is a mean across seeds with SEM, plus one dot per
+seed; within-subject contrasts also get thin lines connecting each seed across conditions.
 
 | Figure | Contents |
 |---|---|
-| `group_fingerprint.pdf` | Accuracy and RT in the four cells; congruency effect by distance; **distance effect decomposed within each congruency** |
-| `group_learning_and_rt.pdf` | Stage-1 learning curve, Stage-2 session stability, RT densities by congruency and by outcome |
-| `group_within_trial.pdf` | Accuracy build-up, evidence accumulation, congruency cost over timesteps |
-| `group_history.pdf` | Four history cells → I and → C; Gratton effect vs. response repetition |
-| `group_post_error.pdf` | Post-error slowing and accuracy, inherited Z focus, what drives the update |
-| `group_proportion_congruent.pdf` | Congruency effect vs. P(congruent), one line per subject |
+| `group_1_fingerprint.pdf` | Accuracy and RT in the four cells; congruency effect by distance; **distance effect decomposed within each congruency** |
+| `group_2_within_trial.pdf` | P(target) build-up, evidence accumulation, congruency cost over timesteps |
+| `group_3_rt.pdf` | RT densities by congruency and by outcome, and the trials that never decide |
+| `group_4_history.pdf` | Four history cells → I and → C; Gratton effect vs. response repetition |
+| `group_5_post_error.pdf` | Post-error slowing and accuracy, inherited Z focus, what drives the update |
+| `group_6_scorecard.pdf` | Every human signature on one axis, matched or not |
+| `group_7_noise_series.pdf` | Each signature against `arrow_noise_std` — why the post-error failures happen |
+
+```bash
+python flanker_sweep_figures.py                    # every variant in the sweep
+python flanker_sweep_figures.py --variant noise10
+```
+
+Colours follow the shared flanker palette in `plot_style.FLANKER_COLORS` — hue for
+congruency, shade for distance, fill for outcome. See `figure_style.md`.
 
 Note the difference between the **interaction** and the **simple effects** of distance.
 `interaction_acc` is a difference of differences and collapses the two directional
@@ -376,18 +398,19 @@ ones. Report `dist_effect_acc_cong` and `dist_effect_acc_incong` separately when
 question is about direction.
 
 `flanker_sweep_analysis.py` and `flanker_sweep_figures.py` each carry their own default
-congruency level; keep them in step when comparing tables to figures.
+variant; keep them in step when comparing tables to figures.
 
 ---
 
 ## Critical Gotchas
 
-**1. `Z_lr` is not re-read per batch.** It is baked into the Adam optimizer at model
+**1. `Z_lr` is not re-read per batch.** It is baked into the optimizer at model
 construction, and `set_Z` only rebuilds that optimizer when Z's *shape* changes — which
 never happens across flanker stages. Assigning `config.Z_lr` alone therefore has no
-effect, and the LU keeps stepping at whatever rate the model was born with. (This is why
-the old Stage 2/3 really ran at `Z_lr = 0.3`, not the `0.4` written in the script.)
-`mirror_to_model()` now patches the live param groups; always call it.
+effect, and the LU keeps stepping at whatever rate the model was born with; this has
+silently invalidated a stage before. `mirror_to_model()` patches the live param groups;
+always call it. The optimizer choice itself cannot be patched after construction, which
+is why a sweep run must never be reused across optimizers.
 
 **2. `model.config` is a direct reference, not a copy.** When a later stage receives
 `pretrained_model=model`, `model.config` still points at the training config.
@@ -412,7 +435,7 @@ for the history analyses. Stage 2 trials are i.i.d. by construction, not by shuf
 **7. The hidden state resets every trial, so Z is the only cross-trial carrier.**
 `seq_len == stride == arrows_duration`, so one batch is one trial, and `forward()`
 re-initializes `h`/`c` on every call. Nothing but `Z` survives a trial boundary — which is
-precisely why the sequential-congruency, post-error and proportion-congruent results can be
+precisely why the sequential-congruency, post-error and list-level results can be
 read as Z-mediated control. `config.stateful_hidden = True` (default `False`) carries the
 LSTM state across trials instead, giving those effects a second possible source; results
 from the two settings are not comparable, and a stateful run needs its own Z-ablated
@@ -425,14 +448,23 @@ models, and torch ≥ 2.6 defaults `weights_only` to `True`.
 
 ## Deferred work
 
-**Longer trials.** `arrows_duration = 5` gives only 4 response timesteps; interpolation
-helps but RT variance stays compressed. Lengthening to ~15 requires rescaling
-`temporal_decay_factor` (see Speed Pressure), raising `arrow_noise_std` by ≈√3 to avoid
-ceiling accuracy, and recalibrating `rt_threshold`. It would also allow modelling the
-flanker-before-target onset asynchrony (83 ms in the human task).
+**Longer trials.** A 5-timestep trial gives only 4 usable response steps; interpolation
+helps but RT variance stays compressed. Lengthening to ~15 requires three coupled changes:
+rescale `temporal_decay_factor` (see Speed Pressure), raise `arrow_noise_std` by ≈√3 to
+avoid ceiling accuracy, and recalibrate `rt_threshold`. It would also allow modelling the
+flanker-before-target onset asynchrony present in the human task.
 
-**Trial-history regression.** A per-seed trial-level GLM (log-RT via OLS on
-correct + decided trials, accuracy via logistic) on effect-coded factors, then one-sample
-t-tests on coefficients across seeds — the summary-statistics design used on the human
-data, with each seed as a subject. `lagged_factors()`, `pe`, `z_grad`, `z_in` and
-`delta_z` exist so this can be built without re-running anything.
+**Blocked replication across seeds.** The retired blocked design is what originally
+produced the distance-interaction claim, and within a congruent block the local congruency
+proportion is effectively 1.0 — the regime where that effect is strongest. Running
+`archive/run_flanker_blocked.py` across the same seeds would test whether blocking
+manufactured the effect. Read asymptotic within-block behaviour only, and say explicitly
+that the result is blocked, because blocked and interleaved numbers are not comparable.
+
+**Longer pretraining.** Congruent accuracy plateaus early in Stage 1 while incongruent
+accuracy is often still climbing when the weights are frozen — i.e. the spatial weighting
+the distance prediction depends on may not have converged. Check the Stage-1 learning
+curve before treating a weak distance effect as a property of the model.
+
+(The trial-history regression that used to sit here is built: `flanker_regression.py`,
+documented in `flanker_regression.md`.)

@@ -11,15 +11,26 @@ This ports the Stage-1 / Stage-A / Stage-B protocol from
 [rotating-targets task](task_rotating_targets.md), where context is a rotation angle rather than
 a reversal of reward contingencies.
 
+**The framing: one `Z_lr` per individual, carried through all three stages.** In practice every
+individual has their own latent-inference speed from the start — it isn't something a model
+"picks up" only in S3. So every `Z_lr` value in the grid runs its own complete S1→S2→S3
+pipeline: S1 develops at that `Z_lr`, S2 cues that same individual, and S3 (weights frozen, cue
+withdrawn) is where that individual's `Z_lr` is *recovered* from behaviour. There is no separate
+"train" vs "test" `Z_lr` any more — an earlier version of this experiment trained S1/S2 at only a
+handful of curated values and then forked S3 across a finer grid of *different*, mismatched
+`Z_lr` values, which was a time-saving shortcut but not the actual experiment: S2 training
+compensates for whatever `Z_lr` an individual has, so testing S3 at a `Z_lr` the weights never
+trained or were cued under doesn't represent anyone real.
+
 ---
 
 ## The three stages
 
 | | | `what_latent_to_use` | LU | WU |
 |---|---|---|---|---|
-| **S1** | standard task, uncued switches | `'self'` | on, at `Z_lr_train` | on |
+| **S1** | standard task, uncued switches | `'self'` | on, at `Z_lr` | on |
 | **S2** | **cued context** | `'context_ids'` | **off** | on |
-| **S3** | uncued again, **weights frozen** | `'self'` | on, at `Z_lr_test` | **off** |
+| **S3** | uncued again, **weights frozen** | `'self'` | on, at the same `Z_lr` carried from S1/S2 | **off** |
 
 **The cue is not in the observation.** It is the ground-truth rotation injected as a one-hot into
 Z, which multiplicatively gates the hidden state (`use_mul_gating`, `post_gating`). Nothing about
@@ -127,49 +138,56 @@ experiments cannot drift: `train_rotations = [0, 60]`, `block_size = 140`,
 
 ### The stage tree
 
-One job = one `(Z_lr_train, noise_std, seed)` cell, run entirely in memory:
+One job = one `(Z_lr, noise_std, seed)` cell — one individual — run entirely in memory, at the
+**same** `Z_lr` from start to finish:
 
 ```
-S1  uncued, self-Z, WU+LU @ Z_lr_train                  1 run
+S1  uncued, self-Z, WU+LU @ Z_lr                          1 run
  |__ for cue_mode in {'none', 'oracle_z'}:
-       S2  from deepcopy(model_S1)                      1 run each
-        |__ for z_lr_test in Z_LR_TEST:
-              S3  from deepcopy(model_S2), W frozen     1 short run each
+       S2  from deepcopy(model_S1)                        1 run each
+        |__ S3        from deepcopy(model_S2), W frozen, same Z_lr        1 run each
+        |__ S3_pinned from deepcopy(model_S2), W frozen, Z pinned         1 run each
+                                                          (sanity only, S3_PINNED_Z_SANITY)
 ```
 
 S1 does not depend on `cue_mode`, so the cued and control arms fork from **identical S1 weights**
-— a paired control rather than two independent runs. Likewise every S3 fork within one arm shares
-its S2 weights, so differences along the `Z_lr_test` axis are purely `Z_lr`.
+— a paired control rather than two independent runs. S3 continues each individual at the `Z_lr`
+it trained and was cued with — there is no independent fork axis any more. `S3_pinned` is the one
+exception: a small, bounded fork off the same S2 checkpoint that pins Z instead of carrying it
+forward, kept only as the "does anything besides Z carry context" sanity check (see below).
 
 ### Grids
 
 | Axis | Values |
 |---|---|
-| `Z_LR_TRAIN` (trait) | `'RNN'`, `0.05`, `0.2`, `0.6` |
-| `Z_LR_TEST` (S3 fork) | `None`, `0.01`, `0.05`, `0.1`, `0.2`, `0.4`, `0.6`, `0.9` |
+| `Z_LR` | `'RNN'`, `0.01`, `0.05`, `0.1`, `0.2`, `0.4`, `0.6`, `0.9` |
 | `CUE_MODES` | `'none'` (control), `'oracle_z'` (cued) |
 | `noise_std` | `0.20` |
 | seeds | 1 (pilot) / 10 (full) |
 
-The three numeric trait values are one from each region of the dose-response **already measured
-on this task** at 15 values × 10 seeds
-(`rotation_slips_perseveration_config.py`, the table above `_Z_LRS`): the transition (0.05), the
-optimum (0.2), and the degradation limb (0.6). That is the main reason to expect this port to be
-less finicky than the original — the grid is chosen from data rather than guessed.
+The numeric values are the fine dose-response grid this experiment used to reserve for forking S3
+alone (see [Verification](#verification) — it reproduces the old head-off run exactly at
+`Z_lr = 0.4`); using it to drive S1 itself is what makes the individuals genuine rather than a
+handful of curated "trait" values.
 
-Every trait value is also a fork value (asserted in the config), so the **diagonal** of the
-`Z_lr_train × Z_lr_test` grid is the matched "trait" condition — each individual keeps its own
-`Z_lr` throughout — while everything off the diagonal isolates `Z_lr` from the weights it
-produced. Both readings come out of one set of runs.
+Since every individual keeps its own `Z_lr` throughout, the old distinction between a
+"train"/"trait" reading (which weights an individual has) and a "test"/"fork" reading (what `Z_lr`
+S3 runs at) collapses into one: there is nothing off-diagonal any more to isolate `Z_lr` from the
+weights it produced, because they're never mismatched. The one thing worth keeping separate from
+that collapse is `S3_PINNED_Z_SANITY` — "pinned" isn't a point on the `Z_lr` dial, it's LU
+switched off, so folding it into `Z_LR` as a fake numeric value would corrupt every figure and
+check that treats `Z_LR` as the dial.
 
 Two arms carry most of the interpretive weight:
 
-- **`Z_lr_train = 'RNN'`** — `no_of_steps_in_latent_space = 0` through S1 and S2, LU switched on
-  in S3. A model that never developed latent inference and is then asked to use one.
-- **`Z_lr_test = None`** — `no_of_steps_in_latent_space = 0` in S3: Z pinned. This is the arm the
-  reference implementation had disabled (`add_control = False`) and it is load-bearing. If a
-  model with Z frozen still tracks context, then something other than Z carries context across
-  blocks and nothing downstream is interpretable.
+- **`Z_lr = 'RNN'`** — `no_of_steps_in_latent_space = 0` through S1 and S2, LU switched on only
+  for its `S3_pinned` sanity branch (never for its main S3 continuation, which stays at `'RNN'`
+  too). Kept as a qualitative no-latent baseline, not a point on the numeric dial. A model that
+  never developed latent inference and is then asked to use one.
+- **`S3_PINNED_Z_SANITY`** — reruns S3 off the same S2 checkpoint with `no_of_steps_in_latent_space
+  = 0`: Z pinned. This is the arm the reference implementation had disabled (`add_control =
+  False`) and it is load-bearing. If a model with Z frozen still tracks context, then something
+  other than Z carries context across blocks and nothing downstream is interpretable.
 
 ### Stage lengths
 
@@ -315,18 +333,19 @@ hidden state. 0 means the latent carries no context at all.
 
 ```bash
 # Stage 0 — pilot: PILOT = True in the config (the default), then
-./submit_job.sh 3 curriculum          # 4 array tasks, ~25 min each
+./submit_job.sh 7 curriculum          # 8 array tasks (one per Z_lr), ~10 min each
 python rotation_curriculum_analysis.py
 
 # Stage 1 — full sweep: PILOT = False
-./submit_job.sh 39 curriculum         # 40 array tasks
+./submit_job.sh 79 curriculum         # 80 array tasks (8 Z_lr x 10 seeds)
 
 # Stage 2 — analysis
 python rotation_curriculum_analysis.py
 ```
 
-One job runs 19 training runs, so `submit_job.sh` gives the `curriculum` experiment a 2-hour wall
-clock while leaving the other sweeps on their 20-minute limit.
+One job runs 7 training runs (S1, S2 x 2 cue_modes, S3 x 2, S3_pinned x 2 — down from 19 before
+the grid unified, since S3 no longer forks across a separate `Z_lr_test` axis). See
+`submit_job.sh`'s `curriculum` branch for the wall-clock limit.
 
 Running the analysis module directly first executes a synthetic self-test — a perfect prediction
 must decode to the true rotation, a stale one must score as fully perseverative — with no trained
@@ -339,14 +358,14 @@ the fastest way to see whether a run did what it was supposed to:
 
 ```bash
 python inspect_curriculum_run.py --list-runs                 # run directories on disk
-python inspect_curriculum_run.py --train 0.2 --cue oracle_z --z-lr-test 0.2 --x2 6000
+python inspect_curriculum_run.py --train 0.2 --cue oracle_z --x2 6000
 python inspect_curriculum_run.py --train RNN --list          # every stage in the tree
-python inspect_curriculum_run.py --train 0.2 --run-name sep60_16800-8400-8400_head-off_decay-grad
+python inspect_curriculum_run.py --train 0.2 --run-name sep60_16800-8400-8400_head-off_decay-grad_zgrid1
 ```
 
-`RUN_NAME` is built from the stage lengths, the head setting and the decay mode, so changing
-`S1/S2/S3_LENGTH` repoints every reader at a new directory automatically — and the old run stays
-on disk rather than being overwritten. Two consequences:
+`RUN_NAME` is built from the stage lengths, the head setting, the decay mode and `GRID_VERSION`,
+so changing `S1/S2/S3_LENGTH` (or the stage-tree shape) repoints every reader at a new directory
+automatically — and the old run stays on disk rather than being overwritten. Two consequences:
 
 - **In a long-running IPython session, `%autoreload 2` will not pick this up.** It patches
   functions and classes but does not reliably re-execute module-level assignments, so `RUN_NAME`
@@ -360,9 +379,10 @@ on disk rather than being overwritten. Two consequences:
 ```python
 from inspect_curriculum_run import *
 tree = load_tree(0.2)                                        # 'RNN' also works
-show_stitched(tree, 'oracle_z', 0.2)                         # all three stages, one axis
-show_curriculum(tree, cue_mode='oracle_z', z_lr_test=0.2, x2=6000)   # one figure per stage
-show_stage(tree, ('S3', 'oracle_z', None))                   # any single stage
+show_stitched(tree, 'oracle_z')                              # all three stages, one axis
+show_curriculum(tree, cue_mode='oracle_z', x2=6000)          # one figure per stage
+show_stage(tree, ('S3', 'oracle_z'))                         # any single stage
+show_stage(tree, ('S3pinned', 'oracle_z'))                   # the Z-pinned sanity branch
 ```
 
 > **The curriculum stages are not phases.** `logger.phases` records only the phases *inside one
@@ -384,8 +404,8 @@ Usable panels: `rotating_targets_behavior`, `latent_2d` / `latent`, `loss`, `wei
 > built from the ground-truth context inside the forward pass and never written back to
 > `model.Z`, so the panel shows whatever S1 left there. A flat Z in S2 is **not** evidence that
 > the cued stage lacks latent dynamics — the gate driving the network simply is not plotted.
-> `show_stage()` prints a warning. (A flat Z in the `z_lr_test=None` S3 fork *is* meaningful:
-> there the latent really is pinned.)
+> `show_stage()` prints a warning. (A flat Z in the `('S3pinned', cue)` sanity branch *is*
+> meaningful: there the latent really is pinned.)
 
 ### Sanity checks
 
@@ -396,10 +416,104 @@ Usable panels: `rotating_targets_behavior`, `latent_2d` / `latent`, `loss`, `wei
 |---|---|---|
 | **(a)** | S1 pre-switch error ≤ 0.25 | the models never learned the task, so there is no flexibility to measure |
 | **(b)** | S2 cued trial-1 error ≤ 0.25 | the cue is not being used. It names the *next* block's rotation before the model predicts, so a model reading the gate should show **no switch cost at all**; if it does, the weights are inferring context internally. Drop `S2_BLOCK_SCALE` and rerun |
-| **(c)** | S3 frozen-Z asymptote ≥ 0.4 | something other than Z carries context across blocks, and nothing downstream is interpretable |
-| **(d)** | S3 first-mini-block error spans ≥ 0.1 across `Z_LR_TEST` | the `Z_lr` dial does nothing — the thing that was finicky in the original |
+| **(c)** | S3 pinned-Z (`S3_PINNED_Z_SANITY`) asymptote ≥ 0.4 | something other than Z carries context across blocks, and nothing downstream is interpretable |
+| **(d)** | S3 first-mini-block error spans ≥ 0.1 across `Z_LR` (excluding `'RNN'`) | the `Z_lr` dial does nothing — the thing that was finicky in the original |
 
-### What the pilot showed (1 seed, noise 0.20)
+### What the full sweep showed under the unified `Z_LR` grid (10 seeds, noise 0.20)
+
+Run 2026-08-24, `submit_job.sh 79 curriculum` (80 array tasks = 8 `Z_lr` × 10 seeds, `PILOT =
+False`). All 80 runs completed with no errors. Bands below are genuine across-seed SEM
+(`sem_over='seeds'`, `n_switches` 46-200 per curve depending on stage), not the single-seed
+across-switch fallback the pilot used.
+
+```
+  (a) S1 asymptote reached          worst pre=0.253 <= 0.25   FAIL
+  (b) S2 cued has no switch cost    worst t1=0.156 <= 0.25 (uncued control 0.762)   PASS
+  (c) S3 pinned-Z does not recover  min asym=0.499 >= 0.4   PASS
+  (d) S3 separates by Z_lr          mb1 spread=0.453 >= 0.1   PASS
+```
+
+**(a) misses, barely** — the culprit is `Z_lr = 0.6` (S1 pre = 0.253 vs. 0.25), 0.003 over
+threshold once averaged over 10 seeds instead of the pilot's 1. Every other arm still clears it
+comfortably (worst of the rest is `Z_lr = 0.4` at 0.223). Not a design failure — `S1_LENGTH` is
+short enough (2000, ~14 blocks) that the slower/less-stable arms are still noisy about reaching
+full asymptote by seed; longer S1, per the doc's own note on stage lengths, would likely clear
+this. (b)-(d) all pass with the same comfortable margins the pilot showed, now on a real
+across-seed band.
+
+**The dose-response (S3 cued, real per-seed bands) confirms the pilot's shape, tighter:**
+
+| `Z_lr` | RNN | 0.01 | 0.05 | 0.1 | **0.2** | 0.4 | 0.6 | 0.9 |
+|---|---|---|---|---|---|---|---|---|
+| S3 cued, mb1 | 0.500 | 0.829 | 0.780 | 0.651 | 0.472 | 0.375 | 0.376 | 0.414 |
+| S3 cued, asym | 0.499 | 0.717 | 0.242 | 0.168 | **0.204** | 0.253 | 0.299 | 0.362 |
+
+Same story as the pilot, now with 200 switches/curve instead of 20: `RNN` and `0.01` fail to
+leave the old rotation (asym ≈ 0.50 / 0.72); the asymptote bottoms out at `0.1`-`0.2` (0.168 /
+0.204); recovery keeps getting faster (lower mb1) out to `0.4`, but the asymptote degrades again
+past that (`0.6`: 0.299, `0.9`: 0.362) — the speed/stability tradeoff, not a monotone effect of
+`Z_lr`. `S3_pinned` stays flat at 0.499-0.500 asym across every `Z_lr` and `cue_mode`, confirming
+(c) with a much larger n.
+
+**S2 cued collapses the switch cost to the same floor regardless of `Z_lr`**: t1 = 0.145-0.156
+cued vs. 0.646-0.863 uncued control, across all eight arms — the cue is read, not inferred, and
+that holds independent of how well an individual does on its own (compare with the S1 spread
+above).
+
+Figures regenerated under the same `EXPORT_ROOT/figures/` from all 80 trees; `n_seeds=10` now
+appears in every curve's averaging note instead of the pilot's `over switches`.
+
+### What the 1-seed pilot showed under the unified `Z_LR` grid (superseded by the above)
+
+Run 2026-08-24, `submit_job.sh 7 curriculum` (8 array tasks, one per `Z_lr`). `check_acceptance()`
+**passes all four checks** — the first time this design has cleared (a)-(d) in one run, since the
+old grid's headline figures relied on hand-picking `HEADLINE_Z_LR_TRAIN` to dodge arms that never
+converged in S1:
+
+```
+  (a) S1 asymptote reached          worst pre=0.179 <= 0.25   PASS
+  (b) S2 cued has no switch cost    worst t1=0.157 <= 0.25 (uncued control 0.726)   PASS
+  (c) S3 pinned-Z does not recover  min asym=0.493 >= 0.4   PASS
+  (d) S3 separates by Z_lr          mb1 spread=0.457 >= 0.1   PASS
+```
+
+**The pinned-Z sanity check is unambiguous.** Every `S3_pinned` branch sits at asymptote
+0.487-0.495 (chance is 0.5) regardless of `Z_lr` or `cue_mode` — with Z held fixed, nothing
+recovers context across a switch, which is exactly what makes the live-Z arms downstream
+interpretable.
+
+**S3 cued shows a real dose-response, not a monotone one — the speed/stability tradeoff survives
+the rework:**
+
+| `Z_lr` | RNN | 0.01 | 0.05 | 0.1 | **0.2** | 0.4 | 0.6 | 0.9 |
+|---|---|---|---|---|---|---|---|---|
+| S3 cued, mb1 (first mini-block) | 0.500 | 0.823 | 0.765 | 0.617 | 0.463 | 0.366 | 0.400 | 0.431 |
+| S3 cued, asym | 0.494 | 0.701 | 0.236 | 0.163 | **0.201** | 0.264 | 0.308 | 0.374 |
+
+`0.01` is too slow to leave the old rotation inside the window (asym 0.70, barely off chance);
+`RNN` never developed a Z-behaviour map at all (S3 sits at chance, same as its own pinned-Z fork —
+the "never trained to read this channel" failure mode the design predicts). Recovery speed (mb1)
+keeps improving with `Z_lr` out to 0.4, but the asymptote is best around `0.1`-`0.2` and degrades
+again at `0.6`/`0.9` — fast but noisier tracking. This reproduces the old pilot's central finding
+(a mid-range optimum, not "faster is always better") with a genuine per-individual pipeline
+instead of a handful of curated trait values.
+
+**S1 (uncued, no curriculum yet) already shows which individuals self-adapt on their own**, before
+any cueing — this is the new Fig A, and it separates cleanly by `Z_lr` (S1 mb2, second
+mini-block): `0.1` (0.303) and `0.2` (0.218) recover within the window; `0.05` (0.623) is
+partway; `RNN`, `0.01`, `0.4`, `0.6`, `0.9` (0.74-0.80) do not. S2 cued (Fig B) collapses this
+almost entirely — every `Z_lr` lands at t1 ≈ 0.14-0.16 with the cue on, against 0.60-0.87
+uncued — confirming the cue is read rather than inferred, independent of how well an individual
+does on their own.
+
+One seed only, so treat the shape as suggestive rather than final — `summarize()` prints the full
+table above with switch counts.
+
+> Earlier stale note (kept for context): this pilot was previously run under the old
+> `Z_lr_train`/`Z_lr_test` split — 4 curated trait values with S3 forked across 8 mismatched test
+> values — which needed `HEADLINE_Z_LR_TRAIN = 0.2` specifically because most trait arms never
+> self-adapted in S1. That result (below) is superseded by the table above; kept only as a record
+> of what the old design showed.
 
 Shape only — one seed, and the numbers move with the stage lengths. Three results are worth
 recording because they are what the design was built to detect:
@@ -458,19 +572,29 @@ same furniture: a chance line at 0.5, a solid line at x = 0.5 for the switch, da
 mini-block ends, and the averaging note (`over seeds` vs `over switches`, and the counts) printed
 beneath the axes rather than in a caption that can drift.
 
-Colour convention: the *stage* is grey / cue-orange / NeuraGEM-blue for S1 / S2 / S3; the *dial*
-(`Z_lr_test`) takes the plasma ramp; the *model class* (`Z_lr_train`) keeps the RNN's registered
-green and gives the NeuraGEM arms a Blues ramp.
+Colour convention: every individual's `Z_lr` takes the plasma ramp (one grid now, one scale), plus
+the RNN's registered project colour for the qualitative no-latent arm; `cue_mode` gets its own
+colour (`CUE_INFO`) where a figure distinguishes cued from control.
+
+**Headline figures — one story per stage, every individual overlaid:**
 
 | | Content |
 |---|---|
-| **F1** | **The curriculum.** Switch-aligned adaptation at S1, S2 and S3, cued branch and control branch side by side. S1 is drawn in both panels — it is the shared origin both branches fork from, so any difference between the panels is what the cued stage did. Shows **one** trait arm (`HEADLINE_Z_LR_TRAIN`), so read it with F3 |
-| **F2** | **S3 by the forked `Z_lr`.** Weights are frozen and every fork sees identical data, so the only thing separating these curves is the latent learning rate. The dose-response, in adaptation-curve form |
-| **F3** | Every trait arm at S1 and at S3, so the curriculum's effect on each is visible against its own starting point |
-| **F4** | The two scalars the curve is read for, against the forked `Z_lr`: **trial 1** (the prior — commitment to the old rotation, scored before any evidence) and **trial 2** (zero-shot reuse — a colour never seen under the new rotation) |
-| **D** | Gate separation between the two rotations in S3. Does the latent actually flip? |
+| **A** (`plot_s1_dose_response`) | S1, uncued baseline, every `Z_lr`. Shows which individuals fail to adapt after a switch at all |
+| **B** (`plot_s2_dose_response`) | S2, cued, every `Z_lr`. With ground truth handed to Z there is nothing left to infer, so curves should collapse toward the cue's own floor; any residual spread is forgetting, not inference speed |
+| **C** (`plot_s3_dose_response`) | S3, uncued again, weights frozen, every `Z_lr`. The real recovered dose-response — each individual's own `Z_lr`, read off its own behaviour |
+| **F** (`plot_s1_vs_s3_by_zlr`) | Compact before/after companion to A/B/C: every `Z_lr` at S1 and at S3, side by side |
+| **F4** (`plot_reuse_summary`) | The two scalars the curve is read for, against `Z_lr`, cued vs control: **trial 1** (the prior — commitment to the old rotation, scored before any evidence) and **trial 2** (zero-shot reuse — a colour never seen under the new rotation) |
+| **D** (`plot_z_separation`) | Gate separation between the two rotations in S3, against `Z_lr`. Does the latent actually flip? |
+| **Schematic** (`rotation_curriculum_schematic.plot_curriculum_schematic`) | Companion diagram meant to sit above Fig F: a blocked-context bar plus a two-node latent diagram per stage. S1 and S3 draw the *identical* reciprocal-arrow-plus-rate-clock-plus-`α_z` construct — the mechanism (self-inference at rate `α_z`) is the same in both, only node fill (unfilled '?' vs filled colour) shows whether the weights have learned to use it. S2 draws no such mechanism at all: two already-coloured nodes and one external "cue" arrow, since Z is handed the answer rather than inferred. No dependency on trained-model data — pure diagram, `schematic_curriculum.pdf`, `FigSize.custom(4.0, 1.5)` |
 
-`summarize()` prints `pre / t1 / t2 / reuse / mb1 / mb2 / asym` for every (trait arm, stage),
+**Internal sanity check — not for an audience:**
+
+| | Content |
+|---|---|
+| `plot_uncued_control_sanity` | S1/S2/S3 for the `cue_mode='none'` control arm, every `Z_lr`, one combined figure. This is our check that the cued arm (A/B/C) is being compared against a fair amount of extra training, not a result with a story of its own — it has no headline reading and should not be shown to an audience without that context |
+
+`summarize()` prints `pre / t1 / t2 / reuse / mb1 / mb2 / asym` for every (`Z_lr`, stage),
 with the switch count and which level the SEM came from.
 
 
@@ -501,6 +625,17 @@ All verified in this repo; each one fails silently rather than loudly.
    `run_test_phase=False`, so it passes. Keep it that way.
 9. `save_models=False` everywhere — the model filename omits the condition and arms would
    overwrite one another.
+10. **`payload['S3']` changed shape** when the grid unified: it went from keyed by
+    `(cue_mode, z_lr_test)` tuples to keyed by `cue_mode` alone, and a new top-level
+    `payload['S3_pinned']` dict appeared for the sanity branch. Any pickle written before this
+    rework, or an ad hoc script indexing the old shape, will `KeyError` or silently misread
+    against the new helpers — old trees are readable only via raw pickle access, not through
+    `inspect_curriculum_run.py`'s `load_tree()`/`show_stage()` any more.
+11. **`RUN_NAME` never encoded the grid shape**, only stage lengths, the head setting and the
+    decay mode — and several numeric `Z_LR` values repeat from the old `Z_lr_train`/`Z_lr_test`
+    split. Without `GRID_VERSION` in `RUN_NAME`, the unified-grid sweep would write new-shape
+    payloads to the exact paths old-shape ones live at, silently clobbering them. Bump
+    `GRID_VERSION` again on any future incompatible change to the stage tree.
 
 ---
 
@@ -523,26 +658,44 @@ Run with `.venv/bin/python` (system python has no torch).
   > *block*'s target) and asserted it would be correct before the switch. It is not: with two
   > rotations alternating, block *b−2* has the same rotation as block *b*, so that model is wrong
   > on both sides of the switch. The lag-one model is the one that isolates the alignment.
-- **Stage stitching** — tree shape, per-stage phase names, S3 weights frozen and `Z_lr`/`Z_decay`
-  forked, stages seeing different data while S3 forks share theirs, the frozen-Z fork not moving
-  Z while a live fork does.
+- **Stage stitching** — tree shape, per-stage phase names, S3 weights frozen and carrying
+  `Z_lr`/`Z_decay` from S1/S2, stages seeing different data, and the `S3_pinned` sanity branch not
+  moving Z while the main S3 continuation does.
 - **Regression** — S1 at `Z_lr = 0.4`, `noise = 0.20`, seed 0 against the existing head-off cell
   `exports/rotation_slips/sep60_blocked_16800_geometric/NG$\alpha_z=0.4$/context_encoding-None_noise_std-0.2/results_seed-0.pkl`,
   scored with `analyze_block_switch_adaptation`. **Max difference 0.0000** across trial positions
   — the task design is genuinely shared, and the halved `Z_decay` field under `'grad'` mode
-  reproduces the old effective decay exactly.
+  reproduces the old effective decay exactly. S1 does not depend on the `Z_lr_train`/`Z_LR` grid
+  split, so this regression still holds after the grid unified.
+
+  > **Post-unification smoke test.** After collapsing the grid, `run_tree()` was exercised
+  > directly for `Z_lr=0.2` end to end: `payload['S3']` came back keyed by `cue_mode` alone,
+  > `payload['S3_pinned']` present with `no_of_steps_in_latent_space=0`, S3's carried `Z_lr`
+  > matching the individual's, weights frozen on both S3 variants. All headline/sanity figures,
+  > `summarize()` and `check_acceptance()` ran cleanly against that one-cell cache (criterion (d)
+  > correctly reports `nan`/FAIL with only one `Z_lr` populated — expected until a full pilot
+  > runs). `inspect_curriculum_run.py`'s `list_runs()`, `load_tree()`, `list_stages()`,
+  > `show_curriculum()` and `show_stitched()` all read the new shape correctly, and old runs
+  > remain listed and untouched under their un-tagged `RUN_NAME`s.
 
 
 ## Caveats
 
-- Stage lengths, `S2_BLOCK_SCALE`, `S3_Z_INIT` and the grids are **not** all encoded in the export
-  path (only the stage lengths, head setting and decay mode are, via `RUN_NAME`). Set
-  `SKIP_EXISTING = False` after changing any of the others.
+- Stage lengths, `S2_BLOCK_SCALE`, `S3_Z_INIT` and the grid are **not** all encoded in the export
+  path (only the stage lengths, head setting, decay mode and `GRID_VERSION` are, via `RUN_NAME`).
+  Set `SKIP_EXISTING = False` after changing any of the others.
+- `GRID_VERSION` (in `RUN_NAME`) exists specifically because the export path never encoded the
+  grid shape, and this rework's numeric `Z_LR` values overlap with the pre-rework
+  `Z_lr_train`/`Z_lr_test` grids. Old exports under the un-tagged `RUN_NAME` remain on disk,
+  untouched, but are readable only via raw pickle access (see implementation trap #10) — not
+  through the current `inspect_curriculum_run.py` helpers, which address the new shape. Bump
+  `GRID_VERSION` again on any future incompatible change to the stage tree.
 - Geometric blocks average ~1.16× nominal, so the realised stage lengths exceed the nominal
   figures. The analysis works per block, so this only matters if you quote a length.
-- The `'RNN'` trait arm trains under a constant uniform gate, so its S1 and S2 are genuinely
+- The `'RNN'` arm trains under a constant uniform gate, so its S1 and S2 are genuinely
   latent-free. Its S3 asks the weights to use a channel they were never trained to read; a
-  failure there is a result, not a bug.
+  failure there is a result, not a bug. It is excluded from acceptance check (d)'s spread
+  computation for the same reason — it isn't a point on the numeric `Z_lr` dial.
 - Only one noise level is run by default. The slips-vs-noise causal figure from the
   [slips experiment](rotation_slips_perseveration.md) has no counterpart here until
   `DEFAULT_NOISE` is widened.

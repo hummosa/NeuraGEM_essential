@@ -20,8 +20,8 @@ EXPERIMENT_NAME=$2
 MAX_PARALLEL=100  # Max concurrent jobs
 
 # Per-experiment wall clock: one task of most sweeps is a single ~3 min training run, but a
-# curriculum task runs a whole 19-run stage tree (~25 min). Keep the short limit for the others
-# rather than raising it globally — a longer request queues behind more.
+# curriculum task runs a whole 7-run stage tree (one Z_lr through S1/S2/S3/S3_pinned). Keep the
+# short limit for the others rather than raising it globally — a longer request queues behind more.
 TIME_LIMIT="0-00:20:00"
 
 if [ "$EXPERIMENT_NAME" = "learning" ]; then

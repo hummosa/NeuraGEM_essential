@@ -3,17 +3,23 @@
 All configurable state lives in rotation_curriculum_config.py — edit that file to change what
 is run.
 
-One job = one (Z_lr_train, noise_std, seed) cell, and it runs the whole stage tree in memory:
+One job = one (Z_lr, noise_std, seed) cell — one "individual" — and it runs the whole stage tree
+in memory, at the SAME Z_lr from start to finish:
 
-    S1  uncued, self-Z, WU+LU @ Z_lr_train                  1 run
+    S1  uncued, self-Z, WU+LU @ Z_lr                          1 run
      |__ for cue_mode in CUE_MODES:
-           S2  from deepcopy(model_S1)                      1 run each
-            |__ for z_lr_test in Z_LR_TEST:
-                  S3  from deepcopy(model_S2), W frozen     1 short run each
+           S2  from deepcopy(model_S1)                        1 run each
+            |__ S3        from deepcopy(model_S2), W frozen, same Z_lr        1 run each
+            |__ S3_pinned from deepcopy(model_S2), W frozen, Z pinned         1 run each
+                                                              (sanity only, S3_PINNED_Z_SANITY)
 
-S1 does not depend on cue_mode, so the cued and control arms fork from *identical* S1 weights,
-and every S3 fork within one arm shares the S2 weights. Differences along the Z_LR_TEST axis are
-therefore purely Z_lr, which is the entire point of the design.
+S1 does not depend on cue_mode, so the cued and control arms fork from *identical* S1 weights.
+S3 continues each individual at the Z_lr it trained and was cued with — there is no separate
+"test" Z_lr any more, which is the whole point: an individual's Z_lr is fixed all along, and S3
+is where it is recovered from behaviour, not a grid of mismatched values tried against one
+model's weights. S3_pinned is the one exception, a small bounded fork off the same S2 checkpoint
+that pins Z instead of carrying it forward, kept only as the "does anything besides Z carry
+context" sanity check.
 
 Run locally (sequential):
     python rotation_curriculum_sweep.py
@@ -46,7 +52,7 @@ from train_and_infer_functions import train_model
 from rotation_slips_perseveration_sweep import compact_logger
 from rotation_curriculum_config import (
     CUE_MODES, PASSIVE_LENGTH, PILOT, S1_LENGTH, S2_BLOCK_SCALE, S2_LENGTH, S3_LENGTH,
-    S3_Z_INIT, SKIP_EXISTING, STAGE_SEED_OFFSETS, Z_LR_TEST, Z_LR_TRAIN,
+    S3_PINNED_Z_SANITY, S3_Z_INIT, SKIP_EXISTING, STAGE_SEED_OFFSETS, Z_LR,
     active_noise, active_seeds, make_base_config, result_path, z_decay_for,
 )
 
@@ -55,30 +61,30 @@ from rotation_curriculum_config import (
 
 @dataclass(frozen=True)
 class CurriculumJob:
-    z_lr_train: Any
+    z_lr: Any
     noise_std: float
     seed: int
 
 
 def generate_jobs() -> List[CurriculumJob]:
-    """One job per (trait arm, noise, seed). The cue and Z_lr_test axes run inside a job."""
-    return [CurriculumJob(z_lr_train=t, noise_std=n, seed=s)
-            for t, n, s in product(Z_LR_TRAIN, active_noise(), range(active_seeds()))]
+    """One job per (Z_lr, noise, seed) — one individual. Cue and stage axes run inside a job."""
+    return [CurriculumJob(z_lr=z, noise_std=n, seed=s)
+            for z, n, s in product(Z_LR, active_noise(), range(active_seeds()))]
 
 
 # ── Stage configs ─────────────────────────────────────────────────────────────
 
-def _apply_trait(cfg, z_lr_train: Any) -> None:
-    """Latent settings for the arm the model develops under (S1 and S2)."""
-    if z_lr_train == 'RNN':
+def _apply_zlr(cfg, z_lr: Any) -> None:
+    """Latent settings for the one Z_lr this run carries through every stage."""
+    if z_lr == 'RNN':
         # No latent inference at all. Z stays at its zero init, so softmax gives a constant
         # uniform gate and the weights learn without any context channel — which is what makes
         # this the strongest impairment arm when S2 suddenly hands it a varying gate.
         cfg.no_of_steps_in_latent_space = 0
     else:
         cfg.no_of_steps_in_latent_space = 1
-        cfg.Z_lr    = z_lr_train
-        cfg.Z_decay = z_decay_for(z_lr_train)
+        cfg.Z_lr    = z_lr
+        cfg.Z_decay = z_decay_for(z_lr)
 
 
 def _round_block_size(block_size: int, n_colors: int) -> int:
@@ -91,10 +97,10 @@ def _round_block_size(block_size: int, n_colors: int) -> int:
     return max(unit, int(round(block_size / unit)) * unit)
 
 
-def make_stage_configs(z_lr_train: Any, noise_std: float) -> Dict[str, Any]:
+def make_stage_configs(z_lr: Any, noise_std: float) -> Dict[str, Any]:
     """Base config plus the S1 config. S2/S3 configs are derived per branch at run time."""
     base = make_base_config(noise_std=noise_std)
-    _apply_trait(base, z_lr_train)
+    _apply_zlr(base, z_lr)
 
     cfg_s1 = copy.deepcopy(base)
     cfg_s1.blocked_phase_length      = S1_LENGTH
@@ -105,7 +111,7 @@ def make_stage_configs(z_lr_train: Any, noise_std: float) -> Dict[str, Any]:
     return dict(base=base, S1=cfg_s1)
 
 
-def make_s2_config(base, z_lr_train: Any, cue_mode: str):
+def make_s2_config(base, z_lr: Any, cue_mode: str):
     cfg = copy.deepcopy(base)
     cfg.blocked_phase_length       = S2_LENGTH
     cfg.add_passive_learning_phase = False
@@ -122,13 +128,15 @@ def make_s2_config(base, z_lr_train: Any, cue_mode: str):
         # Control: S2 continues exactly as S1, so the cued arm is compared against the same
         # amount of extra training rather than against nothing.
         cfg.what_latent_to_use = 'self'
-        _apply_trait(cfg, z_lr_train)
+        _apply_zlr(cfg, z_lr)
     else:
         raise ValueError(f"Unknown cue_mode {cue_mode!r}; choose from {CUE_MODES}.")
     return cfg
 
 
-def make_s3_config(base, z_lr_test: Any):
+def make_s3_config(base, z_lr: Any, pin_z: bool = False):
+    """S3: uncued again, weights frozen. Carries the SAME z_lr the individual trained/was cued
+    with, unless `pin_z` — the one sanity-check exception, which pins Z instead (LU off)."""
     cfg = copy.deepcopy(base)
     cfg.blocked_phase_length       = S3_LENGTH
     cfg.add_passive_learning_phase = False
@@ -136,12 +144,10 @@ def make_s3_config(base, z_lr_test: Any):
     # The whole design: with the weights frozen, Z is the only adaptive variable, so recovery
     # speed after a switch can only be a function of Z_lr.
     cfg.no_of_steps_in_weight_space = 0
-    if z_lr_test is None:
-        cfg.no_of_steps_in_latent_space = 0     # frozen-Z control
+    if pin_z:
+        cfg.no_of_steps_in_latent_space = 0     # sanity branch: Z pinned, not part of the Z_LR axis
     else:
-        cfg.no_of_steps_in_latent_space = 1
-        cfg.Z_lr    = z_lr_test
-        cfg.Z_decay = z_decay_for(z_lr_test)
+        _apply_zlr(cfg, z_lr)
     return cfg
 
 
@@ -216,16 +222,16 @@ def _run_stage(cfg, model, seed: int, stage: str, label: str):
 
 def run_tree(job: CurriculumJob, job_index: int | None = None, total: int | None = None) -> None:
     prefix = f'[{job_index + 1}/{total}] ' if job_index is not None else ''
-    out = result_path(job.z_lr_train, job.noise_std, job.seed)
+    out = result_path(job.z_lr, job.noise_std, job.seed)
 
     if SKIP_EXISTING and out.exists():
         print(f'{prefix}Skipping (exists): {out}')
         return
 
-    print(f'{prefix}train={job.z_lr_train} noise={job.noise_std} seed={job.seed}', flush=True)
+    print(f'{prefix}Z_lr={job.z_lr} noise={job.noise_std} seed={job.seed}', flush=True)
     t0 = time.time()
 
-    cfgs = make_stage_configs(job.z_lr_train, job.noise_std)
+    cfgs = make_stage_configs(job.z_lr, job.noise_std)
 
     # ── S1: uncued, from scratch ──────────────────────────────────────────────
     torch.manual_seed(job.seed)
@@ -233,18 +239,18 @@ def run_tree(job: CurriculumJob, job_index: int | None = None, total: int | None
     logger_s1, model_s1 = _run_stage(cfgs['S1'], None, job.seed, 'S1', 'S1 uncued')
 
     payload: Dict[str, Any] = {
-        'meta': dict(z_lr_train=job.z_lr_train, noise_std=job.noise_std, seed=job.seed,
+        'meta': dict(z_lr=job.z_lr, noise_std=job.noise_std, seed=job.seed,
                      s1_length=S1_LENGTH, s2_length=S2_LENGTH, s3_length=S3_LENGTH,
                      s2_block_scale=S2_BLOCK_SCALE, s3_z_init=S3_Z_INIT,
-                     cue_modes=list(CUE_MODES), z_lr_test=list(Z_LR_TEST)),
+                     cue_modes=list(CUE_MODES), s3_pinned_z_sanity=S3_PINNED_Z_SANITY),
         'S1': logger_s1,
-        'S2': {}, 'S3': {},
-        'configs': {'S1': cfgs['S1'], 'S2': {}, 'S3': {}},
+        'S2': {}, 'S3': {}, 'S3_pinned': {},
+        'configs': {'S1': cfgs['S1'], 'S2': {}, 'S3': {}, 'S3_pinned': {}},
     }
 
     for cue_mode in CUE_MODES:
         # ── S2: cued (or the matched uncued control) ──────────────────────────
-        cfg_s2   = make_s2_config(cfgs['base'], job.z_lr_train, cue_mode)
+        cfg_s2   = make_s2_config(cfgs['base'], job.z_lr, cue_mode)
         model_s2 = copy.deepcopy(model_s1)
         _hand_over(model_s2, cfg_s2)
         logger_s2, model_s2 = _run_stage(cfg_s2, model_s2, job.seed, 'S2', f'S2 {cue_mode}')
@@ -252,17 +258,27 @@ def run_tree(job: CurriculumJob, job_index: int | None = None, total: int | None
         payload['configs']['S2'][cue_mode] = cfg_s2
         last_rot = _last_block_rotation_rad(logger_s2)
 
-        # ── S3: uncued again, weights frozen, forked over Z_lr_test ───────────
-        for z_lr_test in Z_LR_TEST:
-            cfg_s3   = make_s3_config(cfgs['base'], z_lr_test)
-            model_s3 = copy.deepcopy(model_s2)
-            model_s3.config = cfg_s3            # set_Z reads it if it has to reallocate
-            _init_Z_for_s3(model_s3, cfg_s3, last_rot)
-            _hand_over(model_s3, cfg_s3)        # rebuild the optimizer against the final Z
-            logger_s3, _ = _run_stage(cfg_s3, model_s3, job.seed, 'S3',
-                                      f'S3 {cue_mode} z_lr={z_lr_test}')
-            payload['S3'][(cue_mode, z_lr_test)] = logger_s3
-            payload['configs']['S3'][(cue_mode, z_lr_test)] = cfg_s3
+        # ── S3: uncued again, weights frozen, SAME Z_lr as S1/S2 ──────────────
+        cfg_s3   = make_s3_config(cfgs['base'], job.z_lr)
+        model_s3 = copy.deepcopy(model_s2)
+        model_s3.config = cfg_s3            # set_Z reads it if it has to reallocate
+        _init_Z_for_s3(model_s3, cfg_s3, last_rot)
+        _hand_over(model_s3, cfg_s3)        # rebuild the optimizer against the final Z
+        logger_s3, _ = _run_stage(cfg_s3, model_s3, job.seed, 'S3', f'S3 {cue_mode} z_lr={job.z_lr}')
+        payload['S3'][cue_mode] = logger_s3
+        payload['configs']['S3'][cue_mode] = cfg_s3
+
+        # ── S3_pinned: same fork point, Z pinned instead — the sanity check ───
+        if S3_PINNED_Z_SANITY:
+            cfg_s3p   = make_s3_config(cfgs['base'], job.z_lr, pin_z=True)
+            model_s3p = copy.deepcopy(model_s2)
+            model_s3p.config = cfg_s3p
+            _init_Z_for_s3(model_s3p, cfg_s3p, last_rot)
+            _hand_over(model_s3p, cfg_s3p)
+            logger_s3p, _ = _run_stage(cfg_s3p, model_s3p, job.seed, 'S3',
+                                       f'S3pinned {cue_mode}')
+            payload['S3_pinned'][cue_mode] = logger_s3p
+            payload['configs']['S3_pinned'][cue_mode] = cfg_s3p
 
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open('wb') as f:
@@ -277,11 +293,12 @@ def run_tree(job: CurriculumJob, job_index: int | None = None, total: int | None
 def main() -> None:
     jobs  = generate_jobs()
     total = len(jobs)
-    n_runs = 1 + len(CUE_MODES) * (1 + len(Z_LR_TEST))
+    # Per cue_mode: S2 + S3, plus S3_pinned when the sanity branch is on.
+    n_runs = 1 + len(CUE_MODES) * (2 + (1 if S3_PINNED_Z_SANITY else 0))
     print(f"{'PILOT: ' if PILOT else ''}Total jobs: {total}  "
-          f"({len(Z_LR_TRAIN)} trait arms x {len(active_noise())} noise x "
+          f"({len(Z_LR)} Z_lr values x {len(active_noise())} noise x "
           f"{active_seeds()} seeds), {n_runs} training runs each")
-    print(f'Export root: {result_path(Z_LR_TRAIN[0], active_noise()[0], 0).parents[2]}')
+    print(f'Export root: {result_path(Z_LR[0], active_noise()[0], 0).parents[2]}')
 
     task_id_str = os.environ.get('SLURM_ARRAY_TASK_ID')
     if task_id_str is None:

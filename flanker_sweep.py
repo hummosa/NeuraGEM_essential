@@ -1,8 +1,9 @@
-"""Run the flanker pipeline over seeds x congruency proportions.
+"""Run the flanker pipeline over seeds x noise levels.
 
-Each seed is a synthetic subject: it gets its own Stage-1 pretraining, cached to
-disk, and that same frozen model is then tested at every p_congruent level. All
-configurable state lives in flanker_sweep_config.py.
+Each seed is a synthetic subject: it gets its own Stage-1 pretraining, cached to disk,
+and is then tested with the weights frozen. `arrow_noise_std` is a stimulus parameter, so
+each noise level needs its own trained model per seed. All configurable state lives in
+flanker_sweep_config.py.
 
 Run locally (sequential):
     python flanker_sweep.py
@@ -13,8 +14,8 @@ Run on SLURM (one job per array element):
 
 Loading results for analysis:
     from flanker_sweep import load_result, load_condition
-    res = load_result(seed=0, p_congruent=0.5)          # dict with train_logger, config
-    results = load_condition(p_congruent=0.5)           # all seeds present on disk
+    res = load_result(seed=0, variant='noise10')        # dict with train_logger, config
+    results = load_condition('noise10')                 # all seeds present on disk
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from configs import FlankerTaskConfig, FlankerRandomTrialsConfig
 from train_and_infer_functions import train_model
 from flanker_analyses import sync_gating, mirror_to_model, reset_Z_uniform
 from flanker_sweep_config import (
-    SEEDS, N_PRETRAIN_TRIALS, N_TEST_TRIALS, P_CONGRUENT_LEVELS,
+    SEEDS, N_PRETRAIN_TRIALS, N_TEST_TRIALS, P_CONGRUENT,
     GATING, Z_INIT_SCALE, PRETRAIN_OVERRIDES, TEST_OVERRIDES, VARIANTS,
     RUN_NAME, EXPORT_ROOT, SKIP_EXISTING,
 )
@@ -48,17 +49,14 @@ from flanker_sweep_config import (
 # entry point prints the run it used.
 
 SWEEP_RUNS = {
-    'sweep_v1': 'Adam latent optimizer (Z_lr 0.3, decay 1e-4 applied twice via '
-                'decay_mode="both"), temporal decay 0.7, arrow noise 1.3. The original '
-                'sweep; momentum suppresses the lag-1 conflict effect.',
-    'sweep_sgd': 'SGD latent optimizer (Z_lr 300, decay 2.6e-4 on the gradient), '
-                 'temporal decay 0.7, arrow noise 1.3. Same seeds and task as sweep_v1, '
-                 'so the pair isolates the optimizer.',
-    'sweep_td03': 'As sweep_sgd but temporal decay 0.3 — a flatter within-trial loss '
-                  'weighting, so later timesteps count for more.',
-    'sweep_td03_n10': 'As sweep_td03 but arrow noise 1.0 instead of 1.3, i.e. the target '
-                      'slot misleads less often. The test of whether stimulus noise is '
-                      'what breaks the post-error signatures.',
+    'sweep_noise_pt4k': 'The noise ladder with 4000 Stage-1 trials (was 2000). Same four '
+                        'noise levels, 20 seeds, everything else fixed — so the pair with '
+                        'sweep_noise isolates how much longer pretraining changes the '
+                        'behavioural signatures.',
+    'sweep_noise': 'The noise ladder: arrow_noise_std 1.3 / 1.0 / 0.7 / 0.4, everything '
+                   'else fixed (SGD latent optimizer, temporal decay 0.3, steep spatial '
+                   'gradient, p_congruent 0.5). Tests whether stimulus noise is what '
+                   'breaks the post-error signatures.',
 }
 
 
@@ -67,8 +65,8 @@ def use_run(name):
     """
     Temporarily read from a different sweep run. Restores the previous name on exit.
 
-        with use_run('sweep_v1'):
-            adam = load_condition(0.5, variant='spatial_steep')
+        with use_run('sweep_noise'):
+            low_noise = load_condition('noise04')
     """
     global RUN_NAME
     previous = RUN_NAME
@@ -96,7 +94,7 @@ def describe_runs(root=None):
     rows = []
     for run in sorted(os.listdir(root)) if os.path.isdir(root) else []:
         run_dir = os.path.join(root, run)
-        conds = sorted(d for d in os.listdir(run_dir) if d.startswith('p_congruent'))
+        conds = sorted(d for d in os.listdir(run_dir) if not d.startswith('pretrain'))
         if not conds:
             continue
         files = glob.glob(os.path.join(run_dir, conds[0], 'results_seed-*.pkl'))
@@ -136,32 +134,29 @@ def pretrain_tag(variant: str) -> str:
     cache folder keyed by the variant name.
     """
     spec = VARIANTS.get(variant, {})
-    return variant if spec.get('pretrain_overrides') else 'baseline'
+    return variant if spec.get('pretrain_overrides') else 'shared'
 
 
 def _pretrain_folder(tag: str) -> str:
-    name = 'pretrained' if tag == 'baseline' else f'pretrained__{tag}'
+    name = 'pretrained' if tag == 'shared' else f'pretrained__{tag}'
     folder = os.path.join(EXPORT_ROOT, RUN_NAME, name)
     os.makedirs(folder, exist_ok=True)
     return folder
 
 
-def pretrain_path(seed: int, tag: str = 'baseline') -> str:
+def pretrain_path(seed: int, tag: str = 'shared') -> str:
     return os.path.join(_pretrain_folder(tag), f'model_seed-{seed}.pt')
 
 
-def pretrain_curve_path(seed: int, tag: str = 'baseline') -> str:
+def pretrain_curve_path(seed: int, tag: str = 'shared') -> str:
     """Per-trial training record, so the learning curve can be plotted across seeds
     without keeping the (large) training logger."""
     return os.path.join(_pretrain_folder(tag), f'curve_seed-{seed}.npz')
 
 
-def result_path(seed: int, p_congruent: float, variant: str = 'baseline') -> str:
-    """Result location. 'baseline' keeps the original path so earlier runs stay valid."""
-    tag = f'p_congruent-{p_congruent}'
-    if variant != 'baseline':
-        tag = f'{tag}__{variant}'
-    folder = os.path.join(EXPORT_ROOT, RUN_NAME, tag)
+def result_path(seed: int, variant: str) -> str:
+    """Result location: one folder per variant, one pickle per seed."""
+    folder = os.path.join(EXPORT_ROOT, RUN_NAME, variant)
     os.makedirs(folder, exist_ok=True)
     return os.path.join(folder, f'results_seed-{seed}.pkl')
 
@@ -171,16 +166,14 @@ def result_path(seed: int, p_congruent: float, variant: str = 'baseline') -> str
 @dataclass(frozen=True)
 class ExperimentJob:
     seed: int
-    p_congruent: float
-    variant: str = 'baseline'
+    variant: str
 
 
 def generate_jobs() -> List[ExperimentJob]:
     """Seed-major ordering, so consecutive SLURM array elements reuse one pretrained model."""
-    return [ExperimentJob(seed=s, p_congruent=p, variant=name)
+    return [ExperimentJob(seed=s, variant=name)
             for s in range(SEEDS)
-            for name, spec in VARIANTS.items()
-            for p in spec.get('p_levels', P_CONGRUENT_LEVELS)]
+            for name in VARIANTS]
 
 
 def pretrain_jobs() -> List[tuple]:
@@ -195,12 +188,15 @@ def pretrain_jobs() -> List[tuple]:
 
 # ── Stage 1: pretraining (cached per seed) ────────────────────────────────────
 
-def build_pretrain_config(seed: int, tag: str = 'baseline') -> FlankerTaskConfig:
+def build_pretrain_config(seed: int, tag: str = 'shared') -> FlankerTaskConfig:
     config = FlankerTaskConfig(experiment_to_run='default')
     config.run_name   = f'{RUN_NAME}_pretrain_{tag}_seed-{seed}'
     config.env_seed   = seed
-    # Session length in trials, so it stays correct if arrows_duration changes.
-    config.blocked_phase_length = N_PRETRAIN_TRIALS * config.arrows_duration
+    # Use the setter rather than assigning blocked_phase_length: the config derives
+    # n_training_contexts and no_of_blocks from n_pretrain_trials, and setting the length
+    # alone leaves those stale — the model would train for a different number of blocks
+    # than the length implies.
+    config.set_n_pretrain_trials(N_PRETRAIN_TRIALS)
     config.pre_gating  = (GATING == 'pre')
     config.post_gating = (GATING == 'post')
     for key, value in PRETRAIN_OVERRIDES.items():
@@ -211,7 +207,7 @@ def build_pretrain_config(seed: int, tag: str = 'baseline') -> FlankerTaskConfig
     return config
 
 
-def ensure_pretrained(seed: int, tag: str = 'baseline') -> None:
+def ensure_pretrained(seed: int, tag: str = 'shared') -> None:
     """Train and cache the Stage-1 model for one seed, plus its learning curve.
 
     Pretraining is deterministic given the seed (train_model seeds torch and numpy,
@@ -242,13 +238,13 @@ def ensure_pretrained(seed: int, tag: str = 'baseline') -> None:
     print(f'  Cached pretrained model -> {path}')
 
 
-def load_pretrain_curve(seed: int, tag: str = 'baseline'):
+def load_pretrain_curve(seed: int, tag: str = 'shared'):
     """Per-trial training record for one seed, or None if not saved yet."""
     path = pretrain_curve_path(seed, tag)
     return dict(np.load(path)) if os.path.exists(path) else None
 
 
-def load_pretrained(seed: int, tag: str = 'baseline'):
+def load_pretrained(seed: int, tag: str = 'shared'):
     """Load a fresh copy of the seed's pretrained model.
 
     Reloaded per job rather than reused in-process, so a test session can never
@@ -263,7 +259,7 @@ def load_pretrained(seed: int, tag: str = 'baseline'):
 def run_job(job: ExperimentJob, job_index: Optional[int] = None,
             total: Optional[int] = None) -> None:
     prefix = f'[{job_index + 1}/{total}] ' if job_index is not None else ''
-    filepath = result_path(job.seed, job.p_congruent, job.variant)
+    filepath = result_path(job.seed, job.variant)
 
     # Before the skip check, so a resumed run still backfills any missing pretraining
     # artifact (e.g. a learning curve added after the models were first cached).
@@ -277,14 +273,14 @@ def run_job(job: ExperimentJob, job_index: Optional[int] = None,
     spec           = VARIANTS.get(job.variant, {})
     overrides      = spec.get('overrides', {})
     stim_overrides = spec.get('pretrain_overrides', {})
-    print(f'{prefix}seed={job.seed}  p_congruent={job.p_congruent}  '
-          f'variant={job.variant}' + (f'  {overrides}' if overrides else ''))
+    print(f'{prefix}seed={job.seed}  variant={job.variant}'
+          + (f'  {overrides}' if overrides else ''))
     model = load_pretrained(job.seed, tag)
 
     test_config = FlankerRandomTrialsConfig(experiment_to_run='default')
-    test_config.run_name    = f'{RUN_NAME}_p{job.p_congruent}_{job.variant}_seed-{job.seed}'
+    test_config.run_name    = f'{RUN_NAME}_{job.variant}_seed-{job.seed}'
     test_config.env_seed    = job.seed
-    test_config.p_congruent = job.p_congruent
+    test_config.p_congruent = P_CONGRUENT
     test_config.set_n_trials(N_TEST_TRIALS)
     for key, value in TEST_OVERRIDES.items():
         setattr(test_config, key, value)
@@ -316,7 +312,7 @@ def run_job(job: ExperimentJob, job_index: Optional[int] = None,
         pickle.dump({'train_logger': train_logger,
                      'config': test_config,
                      'seed': job.seed,
-                     'p_congruent': job.p_congruent,
+                     'p_congruent': P_CONGRUENT,
                      'variant': job.variant,
                      'overrides': dict(overrides),
                      'pretrain_overrides': dict(stim_overrides)}, fh)
@@ -325,24 +321,22 @@ def run_job(job: ExperimentJob, job_index: Optional[int] = None,
 
 # ── Result loading (for analysis scripts) ─────────────────────────────────────
 
-def load_result(seed: int, p_congruent: float,
-                variant: str = 'baseline') -> Optional[Dict[str, Any]]:
-    """Load one (seed, p_congruent, variant) result, or None if it has not been run."""
-    path = result_path(seed, p_congruent, variant)
+def load_result(seed: int, variant: str) -> Optional[Dict[str, Any]]:
+    """Load one (seed, variant) result, or None if it has not been run."""
+    path = result_path(seed, variant)
     if not os.path.exists(path):
         return None
     with open(path, 'rb') as fh:
         return pickle.load(fh)
 
 
-def load_condition(p_congruent: float, seeds: Optional[List[int]] = None,
-                   variant: str = 'baseline') -> List[Dict[str, Any]]:
-    """Load every available seed for one condition, reporting what is missing."""
+def load_condition(variant: str, seeds: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    """Load every available seed for one variant, reporting what is missing."""
     seeds = list(range(SEEDS)) if seeds is None else seeds
-    label = f'p_congruent={p_congruent}' + ('' if variant == 'baseline' else f', {variant}')
+    label = variant
     results, missing = [], []
     for seed in seeds:
-        res = load_result(seed, p_congruent, variant)
+        res = load_result(seed, variant)
         (results.append(res) if res is not None else missing.append(seed))
     if missing:
         print(f'  [{label}] missing seeds: {missing}')

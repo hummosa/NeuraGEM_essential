@@ -166,6 +166,45 @@ cs = Color_scheme()
 
 The panel size fields (`panel_small_size`, etc.) that used to live in `Color_scheme` have been removed — use `FigSize` instead.
 
+## Colors — flanker task conditions
+
+The flanker figures use one scheme, defined in `plot_style.FLANKER_COLORS`, so a panel can
+be read without a legend. Three orthogonal channels:
+
+| channel | factor | encoding |
+|---|---|---|
+| hue | congruency | blue = congruent, red = incongruent |
+| shade | distance | dark = near flankers, light = far flankers |
+| fill | outcome | filled bar / solid line = correct, hollow bar / dashed line = error |
+
+```python
+from plot_style import FLANKER_COLORS, FLANKER_CELLS, flanker_color, outcome_style
+
+flanker_color(cong=False, near=True)        # -> near-incongruent, dark red
+flanker_color(cong=True,  near=None)        # -> congruent pooled over distance
+outcome_style(correct=False, kind='bar', color=c)   # hollow bar kwargs
+outcome_style(correct=False, kind='line')           # dashed
+```
+
+Putting outcome on **fill** rather than on a third hue is what makes the scheme work
+across mark types: a dashed line and a hollow bar say the same thing, neither costs a
+colour, and both survive greyscale printing since shade is already doing work. The bar
+primitives take a `hollow=[bool, ...]` list, one entry per group —
+`flanker_analyses.plot_scalar_bars` and `flanker_figure_utils.bars_with_seeds`.
+
+The hues are ColorBrewer RdBu. Pooled congruent/incongruent are the mid-tones and the
+near/far cells bracket each one darker/lighter, so a pooled line sits visually between its
+own two cells.
+
+**Cell order.** `FLANKER_CELLS` fixes the order for every congruency × distance panel:
+congruent pair first, then incongruent, near before far within each. Grouping by
+congruency puts the contrast the figure is about side by side and leaves distance as the
+within-pair step. Use it rather than re-listing the cells per figure.
+
+Where a panel has no distance factor, shade is free to carry something else — the
+trial-history panels use it for the *previous* trial's congruency. That is fine as long as
+the panel says so in a comment; the rule is one meaning per panel, not one meaning forever.
+
 ## Font sizes set globally
 
 `set_plot_style()` covers axis labels (6pt), ticks (6pt), legend (6pt), base font (7pt),

@@ -7,7 +7,7 @@ rather than at the bottom of a growing function:
 
     condition_masks     trial masks every block shares (congruency, distance, history)
     behaviour_effects   accuracy and RT: cell means, congruency, distance
-    rt_outcome_effects  RT split by correct vs error, and how much was extrapolated
+    rt_outcome_effects  RT split by correct vs error, and how often no decision came
     history_effects     sequential congruency, lag contrasts, the repetition control
     post_error_effects  post-error slowing, accuracy, PERI
     control_effects     the latent: focus, attention profile, what drives the update
@@ -114,15 +114,15 @@ def rt_outcome_effects(trials, m):
     Errors on incongruent trials are flanker-driven, so they should be *fast*; that is a
     different signature from the overall RT cost and it can point the opposite way. Every
     RT cell here is paired with the fraction of its trials that actually crossed threshold
-    inside the window (`dec_*`), because the rest carry extrapolated RTs — a cell built
-    mostly from extrapolated trials is measuring failure-to-decide, not speed.
+    inside the window (`dec_*`), because the rest sit at the trial end by convention — a
+    cell with a low decided fraction is reporting failure-to-decide, not speed.
     """
     rt  = trials['rt_interp']
     dec = m['decided']
-    e   = {'extrapolated_frac': float((~dec).mean())}
+    e   = {'undecided_frac': float((~dec).mean())}
 
     for cn in CONGRUENCY:
-        e[f'extrapolated_frac_{cn}'] = 1.0 - _frac(dec, m[cn])
+        e[f'undecided_frac_{cn}'] = 1.0 - _frac(dec, m[cn])
     # Congruency effect on RT using only trials that crossed inside the window — the
     # sensitivity check against the extrapolation, not the headline number.
     e['cong_effect_rt_decided'] = _mean(rt, m['incong'] & dec) - _mean(rt, m['cong'] & dec)
@@ -287,6 +287,81 @@ def error_diagnosis_effects(trials, m):
     # Positive = flanker-driven errors teach more control than noise-driven ones do.
     e['dfocus_err_clean_minus_noisy'] = e['dfocus_err_clean'] - e['dfocus_err_noisy']
     return e
+
+
+# ── Block 7: the circularity behind the missing post-error improvement ────────
+
+#: Trial positions relative to the event, for the event-locked analysis.
+EVENT_LAGS = np.arange(-2, 3)
+
+
+def event_locked(trials, lags=EVENT_LAGS, n_bins=8):
+    """
+    Focus and accuracy on the trials surrounding an incongruent error, vs a correct one.
+
+    This is what explains why the model shows no post-error improvement even when errors
+    *do* recruit control. `focus_in` is the state a trial inherited, so lag 0 is what the
+    event trial itself started from and lag +1 is what the next trial inherited — the step
+    from 0 to +1 therefore contains the event's own update.
+
+    The control deficit **precedes** the error: a trial that is about to go wrong already
+    inherited a lower focus. The error's own correction is real and larger than a correct
+    trial's, but it starts from further back and does not catch up within one trial, so the
+    next trial still begins below par. Conditioning on the outcome and then reading the
+    state is circular for exactly this reason — a low state is what produced the error.
+
+    Returns per-*event* arrays (n_events, n_lags) so the caller decides what the replicate
+    is: sessions at group level, events within one session.
+    """
+    m = condition_masks(trials)
+    n = trials['n_trials']
+    idx = np.arange(n)
+    foc = trials['focus_in']
+    acc = trials['correct_at_decision'].astype(float)
+    pad = int(np.max(np.abs(lags)))
+    inside = (idx >= pad) & (idx < n - pad)
+
+    out = {}
+    for key, om in (('err', m['err']), ('corr', m['corr'])):
+        events = idx[m['incong'] & om & inside]
+        out[f'focus_{key}'] = np.array([foc[events + l] for l in lags]).T
+        out[f'acc_{key}']   = np.array([acc[events + l] for l in lags]).T
+
+    # The gap when the error happens, and the update each outcome produces.
+    dfoc = trials['delta_focus']
+    out['start_gap'] = (_mean(foc, m['incong'] & m['err'])
+                        - _mean(foc, m['incong'] & m['corr']))
+    out['upd_err']  = _mean(dfoc, m['incong'] & m['err'])
+    out['upd_corr'] = _mean(dfoc, m['incong'] & m['corr'])
+
+    # Why the average correction above is unreliable: an incongruent error is either the
+    # centre slot's own evidence misleading the model (noise-driven — attending it *less*
+    # genuinely lowered this trial's error) or clean centre evidence that the flankers
+    # simply outweighed (flanker-driven — attending it *more* is the fix). Same median
+    # split as error_diagnosis_effects, kept here so this figure carries the argument on
+    # its own: the two kinds get very different updates, and the average blurs that.
+    centre_ev = trials['centre_evidence']
+    inc_all = m['incong']
+    median = np.nanmedian(centre_ev[inc_all]) if inc_all.any() else np.nan
+    noisy, clean = centre_ev < median, centre_ev >= median
+    out['frac_err_noisy']   = _frac(noisy, inc_all & m['err'])
+    out['frac_err_clean']   = _frac(clean, inc_all & m['err'])
+    out['dfocus_err_noisy'] = _mean(dfoc, inc_all & m['err'] & noisy)
+    out['dfocus_err_clean'] = _mean(dfoc, inc_all & m['err'] & clean)
+
+    # How much accuracy a given inherited focus buys on incongruent trials — the exchange
+    # rate that turns the control gap into the behavioural one.
+    inc = m['incong'] & ~np.isnan(foc)
+    edges = np.nanquantile(foc[inc], np.linspace(0, 1, n_bins + 1))
+    centres, means = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = inc & (foc >= lo) & (foc < hi)
+        if sel.sum() > 20:
+            centres.append(np.nanmean(foc[sel]))
+            means.append(acc[sel].mean())
+    out['curve_x'], out['curve_y'] = np.array(centres), np.array(means)
+    out['lags'] = np.asarray(lags)
+    return out
 
 
 # ── Composition ───────────────────────────────────────────────────────────────

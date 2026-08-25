@@ -66,28 +66,26 @@ def z_decay_for(lr: float, mode: str = Z_DECAY_MODE) -> float:
 
 # ── Grids ─────────────────────────────────────────────────────────────────────
 
-# Trait axis: the Z_lr the model *develops* under, held through S1 and S2.
-#   'RNN' -> no_of_steps_in_latent_space=0 for S1 and S2, LU switched on in S3: a model that
-#   never developed latent inference and is then asked to use one. The strongest impairment arm.
-# The three numeric values are one from each region of the dose-response already measured on
-# this task (rotation_slips_perseveration_config.py:72-74): the transition (0.05), the optimum
-# (0.2), and the degradation limb (0.6).
-Z_LR_TRAIN: List[Any] = ['RNN', 0.05, 0.2, 0.6]
+# One axis: the Z_lr an individual has all along, carried unchanged through S1, S2 and S3. This
+# is the actual experiment — everyone has their own latent-inference speed from the start, S2
+# cues them, and S3 (weights frozen, cue withdrawn) is where that speed is recovered from
+# behaviour. There is no separate "train" vs "test" Z_lr any more: S3 continues each individual
+# at the same Z_lr it trained and was cued with.
+#   'RNN' -> no_of_steps_in_latent_space=0 through S1 and S2 (LU only switches on for the
+#   S3_PINNED_Z_SANITY branch below, never for the main S3 continuation of this arm): a model
+#   that never developed latent inference at all. Kept as a qualitative baseline, not a point on
+#   the numeric dial.
+# The seven numeric values are the fine dose-response grid this experiment used to reserve for
+# forking S3 alone; using it to drive S1 itself is what makes the individuals genuine.
+Z_LR: List[Any] = ['RNN', 0.01, 0.05, 0.1, 0.2, 0.4, 0.6, 0.9]
 
-# Fork axis: the Z_lr S3 runs at, applied to a *copy* of the S2 checkpoint. Because every fork
-# shares the same weights, differences between them are purely Z_lr.
-#   None -> no_of_steps_in_latent_space=0 in S3: Z pinned, the frozen-Z control. This is the arm
-#   the reference had disabled (`add_control = False`) and it is the load-bearing check: if a
-#   model with Z pinned still tracks context, something other than Z carries context across
-#   blocks and nothing downstream is interpretable.
-Z_LR_TEST: List[Any] = [None, 0.01, 0.05, 0.1, 0.2, 0.4, 0.6, 0.9]
-
-# Every trait value must also be a fork value, or that arm has no matched "trait" condition —
-# the diagonal of the Z_lr_train x Z_lr_test grid is what makes the individual-differences
-# reading available alongside the causal one, and it is free only if the grids line up.
-assert all(t in Z_LR_TEST for t in Z_LR_TRAIN if t != 'RNN'), (
-    f'Z_LR_TRAIN values missing from Z_LR_TEST: '
-    f'{[t for t in Z_LR_TRAIN if t != "RNN" and t not in Z_LR_TEST]}')
+# Sanity-check-only fork, not a Z_LR value: rerun S3 off the *same* S2 checkpoint as the main S3
+# continuation, but with Z pinned (no_of_steps_in_latent_space=0) instead of carrying the
+# individual's Z_lr forward. This is the load-bearing check from the old Z_lr_test=None arm: if
+# a model with Z pinned still tracks context, something other than Z carries context across
+# blocks and nothing downstream is interpretable. It stays a small, explicit fork off S2 — rather
+# than a 9th Z_LR value — because "pinned" is not a point on the dial, it is LU switched off.
+S3_PINNED_Z_SANITY: bool = True
 
 # 'none' is the control, not a cue variant: S2 continues exactly as S1, so the cued arm is
 # compared against the same amount of extra training. S1 does not depend on cue_mode, so both
@@ -188,19 +186,27 @@ def make_base_config(noise_std: float = HEADLINE_NOISE,
 
 _SEP = int(round(max(TRAIN_ROTATIONS) - min(TRAIN_ROTATIONS)))
 _HEAD = 'head-off' if CONTEXT_OUTPUT_ENCODING is None else f'head-{CONTEXT_OUTPUT_ENCODING}'
+
+# Bump this whenever the stage-tree/grid shape changes incompatibly. RUN_NAME never encoded the
+# grid itself (only stage lengths, head setting and decay mode), and several numeric Z_LR values
+# repeat from the old Z_lr_train/Z_lr_test split — without a version tag, this rework would write
+# new-shape payload['S3'] dicts (keyed by cue_mode only) to the exact paths old-shape ones
+# (keyed by (cue_mode, z_lr_test)) live at, silently clobbering them with an incompatible shape.
+GRID_VERSION = 'zgrid1'
+
 RUN_NAME    = (f"sep{_SEP}_{S1_LENGTH}-{S2_LENGTH}-{S3_LENGTH}"
-               f"_{_HEAD}_decay-{Z_DECAY_MODE}")
+               f"_{_HEAD}_decay-{Z_DECAY_MODE}_{GRID_VERSION}")
 EXPORT_ROOT = Path(f"./exports/rotation_curriculum/{RUN_NAME}")
 
 
-def train_key(z_lr_train: Any) -> str:
-    """Directory name for one trait arm."""
-    return 'RNN' if z_lr_train == 'RNN' else f'Zlr-{z_lr_train}'
+def train_key(z_lr: Any) -> str:
+    """Directory name for one Z_lr arm."""
+    return 'RNN' if z_lr == 'RNN' else f'Zlr-{z_lr}'
 
 
-def result_path(z_lr_train: Any, noise_std: float, seed: int) -> Path:
-    """One pickle per (trait arm, noise, seed) — the whole S2/S3 tree lives inside it."""
-    return (EXPORT_ROOT / train_key(z_lr_train) / f'noise_std-{noise_std}'
+def result_path(z_lr: Any, noise_std: float, seed: int) -> Path:
+    """One pickle per (Z_lr, noise, seed) — the whole S2/S3 tree lives inside it."""
+    return (EXPORT_ROOT / train_key(z_lr) / f'noise_std-{noise_std}'
             / f'results_seed-{seed}.pkl')
 
 
@@ -212,12 +218,8 @@ class ConditionInfo:
     color: Any
 
 
-def train_label(z_lr_train: Any) -> str:
-    return 'RNN' if z_lr_train == 'RNN' else rf'NG $\alpha_z^{{train}}={z_lr_train}$'
-
-
-def test_label(z_lr_test: Any) -> str:
-    return 'Z frozen' if z_lr_test is None else rf'$\alpha_z={z_lr_test}$'
+def zlr_label(z_lr: Any) -> str:
+    return 'RNN' if z_lr == 'RNN' else rf'$\alpha_z={z_lr}$'
 
 
 def _log_shade(lr: float, values: Sequence[float]) -> float:
@@ -231,39 +233,28 @@ def _log_shade(lr: float, values: Sequence[float]) -> float:
     return float((np.log10(lr) - lo) / (hi - lo)) if hi > lo else 0.5
 
 
-# The dial being swept (Z_lr_test) gets the plasma ramp, matching how alpha_z is coloured in the
-# slips figures. plasma runs purple -> magenta -> orange -> yellow and never touches green, so it
-# cannot be confused with the RNN's registered colour. Clamped short of the washed-out top end.
-TEST_INFO: Dict[Any, ConditionInfo] = {
-    None: ConditionInfo(test_label(None), '0.55'),
-    **{lr: ConditionInfo(test_label(lr),
-                         plt.cm.plasma(0.04 + 0.82 * _log_shade(lr, Z_LR_TEST)))
-       for lr in Z_LR_TEST if lr is not None},
+# One grid now, one colour scheme: plasma for the numeric dial (matching alpha_z in the slips
+# figures; purple -> magenta -> orange -> yellow, never touches green) plus the RNN's registered
+# project colour for the qualitative no-latent arm.
+_NUMERIC_ZLR = [z for z in Z_LR if z != 'RNN']
+ZLR_INFO: Dict[Any, ConditionInfo] = {
+    'RNN': ConditionInfo(zlr_label('RNN'), plot_style.get_model_color('RNN')),
+    **{lr: ConditionInfo(zlr_label(lr),
+                         plt.cm.plasma(0.04 + 0.82 * _log_shade(lr, _NUMERIC_ZLR)))
+       for lr in _NUMERIC_ZLR},
 }
 
-# Who the model *is* (Z_lr_train) is a model class, not a dial: the RNN keeps its project colour
-# and the NeuraGEM arms take a Blues ramp, which reads as "NeuraGEM, varying" against
-# plot_style's NeuraGEM blue rather than as a second independent scale.
-_NG_TRAIN = [v for v in Z_LR_TRAIN if v != 'RNN']
-TRAIN_INFO: Dict[Any, ConditionInfo] = {
-    'RNN': ConditionInfo(train_label('RNN'), plot_style.get_model_color('RNN')),
-    # Spread across 0.45-0.90 of the ramp rather than a fixed step: a fixed step runs off the top
-    # of the colormap for the third arm, and matplotlib clamps rather than complaining, so the
-    # two fastest arms come out the same colour.
-    **{lr: ConditionInfo(train_label(lr),
-                         plt.cm.Blues(0.45 + 0.45 * i / max(1, len(_NG_TRAIN) - 1)))
-       for i, lr in enumerate(_NG_TRAIN)},
-}
+# The one sanity-check fork (S3 with Z pinned): not part of the Z_LR dial, so it gets its own
+# entry rather than a fake spot on the plasma ramp.
+PINNED_Z_INFO = ConditionInfo('Z pinned', '0.55')
 
 CUE_INFO: Dict[str, ConditionInfo] = {
     'oracle_z': ConditionInfo('Cued (oracle Z)', plot_style.get_model_color('Oracle Z (one-hot)')),
     'none':     ConditionInfo('Uncued control', '0.45'),
 }
 
-# Which trait arms get a line on the time-course panels; the dose-response panels carry all of
-# them. All four are legible, so this is currently the full set — it exists so the pilot can be
-# thinned without editing figure code.
-HEADLINE_TRAIN: List[Any] = list(Z_LR_TRAIN)
+# The Z_lr the single-arm figures use when one representative is needed.
+HEADLINE_ZLR: Any = 0.2 if 0.2 in Z_LR else Z_LR[-1]
 
 
 # ── Pilot acceptance criteria ─────────────────────────────────────────────────
@@ -288,11 +279,12 @@ ACCEPTANCE = dict(
     #     well below the uncued control (0.16-0.39). An earlier 0.10 was set below the achievable
     #     floor and failed a model that was demonstrably at ceiling on every other measure.
     s2_cued_max_norm_error   = 0.15,
-    # (b) The dial works. Ratio of worst to best perseveration errors/block across Z_LR_TEST in
-    #     the cued arm. This is the "did the finicky part work" test.
+    # (b) The dial works. Ratio of worst to best perseveration errors/block across Z_LR in the
+    #     cued arm's S3. This is the "did the finicky part work" test.
     s3_min_zlr_spread        = 3.0,
-    # (c) Z is the only context channel. The frozen-Z fork must fail badly; if it does not,
-    #     something else carries context across blocks and nothing downstream is interpretable.
+    # (c) Z is the only context channel. The S3_PINNED_Z_SANITY branch must fail badly; if it
+    #     does not, something else carries context across blocks and nothing downstream is
+    #     interpretable.
     s3_frozen_min_norm_error = 0.40,
     # (d) The behavioural readout is valid — a prediction collapsing toward the origin would make
     #     its angle meaningless. ||pred_xy|| / target_radius; 0.866 is exact hedging at sep 60.

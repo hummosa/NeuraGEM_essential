@@ -77,32 +77,13 @@ from rotating_targets_analysis import (
     _nearest_rotation_deg, flatten_logger, get_block_switches, get_target_positions,
 )
 from rotation_curriculum_config import (
-    CUE_INFO, CUE_MODES, EXPORT_ROOT, TEST_INFO, TRAIN_INFO,
-    Z_LR_TEST, Z_LR_TRAIN, active_noise, active_seeds, result_path, test_label, train_label,
+    CUE_INFO, CUE_MODES, EXPORT_ROOT, HEADLINE_ZLR, PINNED_Z_INFO, ZLR_INFO,
+    Z_LR, active_noise, active_seeds, result_path, zlr_label,
 )
 
 plot_style.set_plot_style()
 
 HEADLINE_NOISE = active_noise()[0]
-
-# The S3 fork used wherever one representative is needed. Mid-range: recovery is nearly as fast
-# as at 0.4 but the asymptote is better (measured asym 0.20 vs 0.27) — the speed/stability
-# tradeoff. Raise it to make the zero-shot reuse effect look larger; the whole grid is in F2.
-HEADLINE_Z_LR_TEST = 0.2
-
-# The trait arm the single-arm figures (F1, F2) use. **Chosen, not arbitrary** — it is the only
-# arm that actually recovers within the trial window during its own uncued S1, measured on the
-# pilot (normalized state error in the second mini-block after a switch):
-#
-#     alpha_z^train    RNN    0.05    0.2    0.6
-#     S1 mb2          0.787   0.623  0.218  0.752
-#     S1 asymptote    0.705   0.465  0.215  0.717
-#
-# Defaulting to Z_LR_TRAIN[-1] (=0.6) put an arm that behaves like the RNN in S1 on the headline
-# figure, which overstates how much the cued stage is fixing. Re-check this after changing the
-# stage lengths — with a longer S1 the slower arms may converge too; `summarize()` prints the
-# column to check.
-HEADLINE_Z_LR_TRAIN = 0.2 if 0.2 in Z_LR_TRAIN else Z_LR_TRAIN[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +132,7 @@ def _frac_for(stage: Any, params: AnalysisParams) -> float:
 # Loading
 # ---------------------------------------------------------------------------
 
-Stage = Any   # 'S1' | ('S2', cue) | ('S3', cue, z_lr_test)
+Stage = Any   # 'S1' | ('S2', cue) | ('S3', cue) | ('S3pinned', cue)
 
 
 def stage_label(stage: Stage) -> str:
@@ -159,44 +140,45 @@ def stage_label(stage: Stage) -> str:
         return 'S1 uncued'
     if stage[0] == 'S2':
         return f'S2 {CUE_INFO[stage[1]].label.lower()}'
-    return f'S3 {CUE_INFO[stage[1]].label.lower()}, {test_label(stage[2])}'
+    if stage[0] == 'S3':
+        return f'S3 {CUE_INFO[stage[1]].label.lower()}'
+    return f'S3 {CUE_INFO[stage[1]].label.lower()} ({PINNED_Z_INFO.label.lower()})'
 
 
 def _get_stage(payload, stage: Stage):
     """(logger, config) for one stage of one tree, or (None, None) if absent."""
     if stage == 'S1':
         return payload['S1'], payload['configs']['S1']
-    if stage[0] == 'S2':
-        return payload['S2'].get(stage[1]), payload['configs']['S2'].get(stage[1])
-    key = tuple(stage[1:])
-    return payload['S3'].get(key), payload['configs']['S3'].get(key)
+    kind, cue = stage[0], stage[1]
+    key = 'S3_pinned' if kind == 'S3pinned' else kind
+    return payload[key].get(cue), payload['configs'][key].get(cue)
 
 
 def load_trees(params: AnalysisParams, noise: float | None = None) -> Dict[Tuple, Any]:
-    """{(z_lr_train, noise, seed): payload} for every tree on disk."""
+    """{(z_lr, noise, seed): payload} for every tree on disk."""
     noises = active_noise() if noise is None else [noise]
     cache, missing = {}, []
-    for z_lr_train in Z_LR_TRAIN:
+    for z_lr in Z_LR:
         for n in noises:
             for seed in range(params.n_seeds):
-                path = result_path(z_lr_train, n, seed)
+                path = result_path(z_lr, n, seed)
                 if not path.exists():
-                    missing.append((z_lr_train, n, seed))
+                    missing.append((z_lr, n, seed))
                     continue
                 with path.open('rb') as f:
-                    cache[(z_lr_train, n, seed)] = pickle.load(f)
+                    cache[(z_lr, n, seed)] = pickle.load(f)
     print(f'Loaded {len(cache)} trees from {EXPORT_ROOT}')
     if missing:
         print(f'  missing {len(missing)}: {missing[:6]}{" ..." if len(missing) > 6 else ""}')
     return cache
 
 
-def stage_runs(cache, z_lr_train: Any, stage: Stage,
+def stage_runs(cache, z_lr: Any, stage: Stage,
                noise: float | None = None) -> List[Tuple[Any, Any]]:
-    """[(logger, config), ...] over seeds for one (trait arm, stage) cell."""
+    """[(logger, config), ...] over seeds for one (Z_lr, stage) cell."""
     out = []
     for (t, n, _), payload in sorted(cache.items(), key=lambda kv: kv[0][2]):
-        if t != z_lr_train or (noise is not None and n != noise):
+        if t != z_lr or (noise is not None and n != noise):
             continue
         logger, config = _get_stage(payload, stage)
         if logger is not None:
@@ -345,13 +327,13 @@ def clear_memo() -> None:
     _CURVE_MEMO.clear()
 
 
-def stage_curve(cache, z_lr_train: Any, stage: Stage,
+def stage_curve(cache, z_lr: Any, stage: Stage,
                 params: AnalysisParams) -> AdaptationCurve | None:
-    """Memoized adaptation_curve for one (trait arm, stage) cell."""
-    key = (id(cache), z_lr_train, stage if isinstance(stage, str) else tuple(stage),
+    """Memoized adaptation_curve for one (Z_lr, stage) cell."""
+    key = (id(cache), z_lr, stage if isinstance(stage, str) else tuple(stage),
            params.noise, params.n_pre, params.n_post, params.anchor, _frac_for(stage, params))
     if key not in _CURVE_MEMO:
-        runs = stage_runs(cache, z_lr_train, stage, params.noise)
+        runs = stage_runs(cache, z_lr, stage, params.noise)
         _CURVE_MEMO[key] = (adaptation_curve(runs, params, _frac_for(stage, params))
                             if runs else None)
     return _CURVE_MEMO[key]
@@ -399,13 +381,6 @@ def curve_summary(curve: AdaptationCurve, n_colors: int) -> Dict[str, float]:
 # ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
-
-# Stage colours: S1 is the shared origin (neutral grey), S2 takes the cue's colour, S3 the
-# NeuraGEM blue it is measured with.
-STAGE_COLOR = {'S1': '0.35',
-               'S2': plot_style.get_model_color('Oracle Z (one-hot)'),
-               'S3': plot_style.get_model_color('NeuraGEM')}
-
 
 def _row2():
     """Two panels side by side, with headroom for the legend row and the note beneath.
@@ -493,153 +468,163 @@ def _annotate_note(fig, curves) -> None:
     fig.supxlabel(_sem_note(curves), fontsize=5, color='0.4')
 
 
-# ── F1: the curriculum ────────────────────────────────────────────────────────
+# ── Shared helper: one stage, every Z_lr overlaid ─────────────────────────────
 
-def plot_curriculum_adaptation(cache, params: AnalysisParams, export_dir: Path,
-                               z_lr_train: Any = None,
-                               z_lr_test: Any = HEADLINE_Z_LR_TEST) -> plt.Figure:
-    """F1 — adaptation at each stage of the curriculum, cued branch vs control branch.
+def plot_stage_by_zlr(cache, params: AnalysisParams, export_dir: Path, stage_kind: str,
+                      cue_mode: str | None, title: str, fname: str) -> plt.Figure:
+    """One stage, every Z_lr value on one axis — the headline dose-response shape.
 
-    S1 is drawn in both panels: it is the shared origin both branches fork from, so any
-    difference between the panels is what the cued stage did.
+    `stage_kind` in {'S1', 'S2', 'S3'}. S1 does not fork on cue_mode, so pass `cue_mode=None`
+    there. Every individual (Z_lr) ran its own complete S1->S2->S3, so this is simply "read off
+    the curve at each Z_lr for this one stage" — no forking involved any more.
     """
-    z_lr_train = HEADLINE_Z_LR_TRAIN if z_lr_train is None else z_lr_train
     nc = _n_colors(cache)
-    fig, axes = plt.subplots(1, 2, figsize=_row2(), dpi=params.dpi,
-                             sharey=True, layout='constrained')
-    drawn = []
-    # Short labels in a shared legend: the stage colours are the same in both panels and the
-    # panel title already says cued or uncued, so spelling that out per line only made the
-    # legend big enough to sit on top of the curves.
-    names = ('S1 uncued', 'S2', f'S3, {test_label(z_lr_test)}')
-    for ax, cue in zip(axes, CUE_MODES):
-        entries = []
-        for name, stage, key in zip(names, ('S1', ('S2', cue), ('S3', cue, z_lr_test)),
-                                    ('S1', 'S2', 'S3')):
-            c = stage_curve(cache, z_lr_train, stage, params)
-            entries.append((name, c, dict(color=STAGE_COLOR[key])))
-            drawn.append(c)
-        plot_adaptation(ax, entries, params, nc, ylabel=(ax is axes[0]))
-        ax.set_title(CUE_INFO[cue].label, fontsize=6)
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='outside upper center', ncols=3, fontsize=5.5,
-               frameon=False, handlelength=1.1, columnspacing=1.0,
-               title=train_label(z_lr_train), title_fontsize=5.5)
+    fig, ax = plt.subplots(figsize=FigSize.wide, dpi=params.dpi, layout='constrained')
+    drawn, entries = [], []
+    for z in Z_LR:
+        stage = 'S1' if stage_kind == 'S1' else (stage_kind, cue_mode)
+        c = stage_curve(cache, z, stage, params)
+        info = ZLR_INFO[z]
+        entries.append((info.label, c, dict(color=info.color)))
+        drawn.append(c)
+    plot_adaptation(ax, entries, params, nc)
+    ax.set_title(title, fontsize=6)
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='outside upper center', ncols=min(len(entries), 8),
+              fontsize=5, frameon=False, handlelength=1.0, columnspacing=0.7,
+              handletextpad=0.3)
     _annotate_note(fig, drawn)
-    _save(fig, export_dir, 'F1_curriculum_adaptation.pdf', params)
+    _save(fig, export_dir, fname, params)
     return fig
 
 
-# ── F2: S3 by the forked Z_lr ─────────────────────────────────────────────────
+# ── A/B/C: the headline dose-response, one figure per stage ──────────────────
 
-def plot_s3_by_zlr(cache, params: AnalysisParams, export_dir: Path,
-                   z_lr_train: Any = None) -> plt.Figure:
-    """F2 — S3 adaptation for every forked Z_lr, cued vs control.
-
-    Weights are frozen in S3 and every fork sees the same data, so the only thing separating
-    these curves is the latent learning rate.
-    """
-    z_lr_train = HEADLINE_Z_LR_TRAIN if z_lr_train is None else z_lr_train
-    nc = _n_colors(cache)
-    fig, axes = plt.subplots(1, 2, figsize=_row2(), dpi=params.dpi,
-                             sharey=True, layout='constrained')
-    drawn = []
-    for ax, cue in zip(axes, CUE_MODES):
-        entries = []
-        for z in Z_LR_TEST:
-            c = stage_curve(cache, z_lr_train, ('S3', cue, z), params)
-            info = TEST_INFO[z]
-            entries.append((info.label, c,
-                            dict(color=info.color,
-                                 linestyle='--' if z is None else '-')))
-            drawn.append(c)
-        plot_adaptation(ax, entries, params, nc, ylabel=(ax is axes[0]))
-        ax.set_title(CUE_INFO[cue].label, fontsize=6)
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='outside upper center', ncols=min(len(handles), 8),
-               fontsize=5, frameon=False, handlelength=1.0, columnspacing=0.7,
-               handletextpad=0.3, title=f'S3, {train_label(z_lr_train)}', title_fontsize=5.5)
-    _annotate_note(fig, drawn)
-    _save(fig, export_dir, 'F2_s3_by_zlr.pdf', params)
-    return fig
+def plot_s1_dose_response(cache, params: AnalysisParams, export_dir: Path) -> plt.Figure:
+    """A — S1, uncued, every Z_lr. Shows which individuals fail to adapt after a switch at all."""
+    return plot_stage_by_zlr(cache, params, export_dir, 'S1', None,
+                             'S1: uncued baseline', 'A_s1_by_zlr.pdf')
 
 
-# ── F3: trait arms ────────────────────────────────────────────────────────────
+def plot_s2_dose_response(cache, params: AnalysisParams, export_dir: Path) -> plt.Figure:
+    """B — S2, cued, every Z_lr. With ground truth handed to Z there is nothing left to infer, so
+    curves should collapse toward the cue's own floor; any residual spread is forgetting, not
+    inference speed."""
+    return plot_stage_by_zlr(cache, params, export_dir, 'S2', 'oracle_z',
+                             'S2: cued', 'B_s2_by_zlr.pdf')
 
-def plot_trait_arms(cache, params: AnalysisParams, export_dir: Path,
-                    cue_mode: str = 'oracle_z',
-                    z_lr_test: Any = HEADLINE_Z_LR_TEST) -> plt.Figure:
-    """F3 — every trait arm at S1 and at S3, so the curriculum's effect on each is visible."""
+
+def plot_s3_dose_response(cache, params: AnalysisParams, export_dir: Path) -> plt.Figure:
+    """C — S3, uncued again, weights frozen, every Z_lr. The real recovered dose-response: each
+    individual's own Z_lr, read off its own behaviour."""
+    return plot_stage_by_zlr(cache, params, export_dir, 'S3', 'oracle_z',
+                             'S3: uncued, cue withdrawn', 'C_s3_by_zlr.pdf')
+
+
+# ── F3-equivalent: S1 vs S3, before/after in one figure ───────────────────────
+
+def plot_s1_vs_s3_by_zlr(cache, params: AnalysisParams, export_dir: Path,
+                         cue_mode: str = 'oracle_z') -> plt.Figure:
+    """Compact before/after companion to A/B/C: every Z_lr at S1 and at S3, side by side."""
     nc = _n_colors(cache)
     fig, axes = plt.subplots(1, 2, figsize=_row2(), dpi=params.dpi,
                              sharey=True, layout='constrained')
     drawn = []
     for ax, stage, title in ((axes[0], 'S1', 'S1 uncued'),
-                             (axes[1], ('S3', cue_mode, z_lr_test),
-                              f'S3 {CUE_INFO[cue_mode].label.lower()}, {test_label(z_lr_test)}')):
+                             (axes[1], ('S3', cue_mode), 'S3 uncued, cue withdrawn')):
         entries = []
-        for t in Z_LR_TRAIN:
-            c = stage_curve(cache, t, stage, params)
-            entries.append((TRAIN_INFO[t].label, c, dict(color=TRAIN_INFO[t].color)))
+        for z in Z_LR:
+            c = stage_curve(cache, z, stage, params)
+            entries.append((ZLR_INFO[z].label, c, dict(color=ZLR_INFO[z].color)))
             drawn.append(c)
         plot_adaptation(ax, entries, params, nc, ylabel=(ax is axes[0]))
         ax.set_title(title, fontsize=6)
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='outside upper center', ncols=min(len(handles), 4),
-               fontsize=5, frameon=False, handlelength=1.1, columnspacing=0.8)
+    fig.legend(handles, labels, loc='outside upper center', ncols=min(len(handles), 8),
+               fontsize=5, frameon=False, handlelength=1.0, columnspacing=0.7)
     _annotate_note(fig, drawn)
-    _save(fig, export_dir, 'F3_trait_arms.pdf', params)
+    _save(fig, export_dir, 'F_s1_vs_s3_by_zlr.pdf', params)
     return fig
 
 
-# ── F4: the two scalars the curve is read for ─────────────────────────────────
+# ── Internal sanity figure: the uncued-control arm ─────────────────────────────
+#
+# cue_mode='none' is OUR check that the cued arm is being compared against a fair amount of extra
+# training, not a result to show an audience — it has no story of its own. Kept as one combined
+# figure, not folded into the headline A/B/C set.
 
-_TEST_X = {z: i for i, z in enumerate(Z_LR_TEST)}
-_TRAIN_MARKER = {t: m for t, m in zip(Z_LR_TRAIN, ('o', 's', '^', 'D', 'v', 'P'))}
+def plot_uncued_control_sanity(cache, params: AnalysisParams, export_dir: Path) -> plt.Figure:
+    """Internal sanity check only: S1/S2/S3 for the cue_mode='none' control arm, every Z_lr.
+
+    Not for the paper — this is the paired control that lets F1's cued curves be read as "what
+    the cue did" rather than "what more training did".
+    """
+    nc = _n_colors(cache)
+    fig, axes = plt.subplots(1, 3, figsize=FigSize.row(3), dpi=params.dpi,
+                             sharey=True, layout='constrained')
+    drawn = []
+    for ax, stage, title in ((axes[0], 'S1', 'S1 uncued'),
+                             (axes[1], ('S2', 'none'), 'S2 uncued control'),
+                             (axes[2], ('S3', 'none'), 'S3 uncued control')):
+        entries = []
+        for z in Z_LR:
+            c = stage_curve(cache, z, stage, params)
+            entries.append((ZLR_INFO[z].label, c, dict(color=ZLR_INFO[z].color)))
+            drawn.append(c)
+        plot_adaptation(ax, entries, params, nc, ylabel=(ax is axes[0]))
+        ax.set_title(title, fontsize=6)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.suptitle('INTERNAL SANITY CHECK — uncued control (cue_mode="none")', fontsize=6, y=1.08)
+    fig.legend(handles, labels, loc='outside upper center', ncols=min(len(handles), 8),
+               fontsize=5, frameon=False, handlelength=1.0, columnspacing=0.7)
+    _annotate_note(fig, drawn)
+    _save(fig, export_dir, 'sanity_uncued_control.pdf', params)
+    return fig
+
+
+# ── F4-equivalent: the two scalars the curve is read for ─────────────────────
+
+_ZLR_X = {z: i for i, z in enumerate(Z_LR)}
 
 
 def plot_reuse_summary(cache, params: AnalysisParams, export_dir: Path) -> plt.Figure:
-    """F4 — the prior (trial 1) and the zero-shot reuse (trial 2) against the forked Z_lr.
+    """The prior (trial 1) and the zero-shot reuse (trial 2) against Z_lr, cued vs control.
 
     Trial 1 is scored before any evidence from the new block, so it measures commitment to the
     old rotation. Trial 2 is the first colour that was never observed under the new rotation, so
-    a low value there means one observation was enough to move the whole map.
+    a low value there means one observation was enough to move the whole map. One line per
+    cue_mode now — Z_lr is a single axis, not trait-vs-dial.
     """
     nc = _n_colors(cache)
     w, h = FigSize.small
-    fig, axes = plt.subplots(2, 2, figsize=(w * 2 * 1.25, h * 2 * 1.05), dpi=params.dpi,
-                             sharex=True, sharey='row', layout='constrained')
+    fig, axes = plt.subplots(2, 1, figsize=(w * 1.4, h * 2 * 1.1), dpi=params.dpi,
+                             sharex=True, layout='constrained')
     for row, field_name, ylab in ((0, 't1', 'Trial 1\n(prior: 1 = old rotation)'),
                                   (1, 't2', 'Trial 2\n(zero-shot reuse)')):
-        for col, cue in enumerate(CUE_MODES):
-            ax = axes[row, col]
-            for t in Z_LR_TRAIN:
-                xs, ys = [], []
-                for z in Z_LR_TEST:
-                    c = stage_curve(cache, t, ('S3', cue, z), params)
-                    if c is None:
-                        continue
-                    v = curve_summary(c, nc)[field_name]
-                    if not np.isnan(v):
-                        xs.append(_TEST_X[z]); ys.append(v)
-                if xs:
-                    ax.plot(xs, ys, marker=_TRAIN_MARKER[t], markersize=3.0,
-                            color=TRAIN_INFO[t].color, linewidth=params.linewidth,
-                            alpha=0.8, markerfacecolor='none', markeredgewidth=0.9,
-                            label=TRAIN_INFO[t].label)
-            ax.axhline(0.5, color='k', linewidth=0.6, linestyle=':', alpha=0.35)
-            ax.set_ylim(-0.04, 1.04)
-            if row == 0:
-                ax.set_title(CUE_INFO[cue].label, fontsize=6)
-            if row == 1:
-                ax.set_xticks(list(_TEST_X.values()))
-                ax.set_xticklabels(['off' if z is None else str(z).lstrip('0')
-                                    for z in Z_LR_TEST], fontsize=5)
-                ax.set_xlabel(r'S3  $\alpha_z$', labelpad=1)
-            if col == 0:
-                ax.set_ylabel(ylab)
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='outside upper center', ncols=min(len(handles), 4),
+        ax = axes[row]
+        for cue in CUE_MODES:
+            xs, ys = [], []
+            for z in Z_LR:
+                c = stage_curve(cache, z, ('S3', cue), params)
+                if c is None:
+                    continue
+                v = curve_summary(c, nc)[field_name]
+                if not np.isnan(v):
+                    xs.append(_ZLR_X[z]); ys.append(v)
+            if xs:
+                ax.plot(xs, ys, marker='o', markersize=3.0,
+                        color=CUE_INFO[cue].color, linewidth=params.linewidth,
+                        alpha=0.8, markerfacecolor='none', markeredgewidth=0.9,
+                        label=CUE_INFO[cue].label)
+        ax.axhline(0.5, color='k', linewidth=0.6, linestyle=':', alpha=0.35)
+        ax.set_ylim(-0.04, 1.04)
+        ax.set_ylabel(ylab)
+        if row == 1:
+            ax.set_xticks(list(_ZLR_X.values()))
+            ax.set_xticklabels([str(z) for z in Z_LR], fontsize=5)
+            ax.set_xlabel(r'S3  $\alpha_z$', labelpad=1)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='outside upper center', ncols=len(handles),
                fontsize=5, frameon=False, handlelength=1.1, columnspacing=0.8)
     _save(fig, export_dir, 'F4_reuse_summary.pdf', params)
     return fig
@@ -677,28 +662,26 @@ def z_separation(runs) -> Tuple[float, float]:
 
 def plot_z_separation(cache, params: AnalysisParams, export_dir: Path,
                       cue_mode: str = 'oracle_z') -> plt.Figure:
-    """D — gate separation between the two rotations in S3, against the forked Z_lr."""
+    """D — gate separation between the two rotations in S3, against Z_lr."""
     fig, ax = plt.subplots(figsize=FigSize.wide, dpi=params.dpi, layout='constrained')
-    for t in Z_LR_TRAIN:
-        xs, ys, es = [], [], []
-        for z in Z_LR_TEST:
-            runs = stage_runs(cache, t, ('S3', cue_mode, z), params.noise)
-            if not runs:
-                continue
-            m, e = z_separation(runs)
-            if not np.isnan(m):
-                xs.append(_TEST_X[z]); ys.append(m); es.append(e)
-        if xs:
-            ax.errorbar(xs, ys, yerr=es, marker=_TRAIN_MARKER[t], markersize=3.0,
-                        capsize=1.5, elinewidth=0.8, color=TRAIN_INFO[t].color,
-                        linewidth=params.linewidth, alpha=0.8, markerfacecolor='none',
-                        markeredgewidth=0.9, label=TRAIN_INFO[t].label)
-    ax.set_xticks(list(_TEST_X.values()))
-    ax.set_xticklabels(['off' if z is None else str(z).lstrip('0') for z in Z_LR_TEST])
+    xs, ys, es = [], [], []
+    for z in Z_LR:
+        runs = stage_runs(cache, z, ('S3', cue_mode), params.noise)
+        if not runs:
+            continue
+        m, e = z_separation(runs)
+        if not np.isnan(m):
+            xs.append(_ZLR_X[z]); ys.append(m); es.append(e)
+    if xs:
+        ax.errorbar(xs, ys, yerr=es, marker='o', markersize=3.0,
+                    capsize=1.5, elinewidth=0.8, color=plot_style.get_model_color('NeuraGEM'),
+                    linewidth=params.linewidth, alpha=0.8, markerfacecolor='none',
+                    markeredgewidth=0.9)
+    ax.set_xticks(list(_ZLR_X.values()))
+    ax.set_xticklabels([str(z) for z in Z_LR])
     ax.set_xlabel(r'S3  $\alpha_z$', labelpad=1)
     ax.set_ylabel('Gate separation\nbetween rotations')
     ax.set_ylim(0, None)
-    ax.legend(frameon=False, fontsize=5, handlelength=1.1, labelspacing=0.2)
     _save(fig, export_dir, 'D_z_separation.pdf', params)
     return fig
 
@@ -708,23 +691,24 @@ def plot_z_separation(cache, params: AnalysisParams, export_dir: Path,
 # ---------------------------------------------------------------------------
 
 def summarize(cache, params: AnalysisParams) -> None:
-    """The scalars from every curve, one row per (trait arm, stage)."""
+    """The scalars from every curve, one row per (Z_lr, stage)."""
     nc = _n_colors(cache)
     print(f'\n-- Switch-aligned normalized state error @ noise={params.noise} --')
     print('   pre = mean of x<=0 | t1 = first trial of new block | t2 = zero-shot reuse trial')
-    print(f"{'trait':<7}{'stage':<34}{'pre':>7}{'t1':>7}{'t2':>7}{'reuse':>8}"
+    print(f"{'Z_lr':<7}{'stage':<34}{'pre':>7}{'t1':>7}{'t2':>7}{'reuse':>8}"
           f"{'mb1':>7}{'mb2':>7}{'asym':>7}{'sw':>6}{'sem':>10}")
-    for t in Z_LR_TRAIN:
+    for z in Z_LR:
         stages: List[Stage] = ['S1']
         for cue in CUE_MODES:
             stages.append(('S2', cue))
-            stages += [('S3', cue, z) for z in Z_LR_TEST]
+            stages.append(('S3', cue))
+            stages.append(('S3pinned', cue))
         for stage in stages:
-            c = stage_curve(cache, t, stage, params)
+            c = stage_curve(cache, z, stage, params)
             if c is None:
                 continue
             s = curve_summary(c, nc)
-            print(f'{str(t):<7}{stage_label(stage):<34}'
+            print(f'{str(z):<7}{stage_label(stage):<34}'
                   f"{s['pre']:>7.3f}{s['t1']:>7.3f}{s['t2']:>7.3f}{s['reuse']:>8.3f}"
                   f"{s['mb1']:>7.3f}{s['mb2']:>7.3f}{s['asym']:>7.3f}"
                   f'{c.n_switches:>6}{c.sem_over:>10}')
@@ -740,12 +724,12 @@ def check_acceptance(cache, params: AnalysisParams) -> bool:
     print('\n-- Sanity checks --')
     ok = True
 
-    def _s(t, stage):
-        c = stage_curve(cache, t, stage, params)
+    def _s(z, stage):
+        c = stage_curve(cache, z, stage, params)
         return curve_summary(c, nc) if c is not None else None
 
     # (a) The models learned the task at all: pre-switch error near 0 in S1.
-    pres = [_s(t, 'S1')['pre'] for t in Z_LR_TRAIN if _s(t, 'S1')]
+    pres = [_s(z, 'S1')['pre'] for z in Z_LR if _s(z, 'S1')]
     worst = max(pres) if pres else np.nan
     p = not np.isnan(worst) and worst <= 0.25
     ok &= p
@@ -754,8 +738,8 @@ def check_acceptance(cache, params: AnalysisParams) -> bool:
 
     # (b) The cue is used: with the rotation handed to Z there is nothing to infer, so the
     #     trial-1 switch cost should collapse relative to the uncued control.
-    cued = [_s(t, ('S2', 'oracle_z'))['t1'] for t in Z_LR_TRAIN if _s(t, ('S2', 'oracle_z'))]
-    ctrl = [_s(t, ('S2', 'none'))['t1'] for t in Z_LR_TRAIN if _s(t, ('S2', 'none'))]
+    cued = [_s(z, ('S2', 'oracle_z'))['t1'] for z in Z_LR if _s(z, ('S2', 'oracle_z'))]
+    ctrl = [_s(z, ('S2', 'none'))['t1'] for z in Z_LR if _s(z, ('S2', 'none'))]
     wc = max(cued) if cued else np.nan
     mc = float(np.mean(ctrl)) if ctrl else np.nan
     p = not np.isnan(wc) and wc <= 0.25
@@ -766,30 +750,28 @@ def check_acceptance(cache, params: AnalysisParams) -> bool:
         print('      -> the weights are inferring context rather than reading the gate; '
               'drop S2_BLOCK_SCALE and rerun.')
 
-    # (c) Z is the only context channel in S3: with it pinned, nothing should recover.
-    froz = [_s(t, ('S3', 'oracle_z', None))['asym'] for t in Z_LR_TRAIN
-            if _s(t, ('S3', 'oracle_z', None))]
+    # (c) Z is the only context channel in S3: with it pinned (S3_PINNED_Z_SANITY), nothing
+    #     should recover.
+    froz = [_s(z, ('S3pinned', 'oracle_z'))['asym'] for z in Z_LR
+            if _s(z, ('S3pinned', 'oracle_z'))]
     lo = min(froz) if froz else np.nan
     p = not np.isnan(lo) and lo >= 0.4
     ok &= p
-    print(f"  (c) S3 frozen-Z does not recover  min asym={lo:.3f} >= 0.4   "
+    print(f"  (c) S3 pinned-Z does not recover  min asym={lo:.3f} >= 0.4   "
           f"{'PASS' if p else 'FAIL'}")
     if not p:
         print('      -> something other than Z carries context across blocks; '
               'nothing downstream is interpretable.')
 
-    # (d) The forked Z_lr changes recovery at all, else there is no dose-response to read.
-    spread = []
-    for t in Z_LR_TRAIN:
-        v = [_s(t, ('S3', 'oracle_z', z))['mb1'] for z in Z_LR_TEST if z is not None
-             and _s(t, ('S3', 'oracle_z', z))]
-        v = [q for q in v if not np.isnan(q)]
-        if len(v) > 1:
-            spread.append(max(v) - min(v))
-    best = max(spread) if spread else np.nan
+    # (d) Z_lr changes recovery at all, else there is no dose-response to read. 'RNN' is
+    #     excluded — it is a qualitative no-latent baseline, not a point on the numeric dial.
+    v = [_s(z, ('S3', 'oracle_z'))['mb1'] for z in Z_LR if z != 'RNN'
+         and _s(z, ('S3', 'oracle_z'))]
+    v = [q for q in v if not np.isnan(q)]
+    best = (max(v) - min(v)) if len(v) > 1 else np.nan
     p = not np.isnan(best) and best >= 0.1
     ok &= p
-    print(f"  (d) S3 separates by Z_lr          best mb1 spread={best:.3f} >= 0.1   "
+    print(f"  (d) S3 separates by Z_lr          mb1 spread={best:.3f} >= 0.1   "
           f"{'PASS' if p else 'FAIL'}")
 
     print(f"\n  {'ALL CHECKS PASSED' if ok else 'SOME CHECKS FAILED'}")
@@ -898,9 +880,11 @@ def main() -> dict:
         print(f'No trees under {EXPORT_ROOT}. Run rotation_curriculum_sweep.py first.')
         return {}
 
-    plot_curriculum_adaptation(tree_cache, params, export_dir)
-    plot_s3_by_zlr(tree_cache, params, export_dir)
-    plot_trait_arms(tree_cache, params, export_dir)
+    plot_uncued_control_sanity(tree_cache, params, export_dir)
+    plot_s1_dose_response(tree_cache, params, export_dir)
+    plot_s2_dose_response(tree_cache, params, export_dir)
+    plot_s3_dose_response(tree_cache, params, export_dir)
+    plot_s1_vs_s3_by_zlr(tree_cache, params, export_dir)
     plot_reuse_summary(tree_cache, params, export_dir)
     plot_z_separation(tree_cache, params, export_dir)
     summarize(tree_cache, params)
