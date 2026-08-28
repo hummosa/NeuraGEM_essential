@@ -144,10 +144,21 @@ def _stamp(fig, text, variant, n):
 # ── 1. The flanker fingerprint ────────────────────────────────────────────────
 
 def fig_fingerprint(effects, out_dir, variant):
-    """Accuracy and RT in the four cells, and the distance effect within each congruency."""
+    """
+    Accuracy and RT in the four cells, and the distance effect within each congruency.
+
+    The accuracy panel starts at chance rather than zero. Every cell mean in the factorial
+    sits between 0.55 and 1.00, so from zero the bottom half of the panel is empty and the
+    near-vs-far step the panel exists to show reads as flat. `baseline` still marks chance,
+    which is now the axis floor.
+
+    The cost is that a per-seed dot below chance falls outside the axis: 16 of the 1600
+    dots across the whole factorial, all but three of them at `noise13`, none at all at
+    `noise09` or `noise07`. No bar mean is affected — the lowest is 0.551.
+    """
     fig, axes = bar_row([
         ([(_stack(effects, f'acc_{k}'), lbl, COL[k]) for k, lbl in CELLS],
-         dict(ylabel='Accuracy', baseline=0.5)),
+         dict(ylabel='Accuracy', baseline=0.5, ylim=(0.5, 1.02))),
         ([(_stack(effects, f'rt_{k}'), lbl, COL[k]) for k, lbl in CELLS],
          dict(ylabel='RT (timesteps)')),
         ([(_stack(effects, 'cong_effect_acc_near'), 'near', COL['near_incong']),
