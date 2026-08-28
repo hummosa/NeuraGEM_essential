@@ -6,7 +6,9 @@ thresholds and three per-session quantile thresholds. Nothing was retrained.
 
 Reproduce with:
 
-    .venv/bin/python flanker_rt_threshold_sweep.py all      # ~4 min
+    .venv/bin/python flanker_rt_threshold_sweep.py all       # tables + figures, ~4 min
+    .venv/bin/python flanker_rt_threshold_sweep.py figures   # the project's own figures,
+                                                             # one set per threshold, ~6 min
 
 Outputs in `exports/flanker_random/rt_threshold/`: `effects.csv` (4000 rows), `verdicts.csv`,
 `flips.csv`, `matched_counts.csv`, and five figures.
@@ -32,10 +34,13 @@ and survive a criterion-equalising control. What does not survive is a handful o
 `dist_effect_rt_incong` and `dist_effect_acc_cong` account for 26 of the 34 verdict changes.
 Those three should be reported with the range, not with a single number and a star.
 
-One concrete change is worth making beyond that: **report `cong_effect_rt_decided` next to
-`cong_effect_rt`**. It already exists in `rt_outcome_effects` and is currently unused by any
-figure, and it is the honest denominator for the single most threshold-sensitive number in
-the project (see H2).
+Two concrete changes are worth making beyond that. **Report `cong_effect_rt_decided` next to
+`cong_effect_rt`** — it already exists in `rt_outcome_effects`, is currently unused by any
+figure, and is the honest denominator for the single most threshold-sensitive number in the
+project (see H2). And **prefer the regression's history terms to the cell contrasts** where
+both are available: the regression's PERI is significant and human-signed at all seven
+thresholds, so the one genuinely load-bearing fragility disappears under the operationalisation
+the project already has (see below).
 
 ---
 
@@ -224,9 +229,67 @@ of those calls sit near the boundary.
 
 ---
 
+## The regression tells the same story, and is steadier
+
+    .venv/bin/python flanker_rt_threshold_sweep.py figures
+
+redraws the project's *own* figures once per threshold (see below). The regression forest is
+the interesting one, because it is an independent operationalisation of the same signatures:
+PERI is the `incong:prev_error` coefficient rather than a difference of four cell means, and
+the model controls for congruency, previous congruency, response repetition and time on task
+simultaneously.
+
+`t` across the 20 sessions, baseline arm at `noise09`, spec M2. Human-consistent signs are
+`+` on accuracy and `−` on log RT for PERI, `+` on both for post-error:
+
+| term | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 |
+|---|---|---|---|---|---|---|---|
+| `incong` (RT) | 18.4 | 33.6 | 43.1 | 45.8 | 47.8 | 44.1 | 40.8 |
+| `incong:far` (RT) | −5.5 | −7.6 | −6.9 | −6.9 | −6.7 | −6.6 | −6.3 |
+| `prev_error` (RT) | 2.2 | 3.5 | 3.9 | 4.6 | 5.3 | 5.6 | 5.0 |
+| **`incong:prev_error` (RT)** | **−3.1** | **−5.2** | **−5.3** | **−6.6** | **−7.5** | **−7.9** | **−9.0** |
+| `incong:prev_error` (acc) | −1.8 | −0.9 | −0.5 | 0.1 | 0.0 | 0.0 | 0.5 |
+
+Three things worth noting:
+
+- **PERI on RT is significant and human-signed at all seven thresholds.** The cell-contrast
+  version is n.s. below 0.5. So "PERI's verdict is threshold-dependent" is specific to the
+  cell-contrast operationalisation; the regression does not share the problem.
+- The same holds for the other two flip-prone signatures. `incong:far` on RT is significant
+  at every threshold, where the cell contrast `dist_effect_rt_incong` flips. And
+  `prev_error` on RT (PES) is significant at every threshold, where the cell contrast
+  `pes_BI` is n.s. at every threshold — a standing disagreement between the two methods that
+  has nothing to do with the threshold, but is worth knowing about.
+- `incong` on RT still moves 2.5x across the range (18 → 46 → 41), so the regression does
+  **not** escape H2. The pile-up still inflates the congruency effect; what the regression
+  buys is stability in the *history* terms, which are the ones the project's conclusions
+  actually turn on.
+
+Coefficients for every term, spec and threshold are in `regression_coefficients.csv`.
+
 ## Figures
 
-In `exports/flanker_random/rt_threshold/`:
+`figures` mode writes the project's own figures at each threshold into
+`exports/flanker_random/rt_threshold/by_threshold/`, one folder, the threshold in every
+filename, so sorting by name gives a flip-through series:
+
+| pattern | count | what |
+|---|---|---|
+| `scorecard_<arm>_<variant>_thr<X>.pdf` | 35 | `fig_scorecard`, all 5 noise levels x 7 thresholds |
+| `noise_series_<arm>_thr<X>.pdf` | 7 | `fig_noise_series`, the 8-panel noise ladder |
+| `regression_<arm>_<variant>_thr<X>.pdf` | 7 | `fig_group_coefficients`, the forest plot |
+
+Defaults to the baseline arm; pass another (`figures jit_pc52`) to switch. The regression
+runs for one noise level only (`noise09`) because fitting is ~0.9 s per session per spec —
+the full ladder would be ~20 minutes against ~4 for one level.
+
+Every figure carries the threshold in its title and a corner stamp, so one pulled out of the
+series still says which one it is. The scorecard and noise-ladder figures are the project's
+own functions called unmodified; only `collect_effects` is redirected to serve per-threshold
+effects, and that substitution was checked to be bit-identical to the normal loader at 0.5
+across all 132 measures and 20 seeds.
+
+The threshold-on-an-axis figures, in `exports/flanker_random/rt_threshold/`:
 
 | file | what it shows |
 |---|---|

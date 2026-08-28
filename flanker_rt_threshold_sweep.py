@@ -35,10 +35,19 @@ diagnostic, not a proposed change of convention.
 
 Usage
 ─────
-    .venv/bin/python flanker_rt_threshold_sweep.py pilot    # baseline/noise09, ~20 s
-    .venv/bin/python flanker_rt_threshold_sweep.py sweep    # all 4 arms x 5 levels, ~4 min
-    .venv/bin/python flanker_rt_threshold_sweep.py report   # tables + figures from the cache
-    .venv/bin/python flanker_rt_threshold_sweep.py all      # sweep then report
+    .venv/bin/python flanker_rt_threshold_sweep.py pilot      # baseline/noise09, ~20 s
+    .venv/bin/python flanker_rt_threshold_sweep.py sweep      # 4 arms x 5 levels, ~3 min
+    .venv/bin/python flanker_rt_threshold_sweep.py report     # tables + figures from the cache
+    .venv/bin/python flanker_rt_threshold_sweep.py hypotheses # the H1-H6 tables
+    .venv/bin/python flanker_rt_threshold_sweep.py all        # the three above, in order
+
+    .venv/bin/python flanker_rt_threshold_sweep.py figures            # baseline arm
+    .venv/bin/python flanker_rt_threshold_sweep.py figures jit_pc52   # another arm
+
+`figures` is the separate one: instead of putting the threshold on an axis, it redraws the
+project's own scorecard, noise ladder and regression forest once per threshold into
+`by_threshold/`, with the threshold in every filename, so the series can be flipped
+through.
 
 Everything is written to `exports/flanker_random/rt_threshold/`, a new folder — the
 existing run directories and their figures are never touched.
@@ -46,6 +55,7 @@ existing run directories and their figures are never touched.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -645,6 +655,172 @@ def run_report(df=None):
     return df, v, flips, counts
 
 
+# ── The project's own figures, re-rendered at each threshold ──────────────────
+#
+# The figures above put the threshold on an axis. These do the opposite: they redraw the
+# figures the project already reads — the scorecard, the noise ladder, the regression
+# forest — once per threshold, into one folder, with the threshold in every filename. Sort
+# the folder by name and you can flip through the series.
+
+FIG_DIR = f'{OUT_DIR}/by_threshold'
+
+
+def _effects_by_threshold(arm, ladder=NOISE_LADDER, thresholds=THRESHOLDS, seeds=None):
+    """
+    `{threshold: {variant: [per-seed effects]}}`, unpickling each result exactly once.
+
+    The whole cache is per-seed effect dicts, a few kB each, so all 7 thresholds x 5
+    variants x 20 seeds fit in memory comfortably and no pickle is read twice.
+    """
+    seeds = list(range(SEEDS)) if seeds is None else list(seeds)
+    cache = {t: {} for t in thresholds}
+    with flanker_sweep.use_run(f'factorial_{arm}'):
+        for variant, _ in ladder:
+            per_thr = {t: [] for t in thresholds}
+            for seed in seeds:
+                res = flanker_sweep.load_result(seed, variant)
+                if res is None:
+                    continue
+                for t in thresholds:
+                    trials = extract_trials(res['train_logger'], res['config'],
+                                            rt_threshold=t)
+                    per_thr[t].append(session_effects(trials))
+            for t in thresholds:
+                cache[t][variant] = per_thr[t]
+            print(f'  {arm:12s} {variant:8s} {len(per_thr[thresholds[0]]):2d} seeds')
+    return cache
+
+
+@contextlib.contextmanager
+def _figures_at(threshold, effects_by_variant):
+    """
+    Make `flanker_sweep_figures` draw at one threshold instead of the global default.
+
+    Two names are rebound for the duration. `collect_effects` is what `fig_noise_series`
+    calls internally, and it takes the threshold from `flanker_sweep_config.RT_THRESHOLD`
+    as a default bound at definition time — so serving it from the cache is the only way
+    to steer it without editing the config, which the brief rules out. `save` is wrapped
+    only to stamp the threshold in the corner, so a figure pulled out of the series still
+    says which one it is.
+    """
+    import flanker_sweep_figures as figs
+    original_save, original_collect = figs.save, figs.collect_effects
+
+    def stamped_save(fig, path, note=None):
+        fig.text(0.995, 0.005, f'rt_threshold = {threshold:.2f}', ha='right', va='bottom',
+                 fontsize=5, color=COL['neutral'])
+        return original_save(fig, path, note)
+
+    figs.save = stamped_save
+    figs.collect_effects = lambda variant, **kw: effects_by_variant.get(variant, [])
+    try:
+        yield
+    finally:
+        figs.save, figs.collect_effects = original_save, original_collect
+
+
+def run_figures(arm=BASELINE_ARM, thresholds=THRESHOLDS, regression_variant='noise09'):
+    """
+    Redraw the scorecard, the noise ladder and the regression forest at every threshold.
+
+    Writes to `exports/flanker_random/rt_threshold/by_threshold/`, never into the run
+    directories the existing figures live in.
+
+    The regression is run for one variant only. Fitting is ~0.9 s per session per spec, so
+    the full ladder would be ~20 minutes against ~4 for one level; pass
+    `regression_variant=None` to skip it or another variant name to move it.
+    """
+    from flanker_sweep_figures import fig_noise_series, fig_scorecard
+
+    os.makedirs(FIG_DIR, exist_ok=True)
+    print(f'Building the effect cache for {arm}:')
+    cache = _effects_by_threshold(arm, thresholds=thresholds)
+
+    written = []
+    for thr in thresholds:
+        with _figures_at(thr, cache[thr]):
+            for variant, _ in NOISE_LADDER:
+                effects = cache[thr][variant]
+                if not effects:
+                    continue
+                path = fig_scorecard(effects, FIG_DIR,
+                                     f'{arm} · {variant} · rt_threshold {thr:.2f}')
+                written.append(_rename(path, f'scorecard_{arm}_{variant}_thr{thr:.2f}.pdf'))
+            path = fig_noise_series(FIG_DIR)
+            if path:
+                written.append(_rename(path, f'noise_series_{arm}_thr{thr:.2f}.pdf'))
+
+    if regression_variant:
+        written += run_regression_series(arm, regression_variant, thresholds)
+    print(f'\n{len(written)} figures in {FIG_DIR}')
+    return written
+
+
+def _rename(path, name):
+    """Move a figure the project's `save` just wrote to its threshold-tagged filename."""
+    final = os.path.join(os.path.dirname(path), name)
+    os.replace(path, final)
+    return final
+
+
+def run_regression_series(arm, variant, thresholds=THRESHOLDS, specs=('M2', 'M3')):
+    """
+    The trial-history regression forest at each threshold, for one variant.
+
+    `flanker_regression.group_report` extracts trials at the default threshold and cannot
+    be told otherwise, so this reproduces its two steps — extract, then `fit_sessions` per
+    spec — with the threshold passed through, and hands the result to the same figure.
+    The RT signatures here are coefficients on log RT, so they inherit the threshold's
+    effect on RT directly; PERI is the `incong:prev_error` term.
+    """
+    import matplotlib.pyplot as plt
+    import flanker_regression as reg
+
+    os.makedirs(FIG_DIR, exist_ok=True)
+    with flanker_sweep.use_run(f'factorial_{arm}'):
+        results = [r for r in (flanker_sweep.load_result(s, variant)
+                               for s in range(SEEDS)) if r is not None]
+    if not results:
+        print(f'No sessions for {arm}/{variant} — skipping the regression series.')
+        return []
+
+    written, tidy = [], []
+    for thr in thresholds:
+        trials = [extract_trials(r['train_logger'], r['config'], rt_threshold=thr)
+                  for r in results]
+        summaries = {}
+        for spec in specs:
+            _, summary = reg.fit_sessions(trials, spec=spec)
+            summaries[spec] = summary.set_index(['dv', 'term'])
+            tidy.append(summary.assign(threshold=thr, spec=spec, arm=arm, variant=variant))
+        path = f'{FIG_DIR}/regression_{arm}_{variant}_thr{thr:.2f}.pdf'
+        fig = reg.fig_group_coefficients(
+            summaries, path=path,
+            title=f'Trial-history regression — {arm} · {variant} · '
+                  f'rt_threshold {thr:.2f}')
+        plt.close(fig)
+        written.append(path)
+
+    # The coefficients as a table too — seven forest plots are hard to read a trend off,
+    # and this is the regression's independent verdict on the same question the scorecard
+    # answers with cell contrasts.
+    coef_path = f'{OUT_DIR}/regression_coefficients.csv'
+    coefs = pd.concat(tidy, ignore_index=True)
+    coefs.to_csv(coef_path, index=False)
+    print(f'\nWrote {coef_path}')
+    key_terms = ['incong', 'incong:far', 'prev_error', 'incong:prev_error']
+    for dv in ('acc', 'rt'):
+        sub = coefs[(coefs['spec'] == specs[0]) & (coefs['dv'] == dv)
+                    & coefs['term'].isin(key_terms)]
+        if not len(sub):
+            continue
+        print(f'\n  t across sessions, {dv}, spec {specs[0]} '
+              f'(|t| > 1.96 is significant):')
+        print(sub.pivot_table(index='term', columns='threshold', values='t')
+              .reindex(key_terms).to_string(float_format=lambda x: f'{x: .2f}'))
+    return written
+
+
 def run_hypotheses(df=None):
     """
     The tables `docs/rt_threshold_findings.md` quotes, so its numbers stay re-derivable.
@@ -756,9 +932,11 @@ def run_hypotheses(df=None):
     return df
 
 
-def main(mode='all'):
+def main(mode='all', arm=BASELINE_ARM):
     if mode == 'pilot':
         return run_pilot()
+    if mode == 'figures':
+        return run_figures(arm)
     df = run_sweep() if mode in ('sweep', 'all') else None
     if mode in ('report', 'all'):
         df = run_report(df)[0]
@@ -768,4 +946,5 @@ def main(mode='all'):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else 'all')
+    # `figures` takes an optional arm: `... figures jit_pc52`.
+    main(*(sys.argv[1:3] or ['all']))
