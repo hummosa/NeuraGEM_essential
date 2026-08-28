@@ -496,10 +496,6 @@ def fig_effects_vs_threshold(df, out_dir, variant='noise09'):
     congruency, distance within incongruent, post-error — so reading down a column compares
     the same manipulation measured two ways.
 
-    Each panel is annotated with its swing across the range as a fraction of its value at
-    the default threshold, so H1 is legible off the figure rather than only off a table. A
-    panel reading 10% is robust to the choice; one reading 100% is not.
-
     Effects are plotted in their own units rather than standardised: the whole point is
     that the accuracy row's y-range is narrow, and normalising would hide it.
     """
@@ -518,16 +514,6 @@ def fig_effects_vs_threshold(df, out_dir, variant='noise09'):
             ax.axhline(0, color='k', linewidth=0.6, alpha=0.6)
             _mark_default(ax)
             ax.set_title(SIG_LABEL[key], fontsize=5)
-
-            at_default = mu[np.isclose(x, RT_THRESHOLD)]
-            if len(at_default) and at_default[0]:
-                # Open a strip of headroom first: several of these panels run flat near
-                # the top of their range, and the label would otherwise sit on the line.
-                lo, hi = ax.get_ylim()
-                ax.set_ylim(lo, hi + 0.16 * (hi - lo))
-                swing = (np.nanmax(mu) - np.nanmin(mu)) / abs(at_default[0])
-                ax.text(0.04, 0.95, f'swing {swing:.0%}', transform=ax.transAxes,
-                        fontsize=4.5, va='top', color=COL['neutral'])
         axrow[0].set_ylabel(ylabel, fontsize=5)
     for ax in axes[-1]:
         ax.set_xlabel('rt_threshold')
