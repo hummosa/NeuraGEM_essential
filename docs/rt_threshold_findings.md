@@ -11,6 +11,9 @@ Reproduce with:
 Outputs in `exports/flanker_random/rt_threshold/`: `effects.csv` (4000 rows), `verdicts.csv`,
 `flips.csv`, `matched_counts.csv`, and five figures.
 
+A read-only version of this document with the figures inline:
+<https://claude.ai/code/artifact/32b0ab50-2dbb-406d-909d-f1828cd5ebed>
+
 ---
 
 ## Recommendation
