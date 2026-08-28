@@ -393,6 +393,21 @@ Defaults to the baseline arm; pass another (`figures jit_pc52`) to switch. The r
 runs for one noise level only (`noise09`) because fitting is ~0.9 s per session per spec —
 the full ladder would be ~20 minutes against ~4 for one level.
 
+### One threshold at a time, with the ordinary figure script
+
+For a single alternative threshold there is no need for this script at all —
+`flanker_sweep_figures.py` now takes the threshold directly:
+
+    .venv/bin/python flanker_sweep_figures.py --rt-threshold 0.7
+    .venv/bin/python flanker_sweep_figures.py --run factorial_nojit_pc52 \
+        --variant noise09 --rt-threshold 0.7
+
+Every filename in that script is fixed, so a non-default threshold writes into an
+`rt<value>/` subfolder of the usual output directory instead of overwriting the default
+set, and the threshold is appended to each figure's title. `--rt-threshold 0.5` is treated
+as the default and keeps the normal location. Interactively, `use_rt_threshold(0.7)` is a
+context manager around `build_variant` / `fig_noise_series`.
+
 Every figure carries the threshold in its title and a corner stamp, so one pulled out of the
 series still says which one it is. The scorecard and noise-ladder figures are the project's
 own functions called unmodified; only `collect_effects` is redirected to serve per-threshold

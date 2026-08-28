@@ -39,6 +39,15 @@ Run:
     python flanker_sweep_figures.py                       # every variant in the sweep
     python flanker_sweep_figures.py --variant noise10
     python flanker_sweep_figures.py --run sweep_noise --variant noise04
+    python flanker_sweep_figures.py --rt-threshold 0.7    # the same figures, other cut
+
+`--rt-threshold` rebuilds everything at a decision threshold other than
+`flanker_sweep_config.RT_THRESHOLD`. Every filename in this file is fixed, so a non-default
+threshold writes into an `rt<value>/` subfolder of the usual output directory rather than
+overwriting the default set, and the threshold is added to each figure's title. Nothing is
+re-simulated: the threshold is a post-hoc parameter applied by `extract_trials` to the
+logger already in each result pickle. For a systematic comparison across thresholds see
+`flanker_rt_threshold_sweep.py`.
 
 Panel primitives and loading live in flanker_figure_utils.py; the per-seed measures in
 flanker_metrics.py.
@@ -46,6 +55,8 @@ flanker_metrics.py.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import sys
 
 import numpy as np
@@ -66,9 +77,68 @@ RUN = None
 
 DEFAULT_VARIANT = 'noise07' # noise10
 
+#: Decision threshold the figures are currently being built at. None follows
+#: flanker_sweep_config.RT_THRESHOLD. Module state rather than an argument threaded through
+#: eight figure functions, the same way RUN steers which sweep is read — and set through
+#: `use_rt_threshold` rather than assigned directly.
+ACTIVE_RT_THRESHOLD = None
+
+
+@contextlib.contextmanager
+def use_rt_threshold(threshold):
+    """
+    Build figures at a decision threshold other than the configured default.
+
+        with use_rt_threshold(0.7):
+            build_variant('noise09')
+
+    Steers three things at once: what `extract_trials` is called with, where the figures
+    are written (`_thr_dir`), and what their titles say (`_thr_note`). Passing None keeps
+    whatever is already active, so nesting is safe and the default path is untouched.
+    """
+    global ACTIVE_RT_THRESHOLD
+    previous = ACTIVE_RT_THRESHOLD
+    ACTIVE_RT_THRESHOLD = previous if threshold is None else float(threshold)
+    try:
+        yield active_rt_threshold()
+    finally:
+        ACTIVE_RT_THRESHOLD = previous
+
+
+def active_rt_threshold():
+    """The threshold in force right now — the override if set, else the config default."""
+    from flanker_sweep_config import RT_THRESHOLD
+    return RT_THRESHOLD if ACTIVE_RT_THRESHOLD is None else ACTIVE_RT_THRESHOLD
+
+
+def _is_default_threshold():
+    from flanker_sweep_config import RT_THRESHOLD
+    return abs(active_rt_threshold() - RT_THRESHOLD) < 1e-9
+
+
+def _thr_note():
+    """Title suffix: empty at the default threshold, explicit at any other."""
+    return '' if _is_default_threshold() else f' — rt_threshold {active_rt_threshold():.2f}'
+
+
+def _thr_dir(out_dir):
+    """
+    Where this threshold's figures belong.
+
+    The default threshold keeps the established location. Anything else gets its own
+    `rt<value>/` subfolder, because every filename in this file is fixed and a second
+    threshold written to the same directory would silently replace the first — the same
+    trap `flanker_sweep_config` warns about for run names.
+    """
+    if _is_default_threshold():
+        return out_dir
+    out = os.path.join(out_dir, f'rt{active_rt_threshold():.2f}')
+    os.makedirs(out, exist_ok=True)
+    return out
+
 
 def _stamp(fig, text, variant, n):
-    fig.suptitle(f'{text} — {variant}, {n} seeds')
+    fig.suptitle(f'{text} — {variant}, {n} seeds{_thr_note()}')
 
 
 # ── 1. The flanker fingerprint ────────────────────────────────────────────────
@@ -201,11 +271,18 @@ def fig_history(effects, out_dir, variant):
     shades = ['#c6dbef', '#6baed6', '#3182bd', '#08519c']
     hist   = ['CC', 'IC', 'CI', 'II']
 
+    # Accuracy panels are clipped at 0.4 with chance marked at 0.5, matching
+    # run_flanker.py's single-session version of this figure. From zero the four cells
+    # differ by a few percent of the axis and the conflict-adaptation step — the whole
+    # point of the panel — is invisible.
+    acc_ylim = (0.4, 1.02)
     fig, axes = bar_row([
         ([(_stack(effects, f'acc_{h}_to_I'), h, c) for h, c in zip(hist, shades)],
-         dict(ylabel='Accuracy', connect=True, title='→ incongruent')),
+         dict(ylabel='Accuracy', connect=True, title='→ incongruent',
+              baseline=0.5, ylim=acc_ylim)),
         ([(_stack(effects, f'acc_{h}_to_C'), h, c) for h, c in zip(hist, shades)],
-         dict(ylabel='Accuracy', connect=True, title='→ congruent')),
+         dict(ylabel='Accuracy', connect=True, title='→ congruent',
+              baseline=0.5, ylim=acc_ylim)),
         ([(_stack(effects, f'rt_{h}_to_I'), h, c) for h, c in zip(hist, shades)],
          dict(ylabel='RT (timesteps)', connect=True, title='→ incongruent')),
         ([(_stack(effects, f'rt_{h}_to_C'), h, c) for h, c in zip(hist, shades)],
@@ -287,7 +364,13 @@ def _effect_size(values, sign):
     """Cohen's d across seeds, flipped so positive always means human-consistent."""
     v = np.asarray(values, dtype=float) * sign
     v = v[~np.isnan(v)]
-    return v / v.std(ddof=1) if len(v) > 1 else np.array([])
+    if len(v) < 2:
+        return np.array([])
+    sd = v.std(ddof=1)
+    # An effect identical in every seed has no across-seed SD to divide by. That happens
+    # once a cell is on ceiling (every seed at 1.000), where the honest answer is "no
+    # variance to standardise", not an infinite effect size.
+    return v / sd if sd > 0 else np.array([])
 
 
 def fig_scorecard(effects, out_dir, variant):
@@ -321,7 +404,7 @@ def fig_scorecard(effects, out_dir, variant):
     ax.set_yticklabels([lbl for _, lbl, _, _ in rows], fontsize=5)
     ax.set_ylim(0.3, len(rows) + 0.9)
     ax.set_xlabel('Effect size across seeds (signed so + = matches humans)')
-    ax.set_title(f'{variant}, {len(effects)} seeds')
+    ax.set_title(f'{variant}, {len(effects)} seeds{_thr_note()}')
     fig.tight_layout()
     return save(fig, f'{out_dir}/group_7_scorecard.pdf')
 
@@ -341,9 +424,10 @@ def fig_noise_series(out_dir, ladder=None):
     error crosses zero is where the post-error effects should come back.
     """
     ladder = ladder or NOISE_LADDER
+    out_dir = _thr_dir(out_dir)
     levels, per_level = [], []
     for name, noise in ladder:
-        effects = collect_effects(name)
+        effects = collect_effects(name, rt_threshold=active_rt_threshold())
         if effects:
             levels.append(noise)
             per_level.append(effects)
@@ -393,42 +477,50 @@ def fig_noise_series(out_dir, ladder=None):
         ax.tick_params(axis='x', labelsize=5)     # the ladder is dense once it has 7 rungs
         ax.invert_xaxis()                 # cleaner on the left, noisier on the right
 
-    fig.suptitle('The noise ladder — behaviour above, the mechanism below')
+    fig.suptitle('The noise ladder — behaviour above, the mechanism below' + _thr_note())
     fig.tight_layout()
     return save(fig, f'{out_dir}/group_8_noise_series.pdf')
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def build_variant(variant, out_dir=None):
-    """The seven per-variant figures."""
+def build_variant(variant, out_dir=None, rt_threshold=None):
+    """
+    The seven per-variant figures.
+
+    `rt_threshold` overrides the configured decision threshold for this call only; the
+    figures then go to an `rt<value>/` subfolder so they cannot overwrite the default set.
+    """
     from flanker_analyses import extract_trials
     from flanker_sweep import load_condition
-    from flanker_sweep_config import RT_THRESHOLD
 
-    effects, curves = collect_sessions(variant)
-    if not effects:
-        print(f'  [{variant}] no results on disk — skipping.')
-        return
-    out_dir = out_dir or out_dir_for(variant)
-    fig_fingerprint(effects, out_dir, variant)
-    fig_within_trial(curves, out_dir, variant)
-    fig_rt(curves, effects, out_dir, variant)
-    fig_history(effects, out_dir, variant)
-    fig_post_error(effects, out_dir, variant)
-    trials_list = [extract_trials(r['train_logger'], r['config'], rt_threshold=RT_THRESHOLD)
-                   for r in load_condition(variant)]
-    fig_circularity(trials_list, out_dir, variant)
-    fig_scorecard(effects, out_dir, variant)
+    with use_rt_threshold(rt_threshold) as thr:
+        effects, curves = collect_sessions(variant, rt_threshold=thr)
+        if not effects:
+            print(f'  [{variant}] no results on disk — skipping.')
+            return
+        out_dir = _thr_dir(out_dir or out_dir_for(variant))
+        fig_fingerprint(effects, out_dir, variant)
+        fig_within_trial(curves, out_dir, variant)
+        fig_rt(curves, effects, out_dir, variant)
+        fig_history(effects, out_dir, variant)
+        fig_post_error(effects, out_dir, variant)
+        trials_list = [extract_trials(r['train_logger'], r['config'], rt_threshold=thr)
+                       for r in load_condition(variant)]
+        fig_circularity(trials_list, out_dir, variant)
+        fig_scorecard(effects, out_dir, variant)
 
 
-def main(variant=None, run=None):
+def main(variant=None, run=None, rt_threshold=None):
     from flanker_sweep import use_run
 
     # Everything below resolves paths through RUN_NAME, so one context manager steers both
-    # what is read and where the figures are written.
-    with use_run(run or RUN or None) as active:
-        print(f'sweep run: {active}')
+    # what is read and where the figures are written; use_rt_threshold does the same for
+    # the decision threshold, which also decides the subfolder and the figure titles.
+    with use_run(run or RUN or None) as active, use_rt_threshold(rt_threshold) as thr:
+        print(f'sweep run: {active}   rt_threshold: {thr}'
+              + ('' if _is_default_threshold() else '  (non-default — writing to '
+                                                    f'rt{thr:.2f}/)'))
         for name in ([variant] if variant else list(VARIANTS)):
             print(f'\n── {name} ──')
             build_variant(name)
@@ -437,18 +529,20 @@ def main(variant=None, run=None):
 
 def args_from_argv():
     """
-    `--variant <name> --run <sweep>` from the command line.
+    `--variant <name> --run <sweep> --rt-threshold <float>` from the command line.
 
     Inside a Jupyter / VS Code interactive window sys.argv belongs to the kernel rather
     than to this script, so anything unrecognised is ignored.
     """
-    variant, run, argv = None, None, sys.argv[1:]
+    variant, run, threshold, argv = None, None, None, sys.argv[1:]
     for i, arg in enumerate(argv):
         if arg == '--variant' and i + 1 < len(argv):
             variant = argv[i + 1]
         elif arg == '--run' and i + 1 < len(argv):
             run = argv[i + 1]
-    return variant, run
+        elif arg in ('--rt-threshold', '--rt_threshold') and i + 1 < len(argv):
+            threshold = float(argv[i + 1])
+    return variant, run, threshold
 
 
 if __name__ == '__main__':
