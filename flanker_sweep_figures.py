@@ -111,26 +111,33 @@ def active_rt_threshold():
     return RT_THRESHOLD if ACTIVE_RT_THRESHOLD is None else ACTIVE_RT_THRESHOLD
 
 
-def _is_default_threshold():
-    from flanker_sweep_config import RT_THRESHOLD
-    return abs(active_rt_threshold() - RT_THRESHOLD) < 1e-9
+def _no_override():
+    """
+    True when no threshold was explicitly asked for, so this is the canonical analysis.
+
+    Keyed on whether an override is in force rather than on whether its value happens to
+    equal `RT_THRESHOLD`. `--rt-threshold 0.5` is a request for one point in a comparison
+    set, and it should land in `rt0.50/` beside the others rather than overwriting the
+    canonical figures just because 0.5 is also the configured default.
+    """
+    return ACTIVE_RT_THRESHOLD is None
 
 
 def _thr_note():
-    """Title suffix: empty at the default threshold, explicit at any other."""
-    return '' if _is_default_threshold() else f' — rt_threshold {active_rt_threshold():.2f}'
+    """Title suffix: empty for the canonical run, explicit whenever one was requested."""
+    return '' if _no_override() else f' — rt_threshold {active_rt_threshold():.2f}'
 
 
 def _thr_dir(out_dir):
     """
     Where this threshold's figures belong.
 
-    The default threshold keeps the established location. Anything else gets its own
-    `rt<value>/` subfolder, because every filename in this file is fixed and a second
-    threshold written to the same directory would silently replace the first — the same
-    trap `flanker_sweep_config` warns about for run names.
+    The canonical run keeps the established location. An explicitly requested threshold
+    gets its own `rt<value>/` subfolder, because every filename in this file is fixed and
+    a second threshold written to the same directory would silently replace the first —
+    the same trap `flanker_sweep_config` warns about for run names.
     """
-    if _is_default_threshold():
+    if _no_override():
         return out_dir
     out = os.path.join(out_dir, f'rt{active_rt_threshold():.2f}')
     os.makedirs(out, exist_ok=True)
@@ -530,8 +537,7 @@ def main(variant=None, run=None, rt_threshold=None):
     # the decision threshold, which also decides the subfolder and the figure titles.
     with use_run(run or RUN or None) as active, use_rt_threshold(rt_threshold) as thr:
         print(f'sweep run: {active}   rt_threshold: {thr}'
-              + ('' if _is_default_threshold() else '  (non-default — writing to '
-                                                    f'rt{thr:.2f}/)'))
+              + ('' if _no_override() else f'  (requested — writing to rt{thr:.2f}/)'))
         for name in ([variant] if variant else list(VARIANTS)):
             print(f'\n── {name} ──')
             build_variant(name)
