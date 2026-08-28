@@ -112,6 +112,13 @@ EXTRA_KEYS = ['undecided_frac', 'undecided_frac_cong', 'undecided_frac_incong',
 #: The RT-based signatures, and the decided-only counterpart computed for each.
 RT_SIGNATURES = ('cong_effect_rt', 'dist_effect_rt_incong', 'pes_BI', 'peri')
 
+#: The accuracy row of `fig_effects_vs_threshold`, column-matched to RT_SIGNATURES by
+#: construct wherever a counterpart exists: congruency, distance within incongruent,
+#: post-error. The fourth column has no cross-family pair, so it carries whichever
+#: signature in that family moves most — `peri` on RT, `dist_effect_acc_cong` on accuracy.
+ACC_SIGNATURES = ('cong_effect_acc', 'dist_effect_acc_incong', 'pia_BI',
+                  'dist_effect_acc_cong')
+
 
 # ── Per-session measures the metrics module does not already provide ──────────
 
@@ -479,34 +486,56 @@ def fig_matched(counts, out_dir):
     return save(fig, f'{out_dir}/fig_3_matched.pdf')
 
 
-def fig_decided_only(df, out_dir, variant='noise09'):
+def fig_effects_vs_threshold(df, out_dir, variant='noise09'):
     """
-    H2: how much of each RT signature is speed, and how much is failure to respond.
+    Every RT and accuracy signature against the threshold, each on its own scale.
 
-    Solid is the project convention — undecided trials pinned at `arrows_duration`.
-    Dashed drops them. Where the dashed line is flat and the solid one climbs, the
-    threshold dependence is the pile-up, not the reaction time.
+    Two rows because the two families answer H1 differently, and the difference is the
+    point: over 0.2–0.8 the RT effects move by more than their own size while the accuracy
+    effects barely stir. Columns are matched by construct where a counterpart exists —
+    congruency, distance within incongruent, post-error — so reading down a column compares
+    the same manipulation measured two ways.
+
+    Each panel is annotated with its swing across the range as a fraction of its value at
+    the default threshold, so H1 is legible off the figure rather than only off a table. A
+    panel reading 10% is robust to the choice; one reading 100% is not.
+
+    Effects are plotted in their own units rather than standardised: the whole point is
+    that the accuracy row's y-range is narrow, and normalising would hide it.
     """
     d = df[(df['mode'] == 'abs') & (df['variant'] == variant)
            & (df['arm'] == BASELINE_ARM)]
-    fig, axes = plt.subplots(1, len(RT_SIGNATURES),
-                             figsize=FigSize.row(len(RT_SIGNATURES), FigSize.small))
-    for ax, key in zip(axes, RT_SIGNATURES):
-        for col, style, label in ((key, '-', 'all trials'),
-                                  (f'{key}__dec', '--', 'decided only')):
-            x, mu, sem = _seed_stats(d, col, 'threshold')
-            _line(ax, x, mu, sem, COL['incong'] if style == '-' else COL['neutral'],
-                  label, linestyle=style)
-        ax.axhline(0, color='k', linewidth=0.6, alpha=0.6)
-        _mark_default(ax)
-        ax.set_title(SIG_LABEL[key], fontsize=5)
+    families = [(RT_SIGNATURES, 'RT effect (timesteps)', COL['incong']),
+                (ACC_SIGNATURES, 'Accuracy effect (proportion)', COL['cong'])]
+
+    fig, axes = plt.subplots(2, len(RT_SIGNATURES),
+                             figsize=FigSize.grid(2, len(RT_SIGNATURES),
+                                                  panel=FigSize.small))
+    for (keys, ylabel, color), axrow in zip(families, axes):
+        for ax, key in zip(axrow, keys):
+            x, mu, sem = _seed_stats(d, key, 'threshold')
+            _line(ax, x, mu, sem, color, None)
+            ax.axhline(0, color='k', linewidth=0.6, alpha=0.6)
+            _mark_default(ax)
+            ax.set_title(SIG_LABEL[key], fontsize=5)
+
+            at_default = mu[np.isclose(x, RT_THRESHOLD)]
+            if len(at_default) and at_default[0]:
+                # Open a strip of headroom first: several of these panels run flat near
+                # the top of their range, and the label would otherwise sit on the line.
+                lo, hi = ax.get_ylim()
+                ax.set_ylim(lo, hi + 0.16 * (hi - lo))
+                swing = (np.nanmax(mu) - np.nanmin(mu)) / abs(at_default[0])
+                ax.text(0.04, 0.95, f'swing {swing:.0%}', transform=ax.transAxes,
+                        fontsize=4.5, va='top', color=COL['neutral'])
+        axrow[0].set_ylabel(ylabel, fontsize=5)
+    for ax in axes[-1]:
         ax.set_xlabel('rt_threshold')
-    axes[0].set_ylabel('effect (timesteps)')
-    axes[0].legend(fontsize=4.5, frameon=False)
-    fig.suptitle(f'{BASELINE_ARM}, {variant}: RT signatures with and without '
-                 'the undecided pile-up', fontsize=6)
+
+    fig.suptitle(f'{BASELINE_ARM}, {variant}: every signature against the analysis '
+                 'threshold — RT above, accuracy below', fontsize=6)
     fig.tight_layout()
-    return save(fig, f'{out_dir}/fig_4_decided_only.pdf')
+    return save(fig, f'{out_dir}/fig_4_effects_vs_threshold.pdf')
 
 
 def fig_amplitude(df, verdicts, out_dir):
@@ -650,7 +679,7 @@ def run_report(df=None):
     fig_undecided(df, OUT_DIR)
     fig_signatures(v, OUT_DIR)
     fig_matched(counts, OUT_DIR)
-    fig_decided_only(df, OUT_DIR)
+    fig_effects_vs_threshold(df, OUT_DIR)
     fig_amplitude(df, v, OUT_DIR)
     return df, v, flips, counts
 

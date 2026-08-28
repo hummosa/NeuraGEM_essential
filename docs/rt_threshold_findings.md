@@ -406,5 +406,5 @@ The threshold-on-an-axis figures, in `exports/flanker_random/rt_threshold/`:
 | `fig_1_undecided.pdf` | undecided fraction vs threshold, by noise level and by arm — the size of the pile-up each threshold manufactures |
 | `fig_2_signatures.pdf` | all 11 signatures' effect size vs threshold, one line per arm, with the non-significance band shaded. The PERI panel is the one to look at: blue above zero and red below it across the whole range |
 | `fig_3_matched.pdf` | scorecard count vs threshold — the H4 evidence |
-| `fig_4_decided_only.pdf` | the H2 result, and the clearest panel in the set: solid (all trials) climbs, dashed (decided only) is flat |
+| `fig_4_effects_vs_threshold.pdf` | H1 in one image: every RT signature (top row) and accuracy signature (bottom) against the threshold, each annotated with its swing as a fraction of its value at 0.5. RT swings 88–274%, accuracy 5–50% — with `dist_effect_acc_cong` at 216% the documented near-zero exception |
 | `fig_5_amplitude.pdf` | where 0.5 falls in each arm's `max|output|` distribution, and PERI rescored at a matched undecided rate |
