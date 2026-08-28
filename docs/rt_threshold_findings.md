@@ -267,6 +267,116 @@ Three things worth noting:
 
 Coefficients for every term, spec and threshold are in `regression_coefficients.csv`.
 
+## What test is the scorecard running?
+
+Not a regression. `fig_scorecard` is a **one-sample t-test across seeds** on a session-level
+difference score, and the identity is exact rather than approximate:
+
+`_effect_size` returns `v * sign / sd(v)`, so the returned array has an across-seed SD of
+exactly 1, its SEM is exactly `1/sqrt(n)`, and the plotted quantity `mean(d) / sem(d)` is
+algebraically `mean(v) / (sd(v)/sqrt(n))` — the one-sample t statistic on the raw per-seed
+values. Verified numerically: it matches `scipy.stats.ttest_1samp` to floating point.
+
+So each of the 11 signatures is: (1) a difference of cell means computed **within** one
+session, (2) t-tested against zero across the 20 sessions, with the seed as the unit of
+analysis. There is no trial-level model and no control for anything — each contrast
+conditions on one factor at a time, which is precisely the limitation
+`flanker_regression.py`'s docstring gives as its reason to exist.
+
+**One caveat this exposed.** The bar is `mean − 1.96·sem > 0`, i.e. a *z* critical value,
+where the correct two-sided *t* critical value at n = 20 is **2.093**. The gap is small but
+not empty: 13 of the 1540 scored cells in this sweep have `1.96 ≤ |t| < 2.093` and are drawn
+significant when a t-test would not call them so. Unluckily one of them is load-bearing:
+
+| thr | 0.2 | 0.3 | 0.4 | **0.5** | 0.6 | 0.7 | 0.8 |
+|---|---|---|---|---|---|---|---|
+| `peri` mean (baseline, noise09) | 0.018 | 0.050 | 0.044 | **0.073** | 0.107 | 0.135 | 0.219 |
+| t | 1.00 | 1.57 | 1.16 | **1.98** | 2.74 | 2.94 | 4.95 |
+| p | .330 | .134 | .260 | **.0625** | .013 | .008 | .0001 |
+
+So the baseline arm's PERI at the default threshold is **p = .06, not significant** by a
+proper t-test. The cell-contrast PERI does not become significant until 0.6. That makes the
+signature slightly *more* threshold-fragile than the scorecard shows, and it reinforces the
+recommendation to read PERI off the regression instead. Switching `fig_scorecard` to
+`scipy.stats.t.ppf(0.975, n-1)` would fix it for every figure at once.
+
+## What the regression says, and why adding Z looks like it does nothing
+
+Signature outcomes at `noise09`, spec M2, t across 20 sessions (|t| > 2.09 is p < .05):
+
+| term | expected | baseline 0.3 / 0.5 / 0.8 | jitter 0.3 / 0.5 / 0.8 |
+|---|---|---|---|
+| `incong` (RT) | + | 33.6 / 45.8 / 40.8 | 33.0 / 44.1 / 46.0 |
+| `incong:far` (RT) | − | −7.6 / −6.9 / −6.3 | −6.6 / −6.0 / −5.6 |
+| `prev_error` (RT), PES | + | 3.5 / 4.6 / 5.0 | 4.1 / 6.0 / 8.2 |
+| `incong:prev_error` (RT), PERI | − | −5.2 / −6.6 / −9.0 | **+1.1 / +0.8 / −2.8** |
+| `incong:prev_incong` (RT), Gratton | − | −11.5 / −16.7 / −16.8 | −13.7 / −20.9 / −22.7 |
+| `prev_error` (acc), PIA | + | **−5.2 / −6.2 / −6.2** | −0.5 / −0.4 / −1.0 |
+| `incong:prev_error` (acc) | + | −0.9 / 0.1 / 0.5 | **−6.5 / −5.3 / −3.8** |
+| `incong:prev_incong` (acc) | + | 11.4 / 12.7 / 10.8 | 13.9 / 15.6 / 11.1 |
+| `resp_rep`, `target_rep` | − / + | null everywhere | null everywhere |
+
+The regression agrees with the scorecard on the substance: congruency, distance x congruency
+and Gratton are large and human-signed; PIA is significantly **opposite** in the baseline;
+response and target repetition priming are absent. It disagrees in being far less
+threshold-sensitive, and it puts jitter's PERI failure beyond doubt — wrong-signed on
+accuracy at every threshold and null-to-wrong on RT.
+
+### Adding Z (M3) does have an effect — just not on the signatures, and for a structural reason
+
+`focus_in_z` is one of the strongest regressors in the model, t = 25 to 37 on accuracy and
+−12 to −42 on RT, and it improves fit substantially:
+
+| | M2 | M3 (+ Z) | M4 (+ Z x congruency) |
+|---|---|---|---|
+| accuracy, McFadden pseudo R² | 0.142 | 0.192 | 0.216 |
+| log RT, R² | 0.229 | 0.338 | 0.351 |
+
+Where M3 *can* act — the history **main effects** — it acts strongly. On log RT at the
+baseline, `prev_error` drops 62% (0.114 → 0.043) and `prev2_incong` drops 87%; in the jitter
+arm `prev_error` is absorbed essentially completely (0.132 → 0.001, a 99.5% reduction). So
+post-error slowing really is mediated by the inherited control state.
+
+What M3 cannot touch is the signature terms, and the reason is structural: **M3 adds
+`+ focus_in_z` as a main effect only.** A scalar main effect shifts overall accuracy and RT;
+it cannot change the *size* of the congruency effect. Every headline signature — PERI,
+Gratton, distance x congruency — is an interaction with `incong`, so the M3 spec is
+arithmetically incapable of mediating them. Testing that directly with an M4 that adds
+`focus_in_z:incong` (baseline, `noise09`, threshold 0.5):
+
+| term | M2 | M3 | M4 |
+|---|---|---|---|
+| `incong:prev_incong` (acc) | 1.290 [t 12.7] | 1.341 [12.8] | **0.587 [7.6]** |
+| `incong:prev_incong` (RT) | −0.304 [−16.7] | −0.333 [−17.3] | **−0.150 [−8.5]** |
+| `incong:prev_error` (RT), PERI | −0.130 [−6.6] | −0.117 [−5.5] | −0.138 [−6.5] |
+| `focus_in_z` (acc) | — | 0.704 [32.6] | **0.094 [1.5]** |
+| `focus_in_z:incong` (acc) | — | — | **0.865 [8.4]** |
+| `focus_in_z:incong` (RT) | — | — | −0.205 [−12.5] |
+
+Two things fall out. **Roughly half the Gratton effect is mediated by the latent** once the
+latent is allowed to interact — 1.29 → 0.59 on accuracy, −0.30 → −0.15 on RT — which M3
+entirely misses. And the latent's own influence turns out to be almost purely an
+interaction: its main effect on accuracy collapses from t = 32.6 to t = 1.5 once
+`focus_in_z:incong` is in the model. That is what a target-focus gate should look like —
+focus matters when there is conflict to resolve and barely otherwise.
+
+**PERI is the exception:** unmediated by M3 *and* by M4. Whatever produces it is not the
+inherited focus.
+
+Why the latent can mediate at all: regressing `focus_in_z` on the history terms within each
+session gives R² = 0.22 in the baseline and 0.28 in the jitter arm, so trial history really
+does move the control state. And it moves it much harder under jitter — a previous error
+shifts the inherited focus by −0.14 SD in the baseline but −0.36 to −0.42 SD with jitter,
+about 3x. That is the mechanism behind both jitter's fully-mediated PES and its PERI
+reversal: under jitter an error drives control *down* far more, and down is the wrong
+direction.
+
+**Recommended follow-up:** add an M4 spec to `flanker_regression.py`. M3 answers "does the
+latent explain overall performance shifts" (yes, strongly). The question the paper asks is
+"does the latent carry the conflict-adaptation signatures", and only a spec with the
+congruency interaction can answer it — the answer being about half of Gratton, and none of
+PERI.
+
 ## Figures
 
 `figures` mode writes the project's own figures at each threshold into
