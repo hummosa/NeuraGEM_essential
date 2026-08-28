@@ -110,14 +110,34 @@ EXTRA_KEYS = ['undecided_frac', 'undecided_frac_cong', 'undecided_frac_incong',
               'acc_overall', 'focus_all', 'gate_peak']
 
 #: The RT-based signatures, and the decided-only counterpart computed for each.
-RT_SIGNATURES = ('cong_effect_rt', 'dist_effect_rt_incong', 'pes_BI', 'peri')
+RT_SIGNATURES = ('cong_effect_rt', 'dist_effect_rt_incong', 'peri', 'pes_BI')
 
-#: The accuracy row of `fig_effects_vs_threshold`, column-matched to RT_SIGNATURES by
-#: construct wherever a counterpart exists: congruency, distance within incongruent,
-#: post-error. The fourth column has no cross-family pair, so it carries whichever
-#: signature in that family moves most — `peri` on RT, `dist_effect_acc_cong` on accuracy.
-ACC_SIGNATURES = ('cong_effect_acc', 'dist_effect_acc_incong', 'pia_BI',
-                  'dist_effect_acc_cong')
+#: The accuracy row of `fig_effects_vs_threshold`. Column order is chosen so that related
+#: measures sit side by side in both directions: columns 1 and 2 pair each family's
+#: congruency and distance effects, columns 2-3 put the two accuracy distance effects
+#: (incongruent, congruent) next to each other, and columns 3-4 keep the RT row's two
+#: post-error measures (PERI, PES) together. Column 4 is the matched post-error pair,
+#: PES above PIA.
+ACC_SIGNATURES = ('cong_effect_acc', 'dist_effect_acc_incong', 'dist_effect_acc_cong',
+                  'pia_BI')
+
+#: What each panel actually computes, for the y-axis. The panel title names the signature;
+#: this names the arithmetic, which is what tells you which way is which. These are RAW
+#: contrasts, unlike `fig_scorecard`, which multiplies every effect by its expected human
+#: sign so that positive always means "matches humans". `Acc: Near−Far (Incon)` running
+#: negative therefore agrees with the scorecard showing it positive — near flankers cost
+#: more than far ones on incongruent trials, which is both the raw negative number and the
+#: human-matching direction.
+PANEL_FORMULA = {
+    'cong_effect_rt':         'RT: Incon−Con',
+    'dist_effect_rt_incong':  'RT: Near−Far (Incon)',
+    'peri':                   'RT: CE(postCorr)−CE(postErr)',
+    'pes_BI':                 'RT: postErr−postCorr (Incon)',
+    'cong_effect_acc':        'Acc: Con−Incon',
+    'dist_effect_acc_incong': 'Acc: Near−Far (Incon)',
+    'dist_effect_acc_cong':   'Acc: Near−Far (Con)',
+    'pia_BI':                 'Acc: postErr−postCorr (Incon)',
+}
 
 
 # ── Per-session measures the metrics module does not already provide ──────────
@@ -492,29 +512,34 @@ def fig_effects_vs_threshold(df, out_dir, variant='noise09'):
 
     Two rows because the two families answer H1 differently, and the difference is the
     point: over 0.2–0.8 the RT effects move by more than their own size while the accuracy
-    effects barely stir. Columns are matched by construct where a counterpart exists —
-    congruency, distance within incongruent, post-error — so reading down a column compares
-    the same manipulation measured two ways.
+    effects barely stir. Reading down a column compares the same manipulation measured two
+    ways; reading across, related measures are adjacent — the two accuracy distance effects
+    in columns 2-3, the two RT post-error measures in columns 3-4.
+
+    Every y-axis states the contrast it plots rather than just its units, because these are
+    RAW differences. `fig_scorecard` multiplies each effect by its expected human sign so
+    that positive always means "matches humans"; this figure does not, so the two disagree
+    on the display sign of `dist_effect_acc_incong` — the one signature of the eight whose
+    human-matching direction is negative — while reporting identical numbers.
 
     Effects are plotted in their own units rather than standardised: the whole point is
     that the accuracy row's y-range is narrow, and normalising would hide it.
     """
     d = df[(df['mode'] == 'abs') & (df['variant'] == variant)
            & (df['arm'] == BASELINE_ARM)]
-    families = [(RT_SIGNATURES, 'RT effect (timesteps)', COL['incong']),
-                (ACC_SIGNATURES, 'Accuracy effect (proportion)', COL['cong'])]
+    families = [(RT_SIGNATURES, COL['incong']), (ACC_SIGNATURES, COL['cong'])]
 
     fig, axes = plt.subplots(2, len(RT_SIGNATURES),
                              figsize=FigSize.grid(2, len(RT_SIGNATURES),
                                                   panel=FigSize.small))
-    for (keys, ylabel, color), axrow in zip(families, axes):
+    for (keys, color), axrow in zip(families, axes):
         for ax, key in zip(axrow, keys):
             x, mu, sem = _seed_stats(d, key, 'threshold')
             _line(ax, x, mu, sem, color, None)
             ax.axhline(0, color='k', linewidth=0.6, alpha=0.6)
             _mark_default(ax)
             ax.set_title(SIG_LABEL[key], fontsize=5)
-        axrow[0].set_ylabel(ylabel, fontsize=5)
+            ax.set_ylabel(PANEL_FORMULA[key], fontsize=4.5)
     for ax in axes[-1]:
         ax.set_xlabel('rt_threshold')
 

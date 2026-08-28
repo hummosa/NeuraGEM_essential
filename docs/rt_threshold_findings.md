@@ -406,5 +406,25 @@ The threshold-on-an-axis figures, in `exports/flanker_random/rt_threshold/`:
 | `fig_1_undecided.pdf` | undecided fraction vs threshold, by noise level and by arm — the size of the pile-up each threshold manufactures |
 | `fig_2_signatures.pdf` | all 11 signatures' effect size vs threshold, one line per arm, with the non-significance band shaded. The PERI panel is the one to look at: blue above zero and red below it across the whole range |
 | `fig_3_matched.pdf` | scorecard count vs threshold — the H4 evidence |
-| `fig_4_effects_vs_threshold.pdf` | H1 in one image: every RT signature (top row) and accuracy signature (bottom) against the threshold. The RT row climbs steeply; the accuracy row is close to flat |
+| `fig_4_effects_vs_threshold.pdf` | H1 in one image: every RT signature (top row) and accuracy signature (bottom) against the threshold. The RT row climbs steeply; the accuracy row is close to flat. **Raw contrasts** — see the sign note below |
 | `fig_5_amplitude.pdf` | where 0.5 falls in each arm's `max|output|` distribution, and PERI rescored at a matched undecided rate |
+
+### A sign convention worth knowing about
+
+`fig_scorecard` and `fig_2` multiply every effect by its **expected human sign**, so that
+positive always means "matches humans" — the axis label says so. `fig_4` plots the **raw**
+contrast, which is why its y-axes now name the arithmetic (`Acc: Near−Far (Incon)`).
+
+For seven of the eight signatures in `fig_4` the expected sign is `+1` and the two
+conventions agree. The exception is `dist_effect_acc_incong`, whose expected sign is `−1`:
+
+| `jit_pc52`, noise09, thr 0.5 | value |
+|---|---|
+| raw `acc_near_incong − acc_far_incong` (fig 4) | **−0.130** |
+| scorecard effect size, sign-flipped | **+1.86** |
+| seeds with a negative raw value | 20/20 |
+
+Same result, opposite display sign. Negative is the human-matching direction here: at the
+baseline, `acc_near_incong` is 0.691 against `acc_far_incong` 0.810, so near flankers cost
+12 accuracy points — the flanker proximity effect. It holds in both arms at every threshold
+(−0.114 to −0.130).
