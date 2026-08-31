@@ -44,6 +44,44 @@ class Config:
         self.oracle_context_values = None   # list/array of context values, in slot order
         self.oracle_context_range = None    # (lo, hi) of the context variable
 
+        # Oracle gate jitter: True (models.DEFAULT_ORACLE_GATE_JITTER), an explicit
+        # (lo, hi) pair of positive scale factors, or None/False to disable.
+        # 'one_hot' encodings only; anything else is ignored.
+        #
+        # The one-hot is scaled by a factor drawn uniformly from (lo, hi) BEFORE the softmax,
+        # so the oracle gate arrives at a different sharpness on every trial. Without it the
+        # oracle is the same vector on every training trial — softmax(one-hot / softmax_temp),
+        # peak 0.405 with Z_dim=5 at temp 1 — and the weights are only ever calibrated at that
+        # one sharpness. A later stage that infers Z freely will run sharper gates, where the
+        # output overshoots its target, and a latent update descending squared error can then
+        # lower its loss by flattening the gate rather than by pointing it anywhere useful.
+        # Jitter removes that: the read-out is trained to emit the same magnitude at every
+        # sharpness, so gate sharpness stops acting as a gain control and Z carries only
+        # 'which context', which is what it is supposed to mean.
+        #
+        # One factor is drawn per forward pass, i.e. per trial, shared across its timesteps.
+        # It is applied only while weights are plastic (no_of_steps_in_weight_space > 0) and
+        # only on the oracle path, so an inference stage using what_latent_to_use='self' is
+        # untouched. See docs/flanker_task.md and flanker_near_cong_diagnostic.py (T17, T21).
+        #
+        # It is probably NOT as critical as the paragraph above implies. Jitter was adopted
+        # to fix the near-congruent-worse-than-far-congruent artifact, but that was measured
+        # against runs carrying bg_noise_std = 0.1; at bg_noise_std = 0 the artifact is
+        # already absent without it. A 2x2 over jitter x p_corr_by_distance[2] (20 seeds,
+        # arrow_noise_std 0.9, exports/flanker_random/factorial_corr_jitter) found jitter
+        # costs more than it buys: it REVERSES PERI, +0.073 (the human direction) to -0.188,
+        # and weakens the incongruent RT distance effect out of significance. It also drives
+        # Z HIGHER — mean focus 0.342 -> 0.391 — which is the mechanism to suspect for both.
+        # What it does buy is post-error slowing, pes_BI 0.108 (n.s.) -> 0.375. Net across
+        # the 11 human signatures: 9 matched without jitter, 8 with.
+        #
+        # Across the WHOLE ladder jitter never matches more signatures than the baseline at
+        # any noise level: it ties at 1.3 and 0.7 (and is cleaner at 0.7, 0 opposite vs 1)
+        # and loses at 1.0, 0.9 and 0.4. The only thing it does consistently is raise mean
+        # focus, by ~0.05 at every level. The PERI reversal is mid-ladder — at
+        # arrow_noise_std 0.4 jitter instead roughly doubles PERI, 0.397 -> 0.936.
+        self.oracle_gate_jitter = None
+
         # ── Latent Optimizer (LU) ──────────────────────────────────────────────
         self.Z_lr = 0.4
         self.Z_optimizer = 'Adam'        # 'Adam', 'AdamW', or 'SGD'
@@ -667,10 +705,12 @@ class FlankerTaskConfig(Config):
 
         # ── Flanker stimulus parameters ───────────────────────────────────────
         self.n_slots            = 5
+        # NOTE IMPORTANT. Correlation cannot be allowed to dip below 0.5 at any distance!!
+
         # p_corr_by_distance[d] = probability companion matches target at distance d
         # self.p_corr_by_distance = [1.0, 0.65, 0.55, 0.25, 0.1]
         # this steeper corr significantly improved model's capture int the flanker_sweep setup.
-        self.p_corr_by_distance = [1.0, 0.75, 0.52, 0.25, 0.1]
+        self.p_corr_by_distance = [1.0, 0.75, 0.52, 0.51, 0.5]
         
         # This is a tight balance. 
         # Increasing the corr increases congruent trials n and lowers incongruent. 
@@ -690,6 +730,10 @@ class FlankerTaskConfig(Config):
 
 
         self.arrow_noise_std    = .9
+        # run_flanker.py and flanker_sweep_config both override this to 0, and that matters:
+        # at 0.1 the slots holding no arrow still carry noise the model reads as evidence,
+        # and setting it to 0 removes the near-congruent-worse-than-far-congruent artifact
+        # on its own, without oracle gate jitter (20 seeds, arrow_noise_std 0.9).
         self.bg_noise_std       = 0.1
         self.signal_strength    = 1.0
 

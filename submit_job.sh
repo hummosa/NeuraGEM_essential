@@ -1,12 +1,21 @@
 #!/bin/bash
 
-# Usage: ./submit_job.sh <MAX_TASK_ID> <EXPERIMENT_NAME>
+# Usage: ./submit_job.sh <MAX_TASK_ID> <EXPERIMENT_NAME> [AFTER_JOBID]
 # Example: ./submit_job.sh 599 learning
+#
+# AFTER_JOBID (optional) holds the array until that job finishes, with `afterany` rather
+# than `afterok`: a flanker test task calls ensure_pretrained() itself, so one failed
+# pretrain task should not block the other 99 test tasks.
+#
+# FLANKER_ARM, if set in the environment, is written into the submitted script and selects
+# the 2x2 cell in flanker_sweep_config.ARMS. See run_flanker_factorial.sh.
+#
+# Prints the SLURM job id on the last line so a caller can chain dependencies.
 
 VALID="learning | generalization_tests | mean_prediction | flanker_pretrain | flanker | rotation_slips | curriculum"
 
 if [ -z "$1" ] || [ -z "$2" ]; then
-    echo "Usage: $0 <MAX_TASK_ID> <EXPERIMENT_NAME>"
+    echo "Usage: $0 <MAX_TASK_ID> <EXPERIMENT_NAME> [AFTER_JOBID]"
     echo "EXPERIMENT_NAME: $VALID"
     echo ""
     echo "Flanker sweep, in this order:"
@@ -17,7 +26,13 @@ fi
 
 MAX_TASK_ID=$1
 EXPERIMENT_NAME=$2
+AFTER_JOBID=$3
 MAX_PARALLEL=100  # Max concurrent jobs
+
+DEPENDENCY=""
+if [ -n "$AFTER_JOBID" ]; then
+    DEPENDENCY="--dependency=afterany:$AFTER_JOBID"
+fi
 
 # Per-experiment wall clock: one task of most sweeps is a single ~3 min training run, but a
 # curriculum task runs a whole 7-run stage tree (one Z_lr through S1/S2/S3/S3_pinned). Keep the
@@ -60,7 +75,7 @@ if [ ! -w "$LOG_DIR" ]; then
     exit 1
 fi
 
-sbatch --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
+JOBID=$(sbatch --parsable $DEPENDENCY --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
 #!/bin/bash
 #SBATCH --job-name=neuragem
 #SBATCH -n 1
@@ -71,10 +86,17 @@ sbatch --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=hummosa@live.com
 
+# The 2x2 cell for the flanker factorial; expanded at SUBMIT time, so the value is baked
+# into this script rather than inherited from whatever environment the task lands in.
+export FLANKER_ARM="$FLANKER_ARM"
+
 # Activate env and run
 source $HOME/load_python_venv.sh
 
 python $PYTHON_FILE $PYTHON_ARGS
 EOF
+)
 
-echo "Submitted array jobs 0..$MAX_TASK_ID for '$EXPERIMENT_NAME' with max parallelism $MAX_PARALLEL."
+echo "Submitted array jobs 0..$MAX_TASK_ID for '$EXPERIMENT_NAME' with max parallelism $MAX_PARALLEL." \
+     "${FLANKER_ARM:+arm=$FLANKER_ARM}" "${AFTER_JOBID:+after=$AFTER_JOBID}"
+echo "$JOBID"

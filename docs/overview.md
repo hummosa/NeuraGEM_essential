@@ -136,3 +136,4 @@ I recently named config.l2_loss to config.Z_decay. You might see some descrepanc
 - [configs.md](configs.md) — All configuration parameters, presets, and validation rules
 - [datasets.md](datasets.md) — How to add a new dataset; `BaseTaskDataset` template; existing classes
 - [logging.md](logging.md) — `Logger` class, logged quantities, figure generation
+- [lsp_setup.md](lsp_setup.md) — Python language server for Claude Code: binary, plugin, `pyrightconfig.json`

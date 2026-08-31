@@ -197,7 +197,7 @@ def session_curves(trials, n_bins=20, rt_bin_width=0.25):
 # ── Panels ────────────────────────────────────────────────────────────────────
 
 def bars_with_seeds(ax, groups, ylabel, baseline=None, connect=False, rotation=0,
-                    title=None, hollow=None):
+                    title=None, hollow=None, ylim=None):
     """
     Bar chart of across-seed means with SEM, overlaid with one dot per seed.
 
@@ -206,6 +206,11 @@ def bars_with_seeds(ax, groups, ylabel, baseline=None, connect=False, rotation=0
     hollow  : optional list of bools, one per group. True draws the bar as an outline
               instead of a filled block — the house convention for an *error* cell
               (`plot_style.outcome_style`), so outcome never has to spend a hue.
+    ylim    : optional (lo, hi); either may be None to leave that side automatic. Bars
+              are drawn from zero, so an accuracy panel whose cells all sit between 0.65
+              and 0.98 spends two thirds of its height on empty space and the contrast
+              the panel exists to show reads as flat. Clipping the axis is the fix, and
+              `baseline` then marks where chance is so the truncation stays honest.
     """
     x      = np.arange(len(groups))
     means  = [np.nanmean(v) for v, _, _ in groups]
@@ -245,6 +250,9 @@ def bars_with_seeds(ax, groups, ylabel, baseline=None, connect=False, rotation=0
         ax.set_title(title)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+    # Last, so it wins over the autoscaling that the bars and seed dots just triggered.
+    if ylim is not None:
+        ax.set_ylim(*ylim)
 
 
 def _label_width(label):

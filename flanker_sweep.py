@@ -49,6 +49,19 @@ from flanker_sweep_config import (
 # entry point prints the run it used.
 
 SWEEP_RUNS = {
+    'factorial_nojit_pc52': 'FACTORIAL BASELINE: no oracle gate jitter, p_corr_by_distance[2] '
+                            '= 0.52. The 2x2 reference cell — neither Stage-1 knob on.',
+    'factorial_jit_pc52':   'FACTORIAL: oracle gate jitter (0.5, 1.5), p_corr[2] = 0.52. '
+                            'Jitter only, against factorial_nojit_pc52.',
+    'factorial_nojit_pc58': 'FACTORIAL: no jitter, p_corr[2] = 0.58. Correlation only, '
+                            'against factorial_nojit_pc52.',
+    'factorial_jit_pc58':   'FACTORIAL: jitter (0.5, 1.5) and p_corr[2] = 0.58. Both knobs, '
+                            'the interaction cell.',
+    'sweep_noise_jitter': 'The noise ladder again, with two Stage-1 changes: the oracle '
+                          'gate sharpness is jittered per trial (oracle_gate_jitter) and '
+                          'p_corr_by_distance no longer drops below 0.5 in its tail. '
+                          'Neither appears in a cache path, hence a new run name. Pairs '
+                          'with sweep_noise_pt4k, which is the same ladder without either.',
     'sweep_noise_pt4k': 'The noise ladder with 4000 Stage-1 trials (was 2000). Same four '
                         'noise levels, 20 seeds, everything else fixed — so the pair with '
                         'sweep_noise isolates how much longer pretraining changes the '
@@ -90,11 +103,19 @@ def describe_runs(root=None):
 
     root = root or os.path.join(EXPORT_ROOT)
     keys = ['Z_optimizer', 'Z_lr', 'Z_decay', 'Z_decay_mode', 'arrow_noise_std',
-            'temporal_decay_factor', 'n_trials', 'arrows_duration']
+            'temporal_decay_factor', 'n_trials', 'arrows_duration',
+            # Stage-1 settings, mirrored onto the stored test config by run_job so a
+            # result says what its weights were trained with.
+            'oracle_gate_jitter', 'p_corr_by_distance', 'softmax_temp']
     rows = []
     for run in sorted(os.listdir(root)) if os.path.isdir(root) else []:
         run_dir = os.path.join(root, run)
-        conds = sorted(d for d in os.listdir(run_dir) if not d.startswith('pretrain'))
+        # Directories only: a run root also holds the cross-variant figures
+        # (group_8_noise_series.pdf), which sort before 'noise04' and would otherwise
+        # become conds[0], match no result pickle, and silently drop the whole run.
+        conds = sorted(d for d in os.listdir(run_dir)
+                       if not d.startswith('pretrain')
+                       and os.path.isdir(os.path.join(run_dir, d)))
         if not conds:
             continue
         files = glob.glob(os.path.join(run_dir, conds[0], 'results_seed-*.pkl'))
@@ -161,6 +182,86 @@ def result_path(seed: int, variant: str) -> str:
     return os.path.join(folder, f'results_seed-{seed}.pkl')
 
 
+# ── Stage-1 provenance ────────────────────────────────────────────────────────
+#
+# A pretrained model's path records only the run name, the variant tag and the seed. Every
+# other Stage-1 setting — the stimulus, the correlation profile, the oracle encoding — is
+# invisible in it, so changing one and keeping RUN_NAME silently tests new code on old
+# weights. The docs call this out as having bitten the project before; oracle_gate_jitter
+# and p_corr_by_distance are two more settings with that property.
+#
+# So each cached model gets a sidecar recording what it was trained with, and a cache whose
+# sidecar disagrees with the current config is refused rather than reused.
+
+STAGE1_FINGERPRINT_KEYS = (
+    'arrow_noise_std', 'bg_noise_std', 'signal_strength', 'p_corr_by_distance',
+    'oracle_gate_jitter', 'oracle_context_encoding', 'softmax_temp', 'latent_activation',
+    'n_pretrain_trials', 'arrows_duration', 'trials_per_context_block', 'hidden_size',
+    'rnn_type', 'temporal_decay_factor', 'response_start_timestep',
+    'Z_optimizer', 'Z_lr', 'Z_decay', 'Z_decay_mode', 'latent_dims',
+    'pre_gating', 'post_gating', 'use_mul_gating', 'use_add_gating',
+    'P_gates_bernoulli_prob', 'WU_optimizer', 'WU_lr',
+)
+
+_warned_unfingerprinted = set()
+
+
+def _jsonable(value):
+    """JSON round-trips tuples to lists, so normalise before comparing."""
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    return value
+
+
+def stage1_fingerprint(config) -> dict:
+    return {k: _jsonable(getattr(config, k, None)) for k in STAGE1_FINGERPRINT_KEYS}
+
+
+def fingerprint_path(seed: int, tag: str = 'shared') -> str:
+    return os.path.join(_pretrain_folder(tag), f'fingerprint_seed-{seed}.json')
+
+
+def check_pretrain_fingerprint(config, seed: int, tag: str) -> None:
+    """Refuse a cached model that was trained under different Stage-1 settings.
+
+    A missing sidecar means the model predates this check; that cannot be verified either
+    way, so it warns once per (tag) rather than failing — deleting the whole cache of an
+    older run would be worse than a caveat.
+    """
+    import json
+
+    path = fingerprint_path(seed, tag)
+    want = stage1_fingerprint(config)
+    if not os.path.exists(path):
+        if tag not in _warned_unfingerprinted:
+            _warned_unfingerprinted.add(tag)
+            print(f'  [{RUN_NAME}/{tag}] cached models carry no Stage-1 fingerprint '
+                  f'(trained before this check). Reusing them unverified — delete the '
+                  f'folder or change RUN_NAME if Stage-1 settings have moved since.')
+        return
+    with open(path) as fh:
+        have = json.load(fh)
+    diffs = {k: (have.get(k), want[k]) for k in want if have.get(k) != want[k]}
+    if diffs:
+        lines = '\n'.join(f'    {k}: cached {a!r} -> config {b!r}'
+                           for k, (a, b) in sorted(diffs.items()))
+        raise RuntimeError(
+            f'Cached Stage-1 model for seed {seed} [{tag}] was trained under different '
+            f'settings than the current config:\n{lines}\n'
+            f'  cache: {pretrain_path(seed, tag)}\n'
+            f'Change RUN_NAME in flanker_sweep_config.py (results and models are keyed by '
+            f'it) rather than mixing weights across settings inside one run.')
+
+
+def _write_fingerprint(config, seed: int, tag: str) -> None:
+    import json
+    _atomic_save(
+        lambda tmp: open(tmp, 'w').write(json.dumps(stage1_fingerprint(config), indent=2)),
+        fingerprint_path(seed, tag), suffix='.json')
+
+
 # ── Job definition ────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -216,6 +317,8 @@ def ensure_pretrained(seed: int, tag: str = 'shared') -> None:
     """
     path, curve = pretrain_path(seed, tag), pretrain_curve_path(seed, tag)
     if SKIP_EXISTING and os.path.exists(path) and os.path.exists(curve):
+        # Reusing a cache is only safe if it was trained under the current settings.
+        check_pretrain_fingerprint(build_pretrain_config(seed, tag), seed, tag)
         return
 
     print(f'  Pretraining seed {seed} [{tag}] ({N_PRETRAIN_TRIALS} trials)...')
@@ -235,6 +338,7 @@ def ensure_pretrained(seed: int, tag: str = 'shared') -> None:
         congruent=trials['trial_type'],
         correct_by_timestep=trials['correct'],
     ), curve, suffix='.npz')
+    _write_fingerprint(config, seed, tag)
     print(f'  Cached pretrained model -> {path}')
 
 
@@ -297,6 +401,13 @@ def run_job(job: ExperimentJob, job_index: Optional[int] = None,
     # model.config is the pretraining config the model was built with; the gating
     # choice lives there, and a freshly constructed stage config would revert it.
     sync_gating(test_config, model.config)
+    # Stage-1-only settings are inert at test (Z is self-inferred, so the oracle path never
+    # runs) but they are what the weights encode, and describe_runs reads the stored TEST
+    # config. Mirror them across so a result on disk is self-describing rather than
+    # reporting the class defaults.
+    for key in ('oracle_gate_jitter', 'p_corr_by_distance', 'softmax_temp'):
+        if hasattr(model.config, key):
+            setattr(test_config, key, getattr(model.config, key))
     mirror_to_model(model, test_config)
     reset_Z_uniform(model, scale=Z_INIT_SCALE, seed=job.seed)
 
@@ -315,7 +426,10 @@ def run_job(job: ExperimentJob, job_index: Optional[int] = None,
                      'p_congruent': P_CONGRUENT,
                      'variant': job.variant,
                      'overrides': dict(overrides),
-                     'pretrain_overrides': dict(stim_overrides)}, fh)
+                     'pretrain_overrides': dict(stim_overrides),
+                     # The full Stage-1 fingerprint, so a result can be audited without
+                     # the model file and without trusting the run name.
+                     'stage1': stage1_fingerprint(model.config)}, fh)
     print(f'  Saved -> {filepath}')
 
 
