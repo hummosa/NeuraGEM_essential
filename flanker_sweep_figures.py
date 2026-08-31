@@ -41,6 +41,12 @@ Run:
     python flanker_sweep_figures.py --variant noise10
     python flanker_sweep_figures.py --run sweep_noise --variant noise04
 
+In a Jupyter / VS Code interactive window there is no command line to read — sys.argv
+belongs to the kernel — so the module knobs below stand in for it: DEFAULT_VARIANT picks
+one variant (None sweeps through the whole ladder) and BUILD_NOISE_SERIES decides whether
+the cross-variant group_8 figure is built. Run as a script, the command line wins and both
+knobs are ignored, so batch jobs keep their existing meaning.
+
 Panel primitives and loading live in flanker_figure_utils.py; the per-seed measures in
 flanker_metrics.py.
 """
@@ -58,7 +64,8 @@ from flanker_figure_utils import (CELLS, COL, band, bar_row, bars_with_seeds,
                                   collect_effects, collect_sessions, compact_legend,
                                   dots_with_ci, exchange_panel, landing_marks,
                                   out_dir_for, plot_circularity, save,
-                                  series, share_ylim, sweep_root, _stack, _stack_curve)
+                                  series, share_ylim, sweep_root, _interactive_kernel,
+                                  _stack, _stack_curve)
 from flanker_metrics import SIGNATURES
 from flanker_sweep_config import NOISE_LADDER, VARIANTS
 
@@ -66,8 +73,24 @@ from flanker_sweep_config import NOISE_LADDER, VARIANTS
 #: see flanker_sweep.SWEEP_RUNS for what each run contains.
 RUN = None
 
-DEFAULT_VARIANT = 'noise07' # noise10
-RT_THRESHOLD = None      # this imports value from flanker_sweep_config, but can be overridden here for a different threshold
+#: Which variant to build when there is no command line to read — i.e. in a Jupyter /
+#: VS Code interactive window. A single name ('noise09') builds just that variant, which
+#: is what you usually want while iterating on a figure; None sweeps through every variant
+#: in the ladder. Ignored when this file is run as a script: there `--variant` says it, and
+#: passing no argument keeps meaning "every variant", which run_flanker_factorial.sh needs.
+DEFAULT_VARIANT = 'noise09'
+
+#: Whether to also build group_8_noise_series, the one cross-variant figure. It reloads
+#: EVERY level on disk whatever DEFAULT_VARIANT says, so it is the slow half of a run that
+#: was only meant to rebuild one variant. None decides from the variant — the ladder figure
+#: is built when the whole ladder is being built anyway, and skipped otherwise. True or
+#: False forces it either way.
+BUILD_NOISE_SERIES = None
+
+#: RT threshold these figures are computed at. None follows flanker_sweep_config; a number
+#: overrides it here without editing the sweep config. This has to be threaded through both
+#: `collect_sessions` and `extract_trials` below — setting the module variable alone used to
+#: do nothing, because build_variant re-imported the config value over the top of it.
 RT_THRESHOLD = 0.2
 
 def _stamp(fig, text, variant, n):
@@ -479,13 +502,19 @@ def fig_z_update(effects, trials_list, out_dir, variant):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _rt_threshold():
+    """The RT threshold to read sessions at — the module knob, else the sweep's own."""
+    from flanker_sweep_config import RT_THRESHOLD as SWEEP_RT_THRESHOLD
+    return SWEEP_RT_THRESHOLD if RT_THRESHOLD is None else RT_THRESHOLD
+
+
 def build_variant(variant, out_dir=None):
     """The eight per-variant figures."""
     from flanker_analyses import extract_trials
     from flanker_sweep import load_condition
-    from flanker_sweep_config import RT_THRESHOLD
 
-    effects, curves = collect_sessions(variant)
+    rt_threshold = _rt_threshold()
+    effects, curves = collect_sessions(variant, rt_threshold=rt_threshold)
     if not effects:
         print(f'  [{variant}] no results on disk — skipping.')
         return
@@ -495,24 +524,41 @@ def build_variant(variant, out_dir=None):
     fig_rt(curves, effects, out_dir, variant)
     fig_history(effects, out_dir, variant)
     fig_post_error(effects, out_dir, variant)
-    trials_list = [extract_trials(r['train_logger'], r['config'], rt_threshold=RT_THRESHOLD)
+    trials_list = [extract_trials(r['train_logger'], r['config'], rt_threshold=rt_threshold)
                    for r in load_condition(variant)]
     fig_circularity(trials_list, out_dir, variant)
     fig_scorecard(effects, out_dir, variant)
     fig_z_update(effects, trials_list, out_dir, variant)
 
 
-def main(variant=None, run=None):
+def main(variant=None, run=None, noise_series=None):
     from flanker_sweep import use_run
+
+    # DEFAULT_VARIANT applies only where the command line cannot: inside a kernel, sys.argv
+    # belongs to the kernel, so `--variant` can never be typed and the module knob is the
+    # only way to say "just this one". Run as a script the command line stays authoritative
+    # and no argument still means every variant.
+    if variant is None and _interactive_kernel():
+        variant = DEFAULT_VARIANT
+    if noise_series is None:
+        noise_series = BUILD_NOISE_SERIES
+    if noise_series is None:
+        noise_series = variant is None      # the ladder figure needs the whole ladder
 
     # Everything below resolves paths through RUN_NAME, so one context manager steers both
     # what is read and where the figures are written.
     with use_run(run or RUN or None) as active:
-        print(f'sweep run: {active}')
-        for name in ([variant] if variant else list(VARIANTS)):
+        names = [variant] if variant else list(VARIANTS)
+        print(f'sweep run: {active}  |  variants: {", ".join(names)}  |  '
+              f'rt_threshold: {_rt_threshold()}')
+        for name in names:
             print(f'\n── {name} ──')
             build_variant(name)
-        fig_noise_series(sweep_root())
+        if noise_series:
+            fig_noise_series(sweep_root())
+        else:
+            print(f'\ngroup_8_noise_series skipped — it reloads every level on disk, not '
+                  f'just {names[0]}. Set BUILD_NOISE_SERIES = True to build it anyway.')
 
 
 def args_from_argv():
