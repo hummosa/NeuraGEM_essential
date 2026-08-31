@@ -41,13 +41,17 @@ Run:
     python flanker_sweep_figures.py --run sweep_noise --variant noise04
     python flanker_sweep_figures.py --rt-threshold 0.7    # the same figures, other cut
 
-`--rt-threshold` rebuilds everything at a decision threshold other than
-`flanker_sweep_config.RT_THRESHOLD`. Every filename in this file is fixed, so a non-default
-threshold writes into an `rt<value>/` subfolder of the usual output directory rather than
-overwriting the default set, and the threshold is added to each figure's title. Nothing is
-re-simulated: the threshold is a post-hoc parameter applied by `extract_trials` to the
-logger already in each result pickle. For a systematic comparison across thresholds see
-`flanker_rt_threshold_sweep.py`.
+Three module-level knobs sit together below the imports — `RUN`, `DEFAULT_VARIANT` and
+`RT_THRESHOLD` — meant to be edited in place when running interactively. `RT_THRESHOLD`
+rebuilds everything at a decision threshold other than the configured one:
+
+    RT_THRESHOLD = 0.7        # then run the file, or call build_variant() / main()
+
+Every filename in this file is fixed, so a threshold set here writes into an `rt<value>/`
+subfolder of the usual output directory rather than overwriting the canonical set, and the
+threshold is added to each figure's title. Nothing is re-simulated: the threshold is a
+post-hoc parameter applied by `extract_trials` to the logger already in each result pickle.
+For a systematic comparison across many thresholds see `flanker_rt_threshold_sweep.py`.
 
 Panel primitives and loading live in flanker_figure_utils.py; the per-seed measures in
 flanker_metrics.py.
@@ -69,7 +73,11 @@ from flanker_figure_utils import (CELLS, COL, band, bar_row, bars_with_seeds,
                                   dots_with_ci, out_dir_for, plot_circularity, save,
                                   series, share_ylim, sweep_root, _stack, _stack_curve)
 from flanker_metrics import SIGNATURES
-from flanker_sweep_config import NOISE_LADDER, VARIANTS
+from flanker_sweep_config import (NOISE_LADDER, VARIANTS,
+                                  RT_THRESHOLD as CONFIG_RT_THRESHOLD)
+
+# ── The three knobs ───────────────────────────────────────────────────────────
+# Edit these in place when running interactively; the command line overrides them.
 
 #: Sweep run to read and write. None follows flanker_sweep_config.RUN_NAME;
 #: see flanker_sweep.SWEEP_RUNS for what each run contains.
@@ -77,50 +85,55 @@ RUN = None
 
 DEFAULT_VARIANT = 'noise07' # noise10
 
-#: Decision threshold the figures are currently being built at. None follows
-#: flanker_sweep_config.RT_THRESHOLD. Module state rather than an argument threaded through
-#: eight figure functions, the same way RUN steers which sweep is read — and set through
-#: `use_rt_threshold` rather than assigned directly.
-ACTIVE_RT_THRESHOLD = None
+#: Decision threshold every figure below is built at. None follows the sweep config
+#: (`flanker_sweep_config.RT_THRESHOLD`, currently 0.5) and writes to the usual output
+#: directory. Set a number here — RT_THRESHOLD = 0.7 — and the figures are rebuilt at that
+#: cut, written to an `rt<value>/` subfolder instead, and titled with the threshold.
+#:
+#: Nothing is re-simulated. The threshold is a post-hoc parameter that `extract_trials`
+#: applies to the logger already stored in each result pickle, so any value can be applied
+#: to the runs on disk. For a systematic sweep across many values see
+#: `flanker_rt_threshold_sweep.py`.
+RT_THRESHOLD = None
 
 
 @contextlib.contextmanager
 def use_rt_threshold(threshold):
     """
-    Build figures at a decision threshold other than the configured default.
+    Temporarily build at a threshold other than the module-level RT_THRESHOLD.
 
         with use_rt_threshold(0.7):
             build_variant('noise09')
 
     Steers three things at once: what `extract_trials` is called with, where the figures
     are written (`_thr_dir`), and what their titles say (`_thr_note`). Passing None keeps
-    whatever is already active, so nesting is safe and the default path is untouched.
+    whatever is already set, so the command line can defer to the edited variable and
+    nesting is safe.
     """
-    global ACTIVE_RT_THRESHOLD
-    previous = ACTIVE_RT_THRESHOLD
-    ACTIVE_RT_THRESHOLD = previous if threshold is None else float(threshold)
+    global RT_THRESHOLD
+    previous = RT_THRESHOLD
+    RT_THRESHOLD = previous if threshold is None else float(threshold)
     try:
         yield active_rt_threshold()
     finally:
-        ACTIVE_RT_THRESHOLD = previous
+        RT_THRESHOLD = previous
 
 
 def active_rt_threshold():
-    """The threshold in force right now — the override if set, else the config default."""
-    from flanker_sweep_config import RT_THRESHOLD
-    return RT_THRESHOLD if ACTIVE_RT_THRESHOLD is None else ACTIVE_RT_THRESHOLD
+    """The threshold in force right now — RT_THRESHOLD if set, else the config default."""
+    return CONFIG_RT_THRESHOLD if RT_THRESHOLD is None else RT_THRESHOLD
 
 
 def _no_override():
     """
-    True when no threshold was explicitly asked for, so this is the canonical analysis.
+    True when RT_THRESHOLD is unset, so this is the canonical analysis.
 
-    Keyed on whether an override is in force rather than on whether its value happens to
-    equal `RT_THRESHOLD`. `--rt-threshold 0.5` is a request for one point in a comparison
-    set, and it should land in `rt0.50/` beside the others rather than overwriting the
-    canonical figures just because 0.5 is also the configured default.
+    Keyed on whether a threshold was asked for rather than on whether its value happens to
+    equal the config default. `RT_THRESHOLD = 0.5` is a request for one point in a
+    comparison set, and it should land in `rt0.50/` beside the others rather than
+    overwriting the canonical figures just because 0.5 is also the configured default.
     """
-    return ACTIVE_RT_THRESHOLD is None
+    return RT_THRESHOLD is None
 
 
 def _thr_note():
