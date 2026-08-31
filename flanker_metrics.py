@@ -247,6 +247,20 @@ def control_effects(trials, m):
         for on, om in (('err', ~m['corr']), ('corr', m['corr'])):
             e[f'dfocus_{d}_{on}'] = _mean(dfoc, m[d] & m['incong'] & om)
     e['dfocus_near_minus_far_err'] = e['dfocus_near_err'] - e['dfocus_far_err']
+
+    # The same update across the *full* congruency x distance grid, and split by outcome.
+    # The four keys above are incongruent-only and keep their old names; these carry the
+    # congruency in the key, matching `acc_{cell}` and `rt_{cell}_{outcome}` elsewhere, so
+    # a panel can ask what each kind of trial teaches Z rather than only what an
+    # incongruent one does. Congruent trials are the half of the list that has nothing to
+    # be misled by, so their update is the baseline the incongruent cells are read against.
+    for name, mask in _cells(m):
+        e[f'dfocus_{name}'] = _mean(dfoc, mask)
+        for on, om in (('corr', m['corr']), ('err', m['err'])):
+            e[f'dfocus_{name}_{on}'] = _mean(dfoc, mask & om)
+    for cn in CONGRUENCY:
+        e[f'dfocus_{cn}'] = _mean(dfoc, m[cn])
+    e['dfocus_cong_effect'] = e['dfocus_incong'] - e['dfocus_cong']
     e['focus_in_after_near_err'] = _mean(foc_in, m['valid'] & m['p_incong'] & m['p_near'] & m['perr'])
     e['focus_in_after_far_err']  = _mean(foc_in, m['valid'] & m['p_incong'] & m['p_far']  & m['perr'])
     return e
@@ -363,16 +377,23 @@ def event_locked(trials, lags=EVENT_LAGS, n_bins=8):
     out['dfocus_err_clean'] = _mean(dfoc, inc_all & m['err'] & clean)
 
     # How much accuracy a given inherited focus buys on incongruent trials — the exchange
-    # rate that turns the control gap into the behavioural one.
+    # rate that turns the control gap into the behavioural one. `curve_rt` is the same
+    # bins read in RT, which is the other half of the price: control that is not there has
+    # to be paid for either in accuracy or in time, and a model that pays in only one of
+    # them is not doing what a human does. RT is `rt_interp`, so trials that never crossed
+    # sit at the trial end by the house convention rather than being dropped.
+    rt  = trials['rt_interp']
     inc = m['incong'] & ~np.isnan(foc)
     edges = np.nanquantile(foc[inc], np.linspace(0, 1, n_bins + 1))
-    centres, means = [], []
+    centres, means, rts = [], [], []
     for lo, hi in zip(edges[:-1], edges[1:]):
         sel = inc & (foc >= lo) & (foc < hi)
         if sel.sum() > 20:
             centres.append(np.nanmean(foc[sel]))
             means.append(acc[sel].mean())
+            rts.append(np.nanmean(rt[sel]))
     out['curve_x'], out['curve_y'] = np.array(centres), np.array(means)
+    out['curve_rt'] = np.array(rts)
     out['lags'] = np.asarray(lags)
     return out
 

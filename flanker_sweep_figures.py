@@ -16,6 +16,7 @@ The story, and the figure that carries each step:
     6  circularity    the control deficit precedes the error, so post-error state is circular
     7  scorecard      every human signature on one axis, matched or not
     8  noise_series   and less stimulus noise makes errors informative again
+    9  z_update       what each kind of trial teaches Z, and what the state buys
 
 The noise_series panels are per-seed effects from flanker_metrics.session_effects, stacked
 across noise levels and re-plotted with x = arrow_noise_std:
@@ -55,7 +56,8 @@ from plot_style import FigSize
 
 from flanker_figure_utils import (CELLS, COL, band, bar_row, bars_with_seeds,
                                   collect_effects, collect_sessions, compact_legend,
-                                  dots_with_ci, out_dir_for, plot_circularity, save,
+                                  dots_with_ci, exchange_panel, landing_marks,
+                                  out_dir_for, plot_circularity, save,
                                   series, share_ylim, sweep_root, _stack, _stack_curve)
 from flanker_metrics import SIGNATURES
 from flanker_sweep_config import NOISE_LADDER, VARIANTS
@@ -412,10 +414,73 @@ def fig_noise_series(out_dir, ladder=None):
     return save(fig, f'{out_dir}/group_8_noise_series.pdf')
 
 
+# ── 9. What each trial teaches Z ──────────────────────────────────────────────
+
+def fig_z_update(effects, trials_list, out_dir, variant):
+    """
+    The control update each kind of trial produces, and what the resulting state buys.
+
+    `delta_focus` is the update a trial *generated*, not the state it sat in, and that
+    distinction is the only reason this figure may be grouped by the trial's own
+    condition at all: reading a focus level after conditioning on the outcome is circular
+    — a focused Z is what made the trial correct — while the update describes the learning
+    rule, so grouping it by the trial's own properties is legitimate. This is the group
+    version of run_flanker.py's Result 5, which shows the same contrast in one session.
+
+    Panels 1 and 2 hold the four congruency x distance cells and split them by outcome
+    rather than pooling, because the two halves answer different questions: a correct
+    trial's update is what maintains the state, an error's is the correction the model
+    actually makes. The error panel is drawn hollow — the house convention for an error
+    cell, so outcome never has to spend a hue.
+
+    The two panels are deliberately NOT on a shared y scale. An error's update is three to
+    five times a correct trial's, so sharing flattens the correct panel onto its baseline
+    and hides what it is there to show: that congruent trials teach Z *away* from the
+    target while incongruent ones do not. Read the magnitudes off the two axes, which
+    differ by design; group_6's third panel is where the pooled sizes are compared on one
+    scale.
+
+    Panels 3 and 4 are the exchange rate: how much accuracy, and how much RT, a given
+    inherited control state buys on incongruent trials, with the states the trial after an
+    error and after a correct trial actually inherited marked on both. Panel 3 is the same
+    quantity as group_6's fifth panel, repeated here so the pair reads together — a
+    control account says the gap has to be paid for in speed as well as in accuracy, and a
+    model that charges for it in only one of the two is not reproducing the human
+    trade-off.
+    """
+    from flanker_metrics import event_locked
+
+    fig, axes = plt.subplots(1, 4, figsize=FigSize.row(4, panel=FigSize.wide))
+
+    for ax, outcome, title in [(axes[0], 'corr', 'correct trials'),
+                               (axes[1], 'err', 'errors')]:
+        bars_with_seeds(ax, [(_stack(effects, f'dfocus_{k}_{outcome}'), lbl, COL[k])
+                             for k, lbl in CELLS],
+                        'Δ Z focus (this trial\'s update)', baseline=0.0, title=title,
+                        hollow=[outcome == 'err'] * len(CELLS))
+
+    # Sessions are the replicate, as in fig_circularity: event_locked returns per-event
+    # traces, averaged within a session before stacking.
+    per_session = [event_locked(tr) for tr in trials_list]
+    ev = {'lags': per_session[0]['lags']}
+    for key in ('focus_err', 'focus_corr'):
+        ev[key] = np.array([np.nanmean(s[key], axis=0) for s in per_session])
+    marks = landing_marks(ev)
+
+    for ax, key, ylabel in [(axes[2], 'curve_y',  'Accuracy, incongruent trials'),
+                            (axes[3], 'curve_rt', 'RT (timesteps), incongruent trials')]:
+        exchange_panel(ax, [s['curve_x'] for s in per_session],
+                       [s[key] for s in per_session], ylabel, marks=marks)
+
+    _stamp(fig, 'What each trial teaches Z, and what the state buys', variant, len(effects))
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/group_9_z_update.pdf')
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def build_variant(variant, out_dir=None):
-    """The seven per-variant figures."""
+    """The eight per-variant figures."""
     from flanker_analyses import extract_trials
     from flanker_sweep import load_condition
     from flanker_sweep_config import RT_THRESHOLD
@@ -434,6 +499,7 @@ def build_variant(variant, out_dir=None):
                    for r in load_condition(variant)]
     fig_circularity(trials_list, out_dir, variant)
     fig_scorecard(effects, out_dir, variant)
+    fig_z_update(effects, trials_list, out_dir, variant)
 
 
 def main(variant=None, run=None):

@@ -510,8 +510,14 @@ seed; within-subject contrasts also get thin lines connecting each seed across c
 | `group_3_rt.pdf` | RT densities by congruency and by outcome, and the trials that never decide |
 | `group_4_history.pdf` | Four history cells → I and → C; Gratton effect vs. response repetition |
 | `group_5_post_error.pdf` | Post-error slowing and accuracy, inherited Z focus, what drives the update |
-| `group_6_scorecard.pdf` | Every human signature on one axis, matched or not |
-| `group_7_noise_series.pdf` | Each signature against `arrow_noise_std` — why the post-error failures happen |
+| `group_6_circularity.pdf` | The control deficit precedes the error, so post-error state is circular |
+| `group_7_scorecard.pdf` | Every human signature on one axis, matched or not |
+| `group_8_noise_series.pdf` | Each signature against `arrow_noise_std` — why the post-error failures happen |
+| `group_9_z_update.pdf` | Δ Z focus per cell, split correct vs. error; what a given inherited state buys in accuracy and in RT |
+
+`group_1`–`group_7` and `group_9` are per-variant and land in that variant's own folder;
+`group_8_noise_series.pdf` spans the noise ladder and lands one level up, beside the
+variant folders.
 
 ```bash
 python flanker_sweep_figures.py                    # every variant in the sweep

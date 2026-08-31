@@ -379,6 +379,60 @@ def _interactive_kernel():
     return ip is not None and hasattr(ip, 'kernel')
 
 
+def landing_marks(ev):
+    """
+    Where the trial *after* each kind of event actually starts, as `exchange_panel` marks.
+
+    `focus_in` is the state a trial inherited, so lag +1 is what the next trial started
+    from — the error's own update is already in it. Reading those two x positions off the
+    exchange curve is what turns the control gap into a behavioural price.
+    """
+    next_lag = list(ev['lags']).index(1)
+    return [(np.nanmean(ev[key], axis=0)[next_lag], colour, label)
+            for key, colour, label in (('focus_err', COL['error'], 'after error'),
+                                       ('focus_corr', COL['cong'], 'after correct'))]
+
+
+def exchange_panel(ax, curves_x, curves_y, ylabel, marks=(), n_grid=8, title=None):
+    """
+    What a given inherited control state buys — the exchange rate, averaged over sessions.
+
+    `curves_x` / `curves_y` are one array per replicate: the focus bin centres and the
+    measure in each bin, as `flanker_metrics.event_locked` returns them (`curve_x` with
+    `curve_y` for accuracy or `curve_rt` for RT). The bin edges are session quantiles, so
+    no two sessions share them — each curve is resampled onto a common 0–1 parameterisation
+    before averaging, and the mean x is plotted against the mean y. The band is SEM across
+    replicates and is dropped when there is only one, which is the single-session case
+    rather than an error.
+
+    marks : (x, colour, label) triples for the landing points worth naming — the states
+            the trial after an error and after a correct trial actually inherited, so the
+            gap can be read off the curve as a cost rather than left as a number.
+    """
+    grid = np.linspace(0, 1, n_grid)
+    xs = np.array([np.interp(grid, np.linspace(0, 1, len(cx)), cx) for cx in curves_x])
+    ys = np.array([np.interp(grid, np.linspace(0, 1, len(cy)), cy) for cy in curves_y])
+    mu_x, mu_y = xs.mean(axis=0), ys.mean(axis=0)
+    ax.plot(mu_x, mu_y, color=COL['neutral'], linewidth=1.2, marker='o', markersize=2.5)
+    if len(ys) > 1:
+        se_y = ys.std(axis=0, ddof=1) / np.sqrt(ys.shape[0])
+        ax.fill_between(mu_x, mu_y - se_y, mu_y + se_y, color=COL['neutral'],
+                        alpha=0.18, linewidth=0)
+    for x, colour, label in marks:
+        ax.axvline(x, color=colour, linewidth=0.9, linestyle='--')
+        # A one-off annotation deliberately below the global tick size, so two labels fit
+        # inside a paper-width panel without pushing the curve around.
+        ax.text(x, ax.get_ylim()[1], ' ' + label, rotation=90, fontsize=4.5,
+                color=colour, va='top')
+    ax.set_xlabel('Control state inherited')
+    ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    return ax
+
+
 def plot_circularity(axes, ev, replicate='seeds'):
     """
     Why an error does not improve the next trial, in five panels.
@@ -464,25 +518,11 @@ def plot_circularity(axes, ev, replicate='seeds'):
     axes[3].set_title('4. So the next trial is worse (PIA)')
 
     # 5. The exchange rate between control and accuracy, with both landing points marked.
-    grid = np.linspace(0, 1, 8)
-    xs = np.array([np.interp(grid, np.linspace(0, 1, len(cx)), cx) for cx in ev['curve_x']])
-    ys = np.array([np.interp(grid, np.linspace(0, 1, len(cy)), cy) for cy in ev['curve_y']])
-    mu_x, mu_y = xs.mean(axis=0), ys.mean(axis=0)
-    axes[4].plot(mu_x, mu_y, color=COL['neutral'], linewidth=1.2, marker='o', markersize=2.5)
-    if n_rep > 1:
-        se_y = ys.std(axis=0, ddof=1) / np.sqrt(ys.shape[0])
-        axes[4].fill_between(mu_x, mu_y - se_y, mu_y + se_y, color=COL['neutral'],
-                             alpha=0.18, linewidth=0)
-    next_lag = list(lags).index(1)
-    for key, colour, label in (('focus_err', COL['error'], 'after error'),
-                               ('focus_corr', COL['cong'], 'after correct')):
-        state = np.nanmean(ev[key], axis=0)[next_lag]     # what the NEXT trial inherited
-        axes[4].axvline(state, color=colour, linewidth=0.9, linestyle='--')
-        axes[4].text(state, axes[4].get_ylim()[1], ' ' + label, rotation=90, fontsize=4.5,
-                     color=colour, va='top')
-    axes[4].set_xlabel('Control state inherited')
-    axes[4].set_ylabel('Accuracy, incongruent trials')
-    axes[4].set_title('5. What the gap costs')
+    #    Drawn by `exchange_panel`, which flanker_sweep_figures.fig_z_update calls again
+    #    for the RT version of the same curve.
+    exchange_panel(axes[4], ev['curve_x'], ev['curve_y'],
+                   'Accuracy, incongruent trials',
+                   marks=landing_marks(ev), title='5. What the gap costs')
     for ax in (axes[0], axes[3], axes[4]):
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
