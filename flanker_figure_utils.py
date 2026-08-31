@@ -408,6 +408,12 @@ def exchange_panel(ax, curves_x, curves_y, ylabel, marks=(), n_grid=8, title=Non
     marks : (x, colour, label) triples for the landing points worth naming — the states
             the trial after an error and after a correct trial actually inherited, so the
             gap can be read off the curve as a cost rather than left as a number.
+
+    Both curve arguments are sequences *over replicates*, never a single curve: a caller
+    with one session has to wrap it, `[ev['curve_x']]`, the way run_flanker.py's Result 4c
+    already does for `curve_x` and `curve_y`. It does not wrap `curve_rt`, which rides
+    along unused there, so an RT panel added to that call site needs the same wrapping —
+    passing the bare array iterates its scalars and fails in `len(cy)`.
     """
     grid = np.linspace(0, 1, n_grid)
     xs = np.array([np.interp(grid, np.linspace(0, 1, len(cx)), cx) for cx in curves_x])
