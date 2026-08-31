@@ -36,9 +36,19 @@ across noise levels and re-plotted with x = arrow_noise_std:
                       one cell or the other.
 
 Run:
-    python flanker_sweep_figures.py                       # every variant in the sweep
+    python flanker_sweep_figures.py                       # DEFAULT_VARIANT only
+    python flanker_sweep_figures.py --variant all         # every variant + the ladder
     python flanker_sweep_figures.py --variant noise10
+    python flanker_sweep_figures.py --variant 0.7         # a noise level works too
     python flanker_sweep_figures.py --run sweep_noise --variant noise04
+    python flanker_sweep_figures.py --rt-threshold 0.5    # re-decide every trial at 0.5
+
+Two knobs sit at the top of this file, DEFAULT_VARIANT and RT_THRESHOLD, and both are
+live. Setting DEFAULT_VARIANT builds that one variant and skips the ladder figure, which
+is a comparison across noise levels and has nothing to say about a single one. Setting
+RT_THRESHOLD re-decides every trial at that threshold — it is post-hoc, applied to the
+stored loggers, so nothing needs re-running. The threshold in force is printed in every
+figure's suptitle, so a figure always says which one produced it.
 
 Panel primitives and loading live in flanker_figure_utils.py; the per-seed measures in
 flanker_metrics.py.
@@ -64,11 +74,45 @@ from flanker_sweep_config import NOISE_LADDER, VARIANTS
 #: see flanker_sweep.SWEEP_RUNS for what each run contains.
 RUN = None
 
-DEFAULT_VARIANT = 'noise07' # noise10
+#: Which variant main() builds when the command line names none. A noise level works as
+#: well as a variant name — 0.7 and 'noise07' select the same rung — and 'all' (or None)
+#: builds every variant plus the noise-ladder figure.
+DEFAULT_VARIANT = 'noise07'      # 'all' for the whole ladder
+
+#: |output| threshold that defines the decision point. It is a post-hoc analysis
+#: parameter applied to the stored loggers, so changing it needs no re-running — but it
+#: sets `rt`, `decided` AND `correct_at_decision`, so every panel here moves with it, the
+#: accuracy ones included. None follows flanker_sweep_config.RT_THRESHOLD; a number here
+#: overrides that, and --rt-threshold overrides both.
+RT_THRESHOLD = 0.2
+
+
+def _rt():
+    """The threshold in force: this module's override, else the sweep config's."""
+    if RT_THRESHOLD is not None:
+        return RT_THRESHOLD
+    from flanker_sweep_config import RT_THRESHOLD as CONFIG_RT
+    return CONFIG_RT
+
+
+def _resolve_variant(name):
+    """A variant name or the noise level itself — 'noise07', 0.7 and '0.7' all work."""
+    if name in VARIANTS:
+        return name
+    try:
+        value = float(name)
+    except (TypeError, ValueError):
+        raise SystemExit(f'unknown variant {name!r} — pick one of {list(VARIANTS)}, '
+                         f'a noise level from {[n for _, n in NOISE_LADDER]}, or "all"')
+    for variant, noise in NOISE_LADDER:
+        if np.isclose(noise, value):
+            return variant
+    raise SystemExit(f'no ladder rung at arrow_noise_std={value} — '
+                     f'the ladder is {[n for _, n in NOISE_LADDER]}')
 
 
 def _stamp(fig, text, variant, n):
-    fig.suptitle(f'{text} — {variant}, {n} seeds')
+    fig.suptitle(f'{text} — {variant}, {n} seeds, threshold {_rt():g}')
 
 
 # ── 1. The flanker fingerprint ────────────────────────────────────────────────
@@ -201,11 +245,18 @@ def fig_history(effects, out_dir, variant):
     shades = ['#c6dbef', '#6baed6', '#3182bd', '#08519c']
     hist   = ['CC', 'IC', 'CI', 'II']
 
+    # Accuracy panels are clipped at 0.4 with chance marked at 0.5, matching
+    # run_flanker.py's single-session version of this figure. From zero the four cells
+    # differ by a few percent of the axis and the conflict-adaptation step — the whole
+    # point of the panel — is invisible.
+    acc_ylim = (0.4, 1.02)
     fig, axes = bar_row([
         ([(_stack(effects, f'acc_{h}_to_I'), h, c) for h, c in zip(hist, shades)],
-         dict(ylabel='Accuracy', connect=True, title='→ incongruent')),
+         dict(ylabel='Accuracy', connect=True, title='→ incongruent',
+              baseline=0.5, ylim=acc_ylim)),
         ([(_stack(effects, f'acc_{h}_to_C'), h, c) for h, c in zip(hist, shades)],
-         dict(ylabel='Accuracy', connect=True, title='→ congruent')),
+         dict(ylabel='Accuracy', connect=True, title='→ congruent',
+              baseline=0.5, ylim=acc_ylim)),
         ([(_stack(effects, f'rt_{h}_to_I'), h, c) for h, c in zip(hist, shades)],
          dict(ylabel='RT (timesteps)', connect=True, title='→ incongruent')),
         ([(_stack(effects, f'rt_{h}_to_C'), h, c) for h, c in zip(hist, shades)],
@@ -287,7 +338,13 @@ def _effect_size(values, sign):
     """Cohen's d across seeds, flipped so positive always means human-consistent."""
     v = np.asarray(values, dtype=float) * sign
     v = v[~np.isnan(v)]
-    return v / v.std(ddof=1) if len(v) > 1 else np.array([])
+    if len(v) < 2:
+        return np.array([])
+    sd = v.std(ddof=1)
+    # An effect identical in every seed has no across-seed SD to divide by. That happens
+    # once a cell is on ceiling (every seed at 1.000), where the honest answer is "no
+    # variance to standardise", not an infinite effect size.
+    return v / sd if sd > 0 else np.array([])
 
 
 def fig_scorecard(effects, out_dir, variant):
@@ -321,7 +378,7 @@ def fig_scorecard(effects, out_dir, variant):
     ax.set_yticklabels([lbl for _, lbl, _, _ in rows], fontsize=5)
     ax.set_ylim(0.3, len(rows) + 0.9)
     ax.set_xlabel('Effect size across seeds (signed so + = matches humans)')
-    ax.set_title(f'{variant}, {len(effects)} seeds')
+    ax.set_title(f'{variant}, {len(effects)} seeds, threshold {_rt():g}')
     fig.tight_layout()
     return save(fig, f'{out_dir}/group_7_scorecard.pdf')
 
@@ -343,7 +400,7 @@ def fig_noise_series(out_dir, ladder=None):
     ladder = ladder or NOISE_LADDER
     levels, per_level = [], []
     for name, noise in ladder:
-        effects = collect_effects(name)
+        effects = collect_effects(name, rt_threshold=_rt())
         if effects:
             levels.append(noise)
             per_level.append(effects)
@@ -393,7 +450,8 @@ def fig_noise_series(out_dir, ladder=None):
         ax.tick_params(axis='x', labelsize=5)     # the ladder is dense once it has 7 rungs
         ax.invert_xaxis()                 # cleaner on the left, noisier on the right
 
-    fig.suptitle('The noise ladder — behaviour above, the mechanism below')
+    fig.suptitle('The noise ladder — behaviour above, the mechanism below '
+                 f'(threshold {_rt():g})')
     fig.tight_layout()
     return save(fig, f'{out_dir}/group_8_noise_series.pdf')
 
@@ -404,9 +462,12 @@ def build_variant(variant, out_dir=None):
     """The seven per-variant figures."""
     from flanker_analyses import extract_trials
     from flanker_sweep import load_condition
-    from flanker_sweep_config import RT_THRESHOLD
 
-    effects, curves = collect_sessions(variant)
+    # One resolved threshold for every panel of the variant. Previously each loader fell
+    # back to its own import-time default from flanker_sweep_config, so the override at
+    # the top of this file reached nothing.
+    thr = _rt()
+    effects, curves = collect_sessions(variant, rt_threshold=thr)
     if not effects:
         print(f'  [{variant}] no results on disk — skipping.')
         return
@@ -416,39 +477,60 @@ def build_variant(variant, out_dir=None):
     fig_rt(curves, effects, out_dir, variant)
     fig_history(effects, out_dir, variant)
     fig_post_error(effects, out_dir, variant)
-    trials_list = [extract_trials(r['train_logger'], r['config'], rt_threshold=RT_THRESHOLD)
+    trials_list = [extract_trials(r['train_logger'], r['config'], rt_threshold=thr)
                    for r in load_condition(variant)]
     fig_circularity(trials_list, out_dir, variant)
     fig_scorecard(effects, out_dir, variant)
 
 
-def main(variant=None, run=None):
+def main(variant=None, run=None, rt_threshold=None):
+    global RT_THRESHOLD
     from flanker_sweep import use_run
+
+    # --rt-threshold sets the module constant rather than being threaded past it, so the
+    # value the panels are built from and the value _stamp prints cannot disagree.
+    if rt_threshold is not None:
+        RT_THRESHOLD = rt_threshold
+
+    requested = DEFAULT_VARIANT if variant is None else variant
+    names = (list(VARIANTS) if requested in (None, 'all')
+             else [_resolve_variant(requested)])
 
     # Everything below resolves paths through RUN_NAME, so one context manager steers both
     # what is read and where the figures are written.
     with use_run(run or RUN or None) as active:
-        print(f'sweep run: {active}')
-        for name in ([variant] if variant else list(VARIANTS)):
+        print(f'sweep run: {active}   variants: {names}   rt_threshold: {_rt():g}')
+        for name in names:
             print(f'\n── {name} ──')
             build_variant(name)
-        fig_noise_series(sweep_root())
+        # The ladder figure is a comparison ACROSS noise levels, so asking for one level
+        # is asking for a figure it cannot draw. Skipping it is also what makes a single
+        # variant cheap: it no longer pulls all five levels off disk to plot one.
+        if len(names) > 1:
+            fig_noise_series(sweep_root())
+        else:
+            print(f'\nnoise ladder figure skipped — only {names[0]} was requested; '
+                  f'pass --variant all (or set DEFAULT_VARIANT) for the ladder.')
 
 
 def args_from_argv():
     """
-    `--variant <name> --run <sweep>` from the command line.
+    `--variant <name|noise|all> --run <sweep> --rt-threshold <x>` from the command line.
 
+    Each stays None when absent, meaning "use the constant at the top of this file".
     Inside a Jupyter / VS Code interactive window sys.argv belongs to the kernel rather
-    than to this script, so anything unrecognised is ignored.
+    than to this script, so anything unrecognised is ignored — there, set DEFAULT_VARIANT
+    and RT_THRESHOLD directly and call main().
     """
-    variant, run, argv = None, None, sys.argv[1:]
+    variant, run, thr, argv = None, None, None, sys.argv[1:]
     for i, arg in enumerate(argv):
         if arg == '--variant' and i + 1 < len(argv):
             variant = argv[i + 1]
         elif arg == '--run' and i + 1 < len(argv):
             run = argv[i + 1]
-    return variant, run
+        elif arg == '--rt-threshold' and i + 1 < len(argv):
+            thr = float(argv[i + 1])
+    return variant, run, thr
 
 
 if __name__ == '__main__':
