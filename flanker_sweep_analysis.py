@@ -113,7 +113,15 @@ def main(variant=None):
 
     report(eff, [('acc_overall', 'overall accuracy'),
                  ('undecided_frac', 'undecided fraction'),
-                 ('focus_all', 'Z focus (control state)')],
+                 ('focus_all', 'Z focus (control state)'),
+                 # The gate's own behaviour. off_centre is the fraction of trials whose
+                 # inherited gate peaks away from the target slot — the mechanism behind a
+                 # spurious distance effect on congruent trials. gate_peak is comparable to
+                 # the Stage-1 oracle peak (0.405 at softmax_temp 1, five slots): well above
+                 # it means Stage 2 is running the weights at a sharpness Stage 1 never
+                 # trained, unless config.oracle_gate_jitter is set.
+                 ('gate_off_centre', 'gate peaks off target (fraction)'),
+                 ('gate_peak', 'gate peak (median)')],
            'Session quality')
 
     report(eff, [('acc_near_cong',   'accuracy, near-congruent'),

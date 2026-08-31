@@ -28,7 +28,7 @@ import sys
 
 import numpy as np
 
-from plot_style import outcome_style
+from plot_style import FLANKER_COLORS, flanker_color, outcome_style
 
 
 # ── Console output ────────────────────────────────────────────────────────────
@@ -176,6 +176,8 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
     Behaviour
         correct              (n, ad)  1.0 if sign-correct at each timestep
         output_traj          (n, ad)  raw decision variable (last output dim)
+        output_full          (n, ad, output_size)  every output dim; all but the last
+                                      carry zero loss weight and are unconstrained
         signed_output        (n, ad)  output sign-normalised by the trial's final decision
         true_dir             (n,)     true direction ±1.0
         is_correct           (n,)     bool — correct at the final timestep
@@ -236,6 +238,11 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
 
     true_dir    = ii[:n_ts, -1].reshape(n_trials, ad)
     output_traj = oi[:n_ts, -1].reshape(n_trials, ad)
+    # Every output dim, not just the response one. Dims 0..n_slots-1 carry zero loss
+    # weight (config.output_loss_mask), so they are unconstrained rather than meaningless
+    # -- plot_trial shows them faintly, as the only honest way to read "what else the
+    # read-out was doing" while it produced the decision variable.
+    output_full = oi[:n_ts].reshape(n_trials, ad, -1)
     correct     = (true_dir * output_traj > 0).astype(float)
     z_traj      = z_flat[:n_ts].reshape(n_trials, ad, -1)
 
@@ -292,6 +299,7 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
         # behaviour
         correct             = correct,
         output_traj         = output_traj,
+        output_full         = output_full,
         signed_output       = signed_output,
         true_dir            = true_dir[:, 0],
         is_correct          = correct[:, -1].astype(bool),
@@ -800,6 +808,386 @@ def plot_scalar_bars(ax, trials, specs, measure, group_spacing=None, baseline=No
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     return x
+
+
+# ── Single-trial visualisation ────────────────────────────────────────────────
+#
+# What one trial looked like: the five slots' noisy observations, the gate the model
+# applied to them, and the decision variable that came out.
+#
+# This used to require running under a debugger and evaluating a script against the
+# locals of `predictive_learning`. It does not: `_log_batch` logs `inputs`, the raw
+# UNMASKED batch tensor, not the masked/shifted `model_inputs` the RNN is fed, so the
+# logger already holds both the arrow observations (dims 0..n_slots-1) and the hidden
+# true direction (dim -1). `predicted_outputs` holds every output dim. Everything below
+# is read from `extract_trials(logger, config)` — no live model, no debugger.
+#
+# Two alignment facts the panels depend on:
+#
+#   * `predict_first_frame=True` means the RNN at timestep t is fed the stimulus from
+#     t-1 (t=0 gets a zero frame). The stimulus rows are drawn at the timestep the
+#     stimulus was *presented*; the output row at the timestep it was emitted. So the
+#     output at t responds to the arrows drawn at t-1 and earlier, never at t.
+#   * `update_latent_before_weights=False` means the logged outputs were produced under
+#     the Z the trial INHERITED, and the logged Z already contains this trial's own
+#     update. The gate column therefore shows `z_in`, not `z_act` — see convention 2 in
+#     this module's docstring.
+
+_SLOT_LABELS = ('Far 1', 'Near 1', 'Center', 'Near 2', 'Far 2')
+
+_TRIAL_TYPE_NAMES = {0: 'near-congruent',  1: 'near-incongruent',
+                     2: 'far-congruent',   3: 'far-incongruent'}
+
+
+def _slot_label(slot, n_slots):
+    """Spatial name for a slot index, for any odd n_slots."""
+    if n_slots == len(_SLOT_LABELS):
+        return _SLOT_LABELS[slot]
+    centre = n_slots // 2
+    if slot == centre:
+        return 'Center'
+    return f'{"Far" if abs(slot - centre) > 1 else "Near"} {1 if slot < centre else 2}'
+
+
+def trial_slot_roles(trials, config, trial):
+    """
+    Which slots carried an arrow on `trial`, and what each one was.
+
+    Roles are a property of the dataset, so they are read from the labels rather than
+    guessed, with one exception. In the random-trials stage the target is always centre
+    and `trial_type` (hlcids) names the flanker pair. In the pretraining stage
+    `context_id` is the target slot, but the companion slot is drawn per trial and never
+    logged — it is recovered as the non-target slot whose observations carry a signal.
+    That recovery picks the non-target slot with the largest |mean| over the trial's
+    timesteps, and it is the only guess in the figure. It is exact whenever
+    `bg_noise_std = 0` (what run_flanker.py and the sweep both run), since an empty slot
+    is then identically zero. At the class default `bg_noise_std = 0.1` it is right on
+    99.5% of trials at `arrow_noise_std = 0.9` and 98.1% at 1.3 (200k simulated trials) —
+    it fails only when a companion's own noise happens to cancel its signal, which is a
+    trial worth looking at twice anyway.
+
+    Returns dict(target, flankers, empty, congruent, distance, name).
+    """
+    obs      = trials['obs'][trial]                    # (ad, n_slots)
+    n_slots  = obs.shape[-1]
+    tt       = float(trials['trial_type'][trial])
+    # Trial types 0-3 (near/far x cong/incong) identify the random-trials stage; the
+    # pretraining stage puts the congruency flag (0/1) here instead.
+    random_stage = (getattr(config, 'dataset_name', '') == 'flanker_random'
+                    or tt in (2.0, 3.0))
+
+    if random_stage:
+        target    = n_slots // 2
+        near      = tt in (0.0, 1.0)
+        flankers  = (target - 1, target + 1) if near else (0, n_slots - 1)
+        congruent = tt in (0.0, 2.0)
+        name      = _TRIAL_TYPE_NAMES.get(int(tt), f'type {tt:g}')
+    else:
+        target    = int(round(float(trials['context_id'][trial])))
+        strength  = np.abs(obs.mean(axis=0))
+        others    = [s for s in range(n_slots) if s != target]
+        flankers  = (max(others, key=lambda s: strength[s]),)
+        congruent = bool(tt == 1.0)
+        name      = 'congruent' if congruent else 'incongruent'
+
+    empty    = tuple(s for s in range(n_slots) if s != target and s not in flankers)
+    distance = min(abs(s - target) for s in flankers)
+    return dict(target=target, flankers=tuple(flankers), empty=empty,
+                congruent=congruent, distance=distance, name=name)
+
+
+def _bare(ax, keep_bottom=False):
+    """Strip a stacked-trace row down to its data."""
+    ax.set_yticks([])
+    ax.set_xticks([])
+    for side in ('top', 'right', 'left'):
+        ax.spines[side].set_visible(False)
+    ax.spines['bottom'].set_visible(keep_bottom)
+
+
+def plot_trial(trials, config, trial=0, show_gate=True, show_loss_weights=True,
+               show_slot_channels=False, row_height=0.30, width=2.9):
+    """
+    One trial, top to bottom: each slot's observations, the true direction, the speed
+    pressure, and the decision variable.
+
+    Reading it
+    ----------
+    Each slot row plots that slot's observed value at every timestep — the quantity the
+    model actually received, noise included. Up is rightward, down is leftward, and the
+    dashed line is the noiseless level that slot's own arrow was drawn from (the true
+    direction on the target, the flankers' direction beside it). A trace that spends the
+    trial on the wrong side of zero is a slot that misled the model, which is what
+    separates a bad-luck error from a control failure and is the quantity
+    `centre_evidence` summarises across the session. Colour is role, not identity: the
+    target is black, the flankers take the trial's congruency hue and distance shade from
+    the house palette, and slots holding no arrow are grey (they still carry
+    `bg_noise_std`, which is why they are drawn at all rather than omitted).
+
+    The gate column is the softmaxed attention weight the trial INHERITED (`z_in`), one
+    bar per slot, against a dotted line at the uniform value 1/n_slots. That is the gate
+    under which these outputs were produced; the trial's own update lands on the next
+    trial. It is blank on trial 0, which inherited nothing.
+
+    The output row is the model's read-out on the response dimension. The other five
+    output dims are hidden by default (`show_slot_channels=True` draws them faintly).
+    The model is a next-frame predictor with `output_size == input_size`, but
+    `output_loss_mask` zeroes every dim except the direction, so those five channels are
+    never trained: across a session their SD is about 0.1 against observations with SD
+    0.9, and their correlation with the slot they nominally predict is weak and
+    inconsistent in sign. They are drift, and showing them by default only invites the
+    question of what they are.
+
+    Dashed rules mark +/- rt_threshold, the shaded band is the pre-response
+    window (zero loss weight), and the marker sits at the interpolated crossing; the
+    header says so when the trial never crossed. Note that `rt_interp` is
+    `(cross_idx - 1) + frac`, so a crossing bracketed by t=0 and t=1 is reported below 1
+    and its marker lands inside the shaded band. That is the convention, not a bug —
+    the crossing is still counted only at or after `response_start_timestep`.
+
+    Parameters
+    ----------
+    trials  : dict from extract_trials
+    config  : the stage config those trials came from
+    trial   : trial index within the session
+    show_slot_channels : draw the five untrained output dims alongside the response one
+    row_height, width : inches; a slot row is one row_height, the output row is taller.
+                        Both go through FigSize.custom, so FigSize.dev() still applies.
+
+    Returns the figure.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    from plot_style import FigSize
+
+    if not 0 <= trial < trials['n_trials']:
+        raise IndexError(f'trial {trial} out of range (session has {trials["n_trials"]})')
+
+    obs      = trials['obs'][trial]                      # (ad, n_slots)
+    ad       = trials['ad']
+    n_slots  = obs.shape[-1]
+    t_axis   = np.arange(ad)
+    roles    = trial_slot_roles(trials, config, trial)
+    signal   = float(getattr(config, 'signal_strength', 1.0))
+    resp_start = int(trials['search_from'])
+
+    out_full = (trials['output_full'][trial] if trials.get('output_full') is not None
+                else trials['output_traj'][trial][:, None])
+    n_out    = out_full.shape[-1]
+
+    tw = list(getattr(config, 'temporal_loss_weights', []) or []) if show_loss_weights else []
+    gate = trials['z_in'][trial] if show_gate else None
+    have_gate = gate is not None and not np.all(np.isnan(gate))
+
+    # ── layout ────────────────────────────────────────────────────────────────
+    extra = [0.55] + ([0.55] if tw else []) + [1.7]      # true direction | speed | output
+    heights = [1.0] * n_slots + extra
+    fig_h = row_height * sum(heights) + 0.65
+    fig = plt.figure(figsize=FigSize.custom(width, fig_h))
+    gs = gridspec.GridSpec(len(heights), 2, height_ratios=heights,
+                           width_ratios=[1.0, 0.17 if have_gate else 0.001],
+                           hspace=0.25, wspace=0.06)
+
+    gt_dir = float(trials['true_dir'][trial])
+    flank_color = flanker_color(roles['congruent'], near=(roles['distance'] == 1))
+    role_color = {roles['target']: '#000000'}
+    role_color.update({s: flank_color for s in roles['flankers']})
+    role_color.update({s: '#a8a8a8' for s in roles['empty']})
+
+    # ── slot rows ─────────────────────────────────────────────────────────────
+    lim = max(1.05 * np.abs(obs).max(), signal * 1.4)
+    slot_axes = []
+    for s in range(n_slots):
+        ax = fig.add_subplot(gs[s, 0])
+        active = s not in roles['empty']
+        ax.axhline(0, color='k', linewidth=0.4, linestyle=':', alpha=0.5)
+        if active:
+            # The noiseless level this slot's arrow was drawn from: the true direction on
+            # the target, and the flankers' own direction beside it. A trace that spends
+            # the trial on the wrong side of zero is a slot that misled the model, which
+            # is the single most useful thing to be able to see on one trial.
+            nominal = signal * (gt_dir if s == roles['target']
+                                else gt_dir * (1.0 if roles['congruent'] else -1.0))
+            ax.axhline(nominal, color=role_color[s], linewidth=0.5, linestyle='--',
+                       alpha=0.35)
+        # A slot holding no arrow is drawn, not omitted: at bg_noise_std = 0 its trace is
+        # identically zero, so it has to sit ON TOP of the dotted zero reference (zorder)
+        # or it reads as a missing line rather than a flat one.
+        ax.plot(t_axis, obs[:, s], color=role_color[s],
+                linewidth=1.4 if active else 1.0, alpha=1.0 if active else 0.95,
+                solid_capstyle='round', zorder=3 if active else 2.5)
+        role = ('target' if s == roles['target']
+                else 'flanker' if s in roles['flankers'] else 'empty')
+        label = _slot_label(s, n_slots) + (f'\n{role}' if role else '')
+        ax.set_ylabel(label, rotation=0, ha='right', va='center', labelpad=4,
+                      color=role_color[s] if active else '#909090')
+        ax.set_xlim(-0.5, ad - 0.5)
+        ax.set_ylim(-lim, lim)
+        _bare(ax)
+        slot_axes.append(ax)
+
+    # ── inherited gate, one bar per slot ──────────────────────────────────────
+    if have_gate:
+        gmax = max(float(np.nanmax(gate)) * 1.15, 1.0 / n_slots * 1.6)
+        for s, ax_slot in enumerate(slot_axes):
+            axg = fig.add_subplot(gs[s, 1])
+            axg.barh([0], [gate[s]], height=1.2, color=role_color[s],
+                     alpha=0.85 if s not in roles['empty'] else 0.5, linewidth=0)
+            axg.axvline(1.0 / n_slots, color='k', linewidth=0.4, linestyle=':', alpha=0.5)
+            axg.set_xlim(0, gmax)
+            axg.set_ylim(-0.8, 0.8)
+            _bare(axg)
+            if s == 0:
+                axg.set_title('gate', pad=2)
+
+    # ── true direction ────────────────────────────────────────────────────────
+    row = n_slots
+    ax_gt = fig.add_subplot(gs[row, 0])
+    ax_gt.axhline(0, color='k', linewidth=0.4, linestyle=':', alpha=0.5)
+    ax_gt.hlines(gt_dir, -0.5, ad - 0.5, colors='k', linewidth=3, zorder=3)
+    ax_gt.set_ylabel('target\ndirection', rotation=0, ha='right', va='center', labelpad=4)
+    ax_gt.set_xlim(-0.5, ad - 0.5)
+    ax_gt.set_ylim(-1.6, 1.6)
+    _bare(ax_gt)
+
+    # ── speed pressure ────────────────────────────────────────────────────────
+    if tw:
+        row += 1
+        ax_tw = fig.add_subplot(gs[row, 0])
+        w = (list(tw) + [0.0] * ad)[:ad]
+        ax_tw.bar(t_axis, w, color='#555555', alpha=0.55, width=0.6)
+        ax_tw.set_ylabel('loss\nweight', rotation=0, ha='right', va='center', labelpad=4)
+        ax_tw.set_xlim(-0.5, ad - 0.5)
+        _bare(ax_tw)
+
+    # ── decision variable ─────────────────────────────────────────────────────
+    row += 1
+    ax_out = fig.add_subplot(gs[row, 0])
+    ax_out.axvspan(-0.5, resp_start - 0.5, color='k', alpha=0.08, linewidth=0)
+    if show_slot_channels:
+        for d in range(n_out - 1):
+            ax_out.plot(t_axis, out_full[:, d], color='#bbbbbb', linewidth=0.5, alpha=0.7,
+                        zorder=1, label='slot channels (no loss)' if d == 0 else None)
+        # loc='best' rather than a fixed corner: the response trace ends top-right on a
+        # rightward decision and bottom-right on a leftward one, so no corner is safe.
+        ax_out.legend(frameon=False, handlelength=1.0, borderpad=0.2, labelspacing=0.25,
+                      loc='best')
+    ax_out.plot(t_axis, out_full[:, -1], color='#1f4e79', linewidth=1.6,
+                solid_capstyle='round', zorder=3)
+    thr = float(trials['rt_threshold'])
+    ax_out.axhline(0, color='k', linewidth=0.4, linestyle=':', alpha=0.5)
+    for level in (thr, -thr):
+        ax_out.axhline(level, color='k', linewidth=0.5, linestyle='--', alpha=0.35)
+    if bool(trials['decided'][trial]):
+        rt = float(trials['rt_interp'][trial])
+        ax_out.axvline(rt, color='k', linewidth=0.6, alpha=0.55)
+        ax_out.plot([rt], [np.sign(trials['resp_at_decision'][trial]) * thr],
+                    marker='o', markersize=3.5, color='#1f4e79', zorder=4)
+    ax_out.set_xlim(-0.5, ad - 0.5)
+    ax_out.set_xticks(t_axis)
+    ax_out.set_xlabel('Timestep within trial')
+    ax_out.set_ylabel('decision\nvariable', rotation=0, ha='right', va='center', labelpad=4)
+    ax_out.spines['top'].set_visible(False)
+    ax_out.spines['right'].set_visible(False)
+
+    # ── header: the trial's identity, which no axis can carry ─────────────────
+    if bool(trials['decided'][trial]):
+        outcome = 'correct' if bool(trials['correct_at_decision'][trial]) else 'ERROR'
+        verdict = f'{outcome}, RT {float(trials["rt_interp"][trial]):.2f}'
+    else:
+        verdict = 'no response'
+    slot_axes[0].set_title(
+        f'trial {trial} · {roles["name"]}\n'
+        f'target {"right" if gt_dir > 0 else "left"} · {verdict}',
+        loc='left', pad=3)
+
+    fig.align_ylabels(slot_axes + [ax_gt, ax_out])
+    return fig
+
+
+def export_trial_figure(trials, config, trial=0, path=None, **kwargs):
+    """
+    `plot_trial` written straight to a PDF.
+
+    `path` defaults to <config.export_path>/flanker_trial_<trial>.pdf. Returns the path.
+    """
+    import os
+    import matplotlib.pyplot as plt
+
+    fig = plot_trial(trials, config, trial=trial, **kwargs)
+    if path is None:
+        os.makedirs(config.export_path, exist_ok=True)
+        path = f'{config.export_path}flanker_trial_{trial}.pdf'
+    fig.savefig(path, bbox_inches='tight')
+    print(f'Exported: {path}')
+    plt.close(fig)
+    return path
+
+
+def example_trial_indices(trials, config, one_per_condition=True, seed=0):
+    """
+    A representative trial index per condition, for figures that want a small gallery.
+
+    Returns [(label, index), ...] in FLANKER_CELLS order for the random-trials stage,
+    congruent-then-incongruent for the pretraining stage. Trials that decided are
+    preferred, so the RT marker has something to point at; a condition with no decided
+    trial falls back to any trial of that condition, and one with no trials is dropped.
+    """
+    rng = np.random.default_rng(seed)
+    tt  = trials['trial_type']
+    types = ([(0, 'near-cong'), (2, 'far-cong'), (1, 'near-incong'), (3, 'far-incong')]
+             if getattr(config, 'dataset_name', '') == 'flanker_random'
+             else [(1, 'congruent'), (0, 'incongruent')])
+    if not one_per_condition:
+        types = types[:1]
+
+    picks = []
+    for code, label in types:
+        idx = np.flatnonzero(tt == code)
+        if not len(idx):
+            continue
+        decided = idx[trials['decided'][idx]]
+        pool = decided if len(decided) else idx
+        picks.append((label, int(rng.choice(pool))))
+    return picks
+
+
+def plot_correlation_structure(config=None, alphas=(0.5, 1.0, 1.5, 2.0)):
+    """
+    Stage-1 companion correlation against slot distance: the config's own profile
+    alongside the power-law family `p(d) = 1 / (1 + d)**alpha` it was chosen from.
+
+    This is the knob that teaches the model near != far — the gap between index 1 and 2
+    sets the ceiling on any distance effect, and the profile must stay above 0.5
+    everywhere or the model learns to ignore the companion entirely. Nothing in it is
+    per-trial, so it takes a config rather than a trials dict.
+    """
+    import matplotlib.pyplot as plt
+    from plot_style import FigSize
+
+    n = len(getattr(config, 'p_corr_by_distance', [0] * 5)) if config else 5
+    d = np.arange(n)
+
+    fig, ax = plt.subplots(figsize=FigSize.wide)
+    # shades = plt.cm.Greys(np.linspace(0.35, 0.75, len(alphas)))
+    # for alpha, color in zip(alphas, shades):
+    #     ax.plot(d, 1.0 / (1.0 + d) ** alpha, color=color, linewidth=0.8,
+    #             label=f'α={alpha}')
+    if config is not None:
+        ax.plot(d, np.asarray(config.p_corr_by_distance, dtype=float),
+                color=FLANKER_COLORS['near_incong'], marker='o', markersize=3,
+                linewidth=1.4, label='config', zorder=3)
+    ax.axhline(0.5, color='k', linewidth=0.5, linestyle='--', alpha=0.5)
+    ax.text(n - 1, 0.52, 'floor', ha='right', va='bottom', alpha=0.6)
+    ax.set_xlabel('Slot distance from target')
+    ax.set_ylabel('P(companion congruent)')
+    ax.set_xticks(d)
+    ax.set_ylim(0, 1.05)
+    ax.legend(frameon=False, handlelength=1.0, borderpad=0.2, labelspacing=0.25)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    fig.tight_layout()
+    return fig
 
 
 # ── Config / model helpers ────────────────────────────────────────────────────

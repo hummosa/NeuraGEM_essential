@@ -265,6 +265,26 @@ def _tidy(result, dv, n_used, converged=True, extra=None, formula=''):
     return table
 
 
+def _empty_tidy(dv, formula, n_used, note):
+    """A zero-row coefficient table, for a model that could not be fitted.
+
+    Returned instead of raising so one degenerate DV does not take the whole session down:
+    the other DV, the printed report and the figure all handle a table with no rows
+    (plot_coefficients already leaves missing terms blank). `converged` is False and
+    `note` says why, so a caller cannot mistake it for a fit that simply found nothing.
+    """
+    table = pd.DataFrame(columns=['term', 'coef', 'se', 'stat', 'p', 'label', 'expected'])
+    table['dv'] = pd.Series(dtype=str)
+    table['n'] = pd.Series(dtype=float)
+    table['converged'] = pd.Series(dtype=bool)
+    table['pseudo_r2'] = pd.Series(dtype=float)
+    table['bic'] = pd.Series(dtype=float)
+    table.attrs['failed'] = note
+    table.attrs['formula'] = formula
+    table.attrs['n'] = n_used
+    return table
+
+
 def fit_session(trials, spec='M1', decided_only=False, design=None):
     """
     Fit one session's accuracy and RT models.
@@ -293,12 +313,27 @@ def fit_session(trials, spec='M1', decided_only=False, design=None):
         converged = bool(getattr(fit, 'mle_retvals', {}).get('converged', True))
     except Exception as exc:                      # separation in a thin cell
         print(f'  [{spec}] logistic fit fell back to regularized: {exc}')
-        fit = smf.logit(acc_formula, data=df).fit_regularized(disp=0)
-        converged = False
-    out['acc'] = _tidy(fit, 'acc', int(fit.nobs), converged,
-                       extra={'pseudo_r2': float(getattr(fit, 'prsquared', np.nan)),
-                              'bic': float(getattr(fit, 'bic', np.nan))},
-                       formula=acc_formula)
+        try:
+            fit = smf.logit(acc_formula, data=df).fit_regularized(disp=0)
+            converged = False
+        except Exception as exc2:
+            # The regularized fit can fail the same way. This is what near-ceiling
+            # accuracy looks like: with only a handful of errors the design is quasi-
+            # separated and the Hessian is singular however it is penalised. Report the
+            # minority-class count so the cause is unambiguous, and carry on with the RT
+            # model rather than losing the whole session to one un-fittable DV.
+            n_err = int((df['acc'] == 0).sum()) if 'acc' in df else -1
+            print(f'  [{spec}] accuracy model NOT FITTED: {exc2}. '
+                  f'{n_err} error trials in {len(df)} ({n_err / max(len(df), 1):.2%}) — '
+                  f'too few to identify a logistic fit. Raise arrow_noise_std to move '
+                  f'accuracy off ceiling, or read the RT model only.')
+            out['acc'] = _empty_tidy('acc', acc_formula, len(df), str(exc2))
+            fit = None
+    if fit is not None:
+        out['acc'] = _tidy(fit, 'acc', int(fit.nobs), converged,
+                           extra={'pseudo_r2': float(getattr(fit, 'prsquared', np.nan)),
+                                  'bic': float(getattr(fit, 'bic', np.nan))},
+                           formula=acc_formula)
 
     # RT: OLS on log RT, error trials kept and controlled for (STA_BH convention).
     rt_formula = MODELS[spec]['rt']
@@ -310,7 +345,7 @@ def fit_session(trials, spec='M1', decided_only=False, design=None):
 
     # STA_BH excludes a participant whose fit is degenerate; flag rather than drop.
     for dv in ('acc', 'rt'):
-        if np.nanmax(np.abs(out[dv]['stat'].values)) > 1500:
+        if len(out[dv]) and np.nanmax(np.abs(out[dv]['stat'].values)) > 1500:
             print(f'  [{spec}/{dv}] WARNING: |t| > 1500 — STA_BH would exclude this subject.')
     return out
 

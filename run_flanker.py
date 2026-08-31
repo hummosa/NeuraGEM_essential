@@ -59,7 +59,8 @@ from flanker_analyses import (
     extract_trials, select_trials, lagged_factors, decode_trial_types,
     report_extraction, print_cell_counts,
     plot_accuracy_by_timestep, plot_rt_distribution, plot_rt_continuous,
-    plot_scalar_bars, sync_gating, mirror_to_model, reset_Z_uniform,
+    plot_scalar_bars, plot_trial, example_trial_indices, plot_correlation_structure,
+    sync_gating, mirror_to_model, reset_Z_uniform,
 )
 
 fig_gaussian = False   # whether to overlay a Gaussian fit on RT PMFs
@@ -125,8 +126,76 @@ config.env_seed = 42
 training_noise_std = 0.9
 testing_noise_std = 0.9
 config.arrow_noise_std = training_noise_std
-def update_config(cfg): 
-    pass
+
+# ── Stage-1 oracle gate jitter ────────────────────────────────────────────────
+#
+# True redraws the sharpness of the oracle gate on every training trial, using
+# models.DEFAULT_ORACLE_GATE_JITTER = (0.5, 3.0); pass an explicit (lo, hi) pair to choose
+# the range yourself; None or False reproduces the original fixed oracle. (0.5, 3.0) spans
+# gate peaks of about 0.29 to 0.83 with Z_dim = 5 at softmax_temp = 1.
+#
+# Why it is here. Stage 1 hands the model the target slot as a one-hot, which
+# `latent_activation_function` softmaxes into the gate the RNN actually applies. At
+# softmax_temp = 1 that is the SAME vector on every training trial — peak 0.405 on the
+# target, 0.149 elsewhere — so the weights only ever learn to emit +-1 at that one gate
+# sharpness. Stage 2 then infers Z freely and runs sharper than 0.405 on about three
+# quarters of trials, where the output overshoots to 2-3 against a target of 1. Because
+# the latent update descends squared error, on a congruent trial (whose sign is already
+# right at every gate) the only gradient left is 'make the output smaller', and the update
+# obeys it by flattening the gate. The controller is taught to stop attending by exactly
+# the trials on which attention does not matter, the gate drifts onto slots that carry no
+# arrow, and near-flanker trials — which leave the outer slots empty — pay for it.
+#
+# Jitter separates the two things sharpness was doing. Trained across a range of gate
+# sharpness, the read-out emits the same magnitude at all of them, so sharpness no longer
+# doubles as a gain control and the only gradient left on Z is 'which slot'.
+#
+# Measured effect (3 seeds, 5000 test trials, jitter 0.5-3 against None):
+#   arrow_noise_std 0.4  gate peaks off target 0.297 -> 0.000; near-cong minus far-cong
+#                        accuracy -0.028 -> +0.001; non-responses 12.8% -> 2.2%. Overall
+#                        accuracy goes to 0.98, so the accuracy congruency effect collapses
+#                        to 0.037 on ceiling while the RT one grows, 0.361 -> 0.473
+#                        timesteps among trials that responded. At that ceiling Result 6's
+#                        accuracy GLM has ~40 errors in 5000 trials and cannot be
+#                        identified; it is reported as not fitted and the RT model still
+#                        runs. Another reason to prefer arrow_noise_std = 1.0.
+#   arrow_noise_std 1.0  gate peaks off target 0.087 -> 0.002; congruency effect
+#                        0.227 -> 0.252 in accuracy and 0.428 -> 0.557 timesteps in RT;
+#                        distance effect on incongruent trials -0.138 -> -0.199; distance
+#                        interaction +0.151 -> +0.215. Nothing is lost and the human
+#                        signatures all grow, which is why 1.0 is the level to run at.
+# Only three seeds; confirm with flanker_sweep before treating any of it as a result.
+# The full diagnosis is in flanker_near_cong_diagnostic.py.
+#
+# CONFIRMED, AND IT DOES NOT SAY WHAT THE NUMBERS ABOVE SAY. Those 3-seed measurements were
+# taken against bg_noise_std = 0.1 (see update_config below, which sets it to 0). A 2x2 over
+# jitter x p_corr_by_distance[2] at bg_noise_std = 0 — 20 seeds per cell, 5 noise levels,
+# exports/flanker_random/factorial_corr_jitter — says jitter is NOT as critical as the
+# paragraph above implies, and on balance costs more than it buys at arrow_noise_std 0.9:
+#
+#   near-cong minus far-cong   +0.011 already WITHOUT jitter, so the artifact jitter was
+#                              adopted to fix is fixed by bg_noise_std = 0 on its own
+#   PERI                       +0.073 (human direction) -> -0.188 REVERSED by jitter
+#   distance effect on RT      +0.137 (significant) -> +0.097 (n.s.)
+#   mean focus (Z)             0.342 -> 0.391, i.e. jitter drives Z HIGHER; suspect this
+#                              as the mechanism behind both losses
+#   post-error slowing pes_BI  0.108 (n.s.) -> 0.375 (significant) — the one real gain
+#   human signatures matched   9 of 11 without jitter, 8 of 11 with. Across the whole
+#                              ladder jitter never matches more than the baseline at any
+#                              level; the PERI reversal is mid-ladder only, and at
+#                              arrow_noise_std 0.4 jitter doubles PERI instead
+#
+# Set it to None to run what the factorial found best; it is left on here so this script
+# keeps reproducing the sessions the current figures came from.
+config.oracle_gate_jitter = (0.5, 1.5)      # None/False = off; True = (0.5, 3.0); or a (lo, hi) pair
+
+def update_config(cfg):
+    # Use this to apply to both training and testing configs.
+    # bg_noise_std = 0 is a real departure from the class default (0.1) and is mirrored in
+    # flanker_sweep_config.PRETRAIN_OVERRIDES / TEST_OVERRIDES so the sweep runs the same
+    # simulation as this workbench. Change it in one place and change it in the other.
+    cfg.bg_noise_std = 0
+
 update_config(config)
 # n_pretrain_trials (4000) and post-gating are FlankerTaskConfig defaults; override here
 # only if this run needs to deviate, e.g. config.set_n_pretrain_trials(2000).
@@ -139,6 +208,7 @@ print(f'Stage 1 | seed={config.env_seed}  trials={config.n_pretrain_trials}  '
       f'arrows_duration={config.arrows_duration}')
 print(f'  temporal_loss_weights={[round(w, 3) for w in config.temporal_loss_weights]}')
 print(f'  p_corr_by_distance={config.p_corr_by_distance}')
+print(f'  oracle_gate_jitter={config.oracle_gate_jitter}  softmax_temp={config.softmax_temp}')
 
 logger, model, config, figs = train_model(
     config, seed=config.env_seed,
@@ -238,7 +308,8 @@ test_config.run_name = 'flanker_random_v1'
 test_config.env_seed = config.env_seed
 test_config.set_n_trials(5000)
 test_config.no_of_steps_in_latent_space = 1
-update_config(config)
+update_config(test_config)   # was update_config(config): Stage 2 kept the class default
+                             # bg_noise_std = 0.1 while Stage 1 trained at 0
 test_config.arrow_noise_std = testing_noise_std
 sync_gating(test_config, config)
 mirror_to_model(model, test_config)
@@ -284,6 +355,44 @@ print(f'  congruent n={cong.sum()}  incongruent n={incong.sum()}  '
       f'near n={near.sum()}  far n={far.sum()}')
 print(f'  errors: congruent {(~trials["correct_at_decision"] & cong).sum()}  '
       f'incongruent {(~trials["correct_at_decision"] & incong).sum()}')
+
+#%%
+# ── What a trial looks like ───────────────────────────────────────────────────
+#
+# One example trial per condition: the five slots' noisy observations, the attention
+# gate the trial inherited, and the decision variable that came out. This is the task
+# illustration — it says what "near-incongruent" actually means as a stimulus, and it is
+# the panel to reach for when a cell's summary statistic looks wrong and the question is
+# what the model was shown.
+#
+# It reads from `trials`, i.e. from the logger, and needs no live model: `_log_batch`
+# records the raw UNMASKED input batch, so both the arrow observations and the hidden
+# true direction survive into `logger.inputs`. (This used to be done by breakpointing
+# inside `predictive_learning` and running a script against its locals.)
+
+for _label, _idx in example_trial_indices(trials, test_config, seed=test_config.env_seed):
+    _fig = plot_trial(trials, test_config, trial=_idx)
+    export_fig(_fig, f'flanker_trial_{_label}.pdf', test_config, caption=(
+        f"Example {_label} trial (#{_idx}) from the Stage-2 session. Rows top to bottom: "
+        "each slot's observed value at every timestep (up = rightward), the true target "
+        "direction, the temporal loss weights that impose speed pressure, and the "
+        "decision variable. Colour is role — black target, congruency hue and distance "
+        "shade for the flankers, grey for slots holding no arrow. The dashed line in each "
+        "active row is the noiseless arrow level, so a trace on the wrong side of zero is "
+        "a slot that misled the model. The gate column is the softmaxed attention weight "
+        "the trial inherited (z_in, the gate these outputs were produced under), against "
+        "a dotted line at the uniform value 1/5."))
+
+# The Stage-1 correlation profile that teaches the model near != far. Not a per-trial
+# quantity — it is the config knob whose index-1-vs-2 gap sets the ceiling on any
+# distance effect, shown against the power-law family it was chosen from.
+fig_corr = plot_correlation_structure(config)
+export_fig(fig_corr, 'flanker_correlation_structure.pdf', test_config, caption=(
+    "Stage-1 companion correlation against slot distance: the config's own "
+    "p_corr_by_distance alongside the power-law family p(d) = 1 / (1 + d)^alpha it was "
+    "chosen from. The gap between distance 1 and 2 is the only thing that teaches the "
+    "model near != far, so it sets the ceiling on any distance effect; the profile must "
+    "stay above 0.5 everywhere or the model learns to ignore the companion entirely."))
 
 #%%
 # ── Result 1: congruency × distance ───────────────────────────────────────────

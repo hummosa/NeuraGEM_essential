@@ -229,6 +229,19 @@ def control_effects(trials, m):
     }
     e['att_near_minus_far'] = e['att_near'] - e['att_far']
 
+    # Where the inherited gate actually points, and how sharp it runs. These are the
+    # mechanism behind the spurious near-vs-far accuracy difference: a gate peaking off
+    # the target lands on a slot the display may leave empty, and near and far displays
+    # leave different slots empty, so they pay different prices for the same wandering.
+    # `gate_peak` is comparable to the Stage-1 oracle's own peak — softmax(one-hot /
+    # softmax_temp), 0.405 with five slots at temp 1 — which is the only sharpness the
+    # weights were ever calibrated at unless config.oracle_gate_jitter is set.
+    z_in = trials['z_in']
+    ok   = np.isfinite(z_in).all(axis=1)
+    e['gate_off_centre'] = (float(1.0 - (z_in[ok].argmax(axis=1) == CENTRE_SLOT).mean())
+                            if ok.any() else np.nan)
+    e['gate_peak'] = float(np.median(z_in[ok].max(axis=1))) if ok.any() else np.nan
+
     # The update is measured on the trial that produced it, not the one after.
     for d in DISTANCES:
         for on, om in (('err', ~m['corr']), ('corr', m['corr'])):

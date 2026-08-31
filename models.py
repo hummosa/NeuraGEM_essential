@@ -6,6 +6,40 @@ import copy
 from typing import List, Optional, Tuple, Union
 
 
+#: Used when config.oracle_gate_jitter is True. Scales the oracle one-hot before the
+#: softmax, so with Z_dim=5 and softmax_temp=1 this spans gate peaks of about 0.29 to 0.83 —
+#: roughly the range a self-inferred Z visits at test time.
+DEFAULT_ORACLE_GATE_JITTER = (0.5, 3.0)
+
+
+def _normalize_gate_jitter(value) -> Optional[Tuple[float, float]]:
+    """Read config.oracle_gate_jitter into (lo, hi), or None when it is off.
+
+    Accepts None/False (off), True (DEFAULT_ORACLE_GATE_JITTER), or a (lo, hi) pair.
+    Anything else raises here rather than failing inside the forward pass — the whole
+    point is that a bad value is visible before 4000 training trials have run.
+    """
+    if value is None or value is False:
+        return None
+    if value is True:
+        return DEFAULT_ORACLE_GATE_JITTER
+    try:
+        lo, hi = (float(v) for v in value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"config.oracle_gate_jitter must be None/False (off), True "
+            f"(the default range {DEFAULT_ORACLE_GATE_JITTER}), or a (lo, hi) pair of "
+            f"positive scale factors. Got {value!r}."
+        ) from None
+    if not (0.0 < lo <= hi):
+        raise ValueError(
+            f"config.oracle_gate_jitter needs 0 < lo <= hi; got ({lo}, {hi}). The values "
+            f"scale the oracle one-hot before the softmax, so they must be positive: 1.0 "
+            f"reproduces the un-jittered gate, larger is sharper, smaller is flatter."
+        )
+    return (lo, hi)
+
+
 class RNN_with_latent(nn.Module):
     """
     Recurrent model with an inference-time latent variable Z that gates the RNN dynamics.
@@ -62,6 +96,9 @@ class RNN_with_latent(nn.Module):
         self.oracle_context_range = (
             None if oracle_range is None else (float(oracle_range[0]), float(oracle_range[1]))
         )
+        # Oracle gate jitter (see Config.oracle_gate_jitter). Re-read from config on every
+        # sample, so a stage can switch it off by assigning to model.config.
+        self._oracle_scale = 1.0
         self._validate_oracle_encoding(config)
 
         model_input_size = config.input_size + (self.Z_dim if self.use_add_gating else 0)
@@ -339,6 +376,8 @@ class RNN_with_latent(nn.Module):
 
     def _validate_oracle_encoding(self, config) -> None:
         """Check the oracle encoding against Z_dim at construction, not mid-training."""
+        # Raises on a malformed oracle_gate_jitter now rather than inside the forward pass.
+        _normalize_gate_jitter(getattr(config, "oracle_gate_jitter", None))
         if getattr(config, "what_latent_to_use", "self") != "context_ids":
             return
         enc = self.oracle_context_encoding
@@ -388,7 +427,9 @@ class RNN_with_latent(nn.Module):
         if enc == "one_hot":
             slots = self._context_ids_to_slots(ids)
             latent = torch.zeros(*ids.shape[:-1], self.Z_dim, device=self.device)
-            latent.scatter_(dim=-1, index=slots, value=1.0)
+            # value is 1.0 unless oracle_gate_jitter is set, in which case it is this
+            # trial's sharpness factor; the softmax below turns it into the gate.
+            latent.scatter_(dim=-1, index=slots, value=float(getattr(self, "_oracle_scale", 1.0)))
             return self.latent_activation_function(latent)
 
         lo, hi = self.oracle_context_range
@@ -428,9 +469,31 @@ class RNN_with_latent(nn.Module):
         return slots
 
 
+    def _sample_oracle_scale(self, what_latent: str) -> None:
+        """Draw this trial's oracle gate sharpness (see Config.oracle_gate_jitter).
+
+        Called once per forward pass, so the factor is shared across the trial's timesteps —
+        the oracle is a per-trial quantity and a per-timestep draw would make it noise.
+        Skipped unless the oracle path is in use AND the weights are plastic: jitter is a
+        training-time device, and a frozen-weight stage must see the nominal gate.
+        """
+        if (what_latent != "context_ids"
+                or self.oracle_context_encoding != "one_hot"
+                or int(getattr(self.config, "no_of_steps_in_weight_space", 1)) <= 0):
+            self._oracle_scale = 1.0
+            return
+        rng_range = _normalize_gate_jitter(
+            getattr(self.config, "oracle_gate_jitter", None))
+        if rng_range is None:
+            self._oracle_scale = 1.0
+            return
+        lo, hi = rng_range
+        self._oracle_scale = float(np.random.uniform(lo, hi))
+
     def combine_input_with_latent(self, input: torch.Tensor, what_latent: str = "self",
                                    taskID: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Concatenate activated Z to input along the feature dimension (additive gating path)."""
+        self._sample_oracle_scale(what_latent)
         batch_size, seq_len, _ = input.shape
         latent = self._prepare_latent_tensor(batch_size, seq_len, what_latent, taskID)
         processed_input = input
@@ -508,6 +571,7 @@ class RNN_with_latent(nn.Module):
             (h, c):     final hidden and cell states.
         """
         batch_size, seq_len, _ = input.shape
+        self._sample_oracle_scale(what_latent)
         # Start-of-window state: carried end state (stateful mode) > fresh init.
         # Read-only here — re-forwarding the same window (the LU steps) must start from
         # the same h0 until predictive_learning() commits via set_hidden_carry().

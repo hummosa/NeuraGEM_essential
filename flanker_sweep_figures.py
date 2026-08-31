@@ -65,7 +65,8 @@ from flanker_sweep_config import NOISE_LADDER, VARIANTS
 RUN = None
 
 DEFAULT_VARIANT = 'noise07' # noise10
-
+RT_THRESHOLD = None      # this imports value from flanker_sweep_config, but can be overridden here for a different threshold
+RT_THRESHOLD = 0.2
 
 def _stamp(fig, text, variant, n):
     fig.suptitle(f'{text} — {variant}, {n} seeds')
@@ -201,11 +202,18 @@ def fig_history(effects, out_dir, variant):
     shades = ['#c6dbef', '#6baed6', '#3182bd', '#08519c']
     hist   = ['CC', 'IC', 'CI', 'II']
 
+    # Accuracy panels are clipped at 0.4 with chance marked at 0.5, matching
+    # run_flanker.py's single-session version of this figure. From zero the four cells
+    # differ by a few percent of the axis and the conflict-adaptation step — the whole
+    # point of the panel — is invisible.
+    acc_ylim = (0.4, 1.02)
     fig, axes = bar_row([
         ([(_stack(effects, f'acc_{h}_to_I'), h, c) for h, c in zip(hist, shades)],
-         dict(ylabel='Accuracy', connect=True, title='→ incongruent')),
+         dict(ylabel='Accuracy', connect=True, title='→ incongruent',
+              baseline=0.5, ylim=acc_ylim)),
         ([(_stack(effects, f'acc_{h}_to_C'), h, c) for h, c in zip(hist, shades)],
-         dict(ylabel='Accuracy', connect=True, title='→ congruent')),
+         dict(ylabel='Accuracy', connect=True, title='→ congruent',
+              baseline=0.5, ylim=acc_ylim)),
         ([(_stack(effects, f'rt_{h}_to_I'), h, c) for h, c in zip(hist, shades)],
          dict(ylabel='RT (timesteps)', connect=True, title='→ incongruent')),
         ([(_stack(effects, f'rt_{h}_to_C'), h, c) for h, c in zip(hist, shades)],
@@ -287,7 +295,13 @@ def _effect_size(values, sign):
     """Cohen's d across seeds, flipped so positive always means human-consistent."""
     v = np.asarray(values, dtype=float) * sign
     v = v[~np.isnan(v)]
-    return v / v.std(ddof=1) if len(v) > 1 else np.array([])
+    if len(v) < 2:
+        return np.array([])
+    sd = v.std(ddof=1)
+    # An effect identical in every seed has no across-seed SD to divide by. That happens
+    # once a cell is on ceiling (every seed at 1.000), where the honest answer is "no
+    # variance to standardise", not an infinite effect size.
+    return v / sd if sd > 0 else np.array([])
 
 
 def fig_scorecard(effects, out_dir, variant):

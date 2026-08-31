@@ -137,9 +137,89 @@ follows is what each knob *does* and why it matters, which does not drift. For a
 | `temporal_decay_factor` | Speed pressure; 0 = uniform. Must be rescaled with `arrows_duration` |
 | `latent_dims` | `[5]` — Z_dim matches the number of slots, one unit each |
 | `latent_activation` | `'softmax'`, applied across slots, so Z is a normalised attention gate |
+| `oracle_gate_jitter` | `True` (default range), an explicit `(lo, hi)`, or `None`/`False`. Redraws the sharpness of the Stage-1 oracle gate every trial. Off by default; see "The oracle gate is a constant" below |
 | `Z_lr`, `Z_optimizer`, `Z_decay`, `Z_decay_mode` | The latent update. `Z_decay` sets *where* the control state settles (it pulls raw Z toward zero, and zero is a uniform softmax); `Z_lr` sets how fast it moves and how much it jitters, not its operating point. `Z_lr` is on a scale set by the optimizer — an SGD value and an Adam value are not comparable |
 | `hidden_size` | LSTM units |
 | `p_congruent` / `p_near` | Stage 2 trial-type proportions |
+
+---
+
+### The oracle gate is a constant, and Stage 2's is not
+
+Stage 1 hands the model the target slot as a one-hot, which `latent_activation_function`
+softmaxes into the gate the RNN applies. At `softmax_temp = 1` with `Z_dim = 5` that is the
+same vector on **every** training trial: 0.405 on the target and 0.149 on each of the other
+four. Stage 1 varies *which* slot the gate points at — the target rotates — but never *how
+sharply*. Stage 2 varies both: the inferred gate's peak spans roughly 0.29 to 0.99 across
+trials and is sharper than 0.405 on about three quarters of them.
+
+That gap has a specific consequence. The weights are calibrated to emit ±1 at one gate
+sharpness, so at a sharper gate the output overshoots — about 2.1 at peak 0.65 and 3.3 at
+peak 0.97, against a target of 1.0. The latent update descends squared error to ±1, so on a
+**congruent** trial, whose sign is already correct at every gate, the only remaining
+gradient is "make the output smaller", and the update satisfies it by flattening the gate.
+Half the list therefore teaches the controller to stop attending. The gate ends up peaking
+off the target on a third or more of trials, and because a near display leaves slots 0 and 4
+empty while a far display leaves 1 and 3 empty, the two conditions pay different prices for
+it — which is where the spurious near-vs-far accuracy difference at low `arrow_noise_std`
+comes from. `flanker_near_cong_diagnostic.py` has the full chain of evidence.
+
+`config.oracle_gate_jitter = True` (or an explicit `(lo, hi)`) scales the one-hot by a factor drawn per trial before
+the softmax, so the read-out is trained across a range of gate sharpness. Sharpness then
+stops doubling as a gain control and the gradient on Z carries only "which slot". The factor
+is drawn once per forward pass, shared across the trial's timesteps, and applied only on the
+oracle path while weights are plastic — an inference stage using `what_latent_to_use='self'`
+is untouched. `(0.5, 3.0)` spans gate peaks of about 0.29 to 0.83.
+
+Measured against `None`, 3 seeds, 5000 test trials:
+
+| | `arrow_noise_std` 0.4 | | `arrow_noise_std` 1.0 | |
+|---|---|---|---|---|
+| | off | jitter 0.5–3 | off | jitter 0.5–3 |
+| overall accuracy | 0.871 | 0.981 | 0.837 | 0.844 |
+| gate peaks off target | 0.297 | **0.000** | 0.087 | **0.002** |
+| near-cong − far-cong accuracy | −0.028 | **+0.001** | +0.013 | +0.016 |
+| distance effect, incongruent | −0.069 | −0.048 | −0.138 | **−0.199** |
+| distance interaction | +0.041 | +0.049 | +0.151 | **+0.215** |
+| congruency effect, accuracy | 0.195 | 0.037 | 0.227 | **0.252** |
+| congruency effect, RT (decided) | 0.361 | 0.473 | 0.428 | **0.557** |
+| non-responses | 0.128 | **0.022** | 0.085 | 0.066 |
+
+At 0.4 the accuracy congruency effect collapses only because accuracy hits ceiling (0.98);
+the RT effect grows. Three seeds — confirm through `flanker_sweep.py` before reporting any
+of it.
+
+### Confirmed at 20 seeds, and it downgrades the case for jitter
+
+Every number in the table above was measured with `bg_noise_std = 0.1`. `run_flanker.py`
+sets it to 0, and that turns out to do jitter's main job for it. A 2×2 over
+`oracle_gate_jitter` × `p_corr_by_distance[2]`, 20 seeds per cell across the whole noise
+ladder (`exports/flanker_random/factorial_corr_jitter`), at `arrow_noise_std` 0.9:
+
+| | no jitter | jitter 0.5–1.5 | |
+|---|---|---|---|
+| near-cong − far-cong accuracy | **+0.011** | +0.017 | already fixed without jitter |
+| PERI | **+0.073** | **−0.188** | jitter reverses it, away from humans |
+| distance effect, RT incongruent | **+0.137** | +0.097 | loses significance |
+| post-error slowing (`pes_BI`) | 0.108 | **0.375** | jitter's one real gain |
+| mean focus (Z) | 0.342 | 0.391 | jitter drives the control state higher |
+| human signatures matched | **9 / 11** | 8 / 11 | |
+
+So the spurious near-vs-far difference the section above blames on constant gate sharpness
+is at least as well explained by background noise in the empty slots: remove that and the
+artifact goes without touching the oracle. Jitter is not as critical as this section reads,
+and on balance it costs more than it buys — the higher Z it produces is the thing to suspect
+for the reversed PERI and the weakened RT distance effect. `p_corr_by_distance[2] = 0.58`
+was tested in the same factorial and is worse than 0.52 on both arms, roughly halving the
+incongruent distance effect.
+
+Across the whole ladder jitter never matches **more** signatures than the baseline at any
+noise level — it ties at 1.3 and 0.7 (and is cleaner at 0.7: 0 signatures opposite vs 1)
+and loses at 1.0, 0.9 and 0.4. Its one consistent effect is raising mean focus by about
+0.05 at every level. The PERI reversal is mid-ladder: at `arrow_noise_std` 0.4 jitter
+roughly doubles PERI instead (0.397 → 0.936), so the sign of its effect on PERI tracks
+stimulus noise rather than being fixed.
+
 
 ---
 
@@ -208,7 +288,7 @@ Returns a dict of per-trial aligned arrays. Key groups:
 
 | Group | Keys |
 |---|---|
-| Behaviour | `correct` (n,ad), `output_traj`, `signed_output`, `true_dir`, `is_correct`, `response_side`, `correct_at_decision`, `resp_at_decision`, `rt`, `rt_interp` (never NaN), `decided`, `cross_idx` |
+| Behaviour | `correct` (n,ad), `output_traj`, `output_full` (n,ad,output_size), `signed_output`, `true_dir`, `is_correct`, `response_side`, `correct_at_decision`, `resp_at_decision`, `rt`, `rt_interp` (never NaN), `decided`, `cross_idx` |
 | Conditions | `trial_type` (hlcids), `context_id`, `trial_idx` |
 | Latent | `z_raw`, `z_act`, `z_in`, `delta_z`, `focus`, `focus_in`, `delta_focus`, `z_traj`, `z_within_trial_spread` |
 | Optional | `pe` (pre-LU prediction error), `z_grad` (aggregated dL/dZ) — `None` if not logged |
@@ -264,6 +344,54 @@ ones), which this curve counts and the emitted response does not. Its last point
 `measure='accuracy_final'`; the bar panels use `measure='accuracy'` (`correct_at_decision`),
 so the two differ by a few points and by more on incongruent trials.
 
+### Single-trial visualisation
+
+```python
+plot_trial(trials, config, trial=0, show_gate=True, show_loss_weights=True,
+           show_slot_channels=False)                    # -> fig
+export_trial_figure(trials, config, trial, path=None)   # same, straight to PDF
+example_trial_indices(trials, config, seed=0)           # [(label, index), ...], one per cell
+trial_slot_roles(trials, config, trial)                 # target / flankers / empty
+plot_correlation_structure(config)                      # the Stage-1 p_corr_by_distance knob
+```
+
+`plot_trial` is the task illustration: one trial as five slot-observation rows (up =
+rightward, dashed line = the noiseless arrow level, so a trace on the wrong side of zero
+is a slot that misled the model), the true direction, the temporal loss weights, and the
+decision variable with its threshold crossing marked. Colour is **role**, not slot
+identity — black target, congruency hue and distance shade for the flankers, grey for
+slots holding no arrow. The gate column is the softmaxed attention weight, one bar per
+slot, against a dotted line at the uniform value `1/n_slots`. Slots holding no arrow are
+drawn, not omitted — at `bg_noise_std = 0` their trace is identically zero, so it is drawn
+over the dotted zero reference and the row is labelled `empty`.
+
+**Only the response output dim is plotted.** The model is a next-frame predictor with
+`output_size == input_size == 6`, but `output_loss_mask = [0,0,0,0,0,1]` trains only the
+direction dim, so output dims 0–4 — the slot channels — are never trained. Across a
+session their SD is ≈0.1 against observations with SD ≈0.9, and their correlation with the
+slot they nominally predict runs 0.04–0.56 with inconsistent sign: drift, not signal.
+`show_slot_channels=True` draws them faintly for debugging the read-out.
+
+**It reads from the logger, not from a live model.** This was previously done by
+breakpointing inside `predictive_learning` and evaluating a script against its locals,
+which is not necessary: `_log_batch` logs `inputs` — the raw **unmasked** batch tensor —
+rather than the masked, time-shifted `model_inputs` the RNN is fed, so both the arrow
+observations and the hidden true direction survive into `logger.inputs`, and
+`predicted_outputs` keeps every output dim. Two alignment facts the panels depend on:
+
+- `predict_first_frame=True` means the RNN at timestep *t* is fed the stimulus from
+  *t−1*. The stimulus rows are drawn at the timestep the stimulus was **presented**, so
+  the output at *t* responds to the arrows drawn at *t−1* and earlier, never at *t*.
+- `update_latent_before_weights=False` means the logged outputs were produced under the Z
+  the trial **inherited**. The gate column therefore shows `z_in`, not `z_act` — see
+  convention 2 above. It is blank on trial 0, which inherited nothing.
+
+Slot roles are read from the labels, with one exception: in Stage 1 the companion slot is
+drawn per trial and never logged, so it is recovered as the non-target slot with the
+largest |mean| over the trial. That is exact at `bg_noise_std = 0` (what `run_flanker.py`
+and the sweep run) and right on 99.5% / 98.1% of trials at `arrow_noise_std` 0.9 / 1.3
+with `bg_noise_std = 0.1`.
+
 `plot_scalar_bars` measures: `'accuracy'`, `'accuracy_final'`, `'rt'`, `'rt_interp'`,
 `'focus'`, `'focus_in'`, `'delta_focus'`, `'pe'`, `('z', d)`, `('z_in', d)`,
 `('delta_z', d)`, `('z_raw', d)`. Legacy `('z_start', d)`, `('z_end', d)` and bare `int`
@@ -285,6 +413,8 @@ reset_Z_uniform(model, scale=0.2, seed=None)   # re-seed Z, shared across timest
 | Figure | Question |
 |---|---|
 | `flanker_pretrain_results.pdf`, `flanker_pretrain_sanity.pdf` | Did Stage 1 train? Learning curve, accuracy by training third, RT (diagnostic, not a result) |
+| `flanker_trial_<cell>.pdf` | What a trial of each condition actually looks like: slot observations, inherited gate, decision variable |
+| `flanker_correlation_structure.pdf` | The Stage-1 `p_corr_by_distance` profile that teaches the model near ≠ far |
 | `flanker_congruency_distance.pdf` / `_bars.pdf` | Congruency effect and the near > far interaction |
 | `flanker_session_and_rt_by_outcome.pdf` | Accuracy across the frozen session; RT for correct vs error within each congruency |
 | `flanker_accumulation.pdf` | Within-trial evidence accumulation, sign-normalised — the BPL analogue |
