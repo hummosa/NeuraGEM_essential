@@ -677,7 +677,12 @@ class FlankerTaskConfig(Config):
         self.post_gating = True
 
         # ── Trial structure (user-facing names) ───────────────────────────────
-        self.arrows_duration          = 5    # timesteps per trial → sets seq_len & stride
+        # 10 timesteps -> 9 usable response steps. It was 5 (4 response steps), which made
+        # the interpolated RT density bumpy and left no room for a delayed target onset;
+        # both were the blocker named in docs/flanker_task.md "Deferred work". Changing it
+        # after construction requires set_arrows_duration(), which keeps seq_len, stride,
+        # the block counts and temporal_loss_weights in sync — a bare assignment does not.
+        self.arrows_duration          = 10   # timesteps per trial → sets seq_len & stride
         self.trials_per_context_block = 2   # trials with the same target slot per block
         # Total Stage-1 trials. Session length is specified in trials, not timesteps, so
         # it stays correct if arrows_duration ever changes; call set_n_pretrain_trials()
@@ -699,9 +704,34 @@ class FlankerTaskConfig(Config):
 
         # ── Speed pressure: temporal discount loss (Option A) ─────────────────
         # temporal_decay_factor=0 → equal weights; larger → concentrate at t=1.
+        #
+        # lambda is a PER-TIMESTEP decay, so it must be rescaled whenever arrows_duration
+        # moves or the tail of a longer window collapses to zero. Parameterise by the
+        # end-of-window weight: exp(-lambda * (n_response_steps - 1)). The 5-step trial ran
+        # lambda=0.3 over 4 response steps, i.e. an end weight of exp(-0.9) = 0.407; 0.112
+        # preserves that same 0.407 over the 9 response steps of the 10-step trial.
         self.response_start_timestep = 1
-        self.temporal_decay_factor   = 0.3
+        self.temporal_decay_factor   = 0.112
         self._set_temporal_weights()    # populates self.temporal_loss_weights
+
+        # ── Target onset delay ("flankers first") ─────────────────────────────
+        # Timesteps by which the TARGET arrow's onset is delayed. The flankers are present
+        # from frame 0 as usual; for the first `target_delay` frames the target slot carries
+        # background noise only. 0 (the default) is simultaneous onset, i.e. the task every
+        # result before this was measured on.
+        #
+        # It is deliberately inert everywhere except FlankerRandomTrialsDataset: the human
+        # onset asynchrony is a TEST-stage probe of a read-out trained on simultaneous
+        # onset, so FlankerTaskDataset asserts it is 0.
+        #
+        # Nothing derived depends on it, and that is the design rather than an oversight.
+        # response_start_timestep stays 1 and temporal_loss_weights are untouched, so the
+        # model is asked for the target direction from t=1 whether or not the target has
+        # arrived, and RT is measured from trial start. Zeroing the loss over the pre-target
+        # window, or re-referencing RT to onset, would normalise away the effect being
+        # measured — the question is precisely whether the response is DELAYED when the
+        # target is late, and whether the flankers alone are enough to answer early.
+        self.target_delay            = 0
 
         # ── Flanker stimulus parameters ───────────────────────────────────────
         self.n_slots            = 5
@@ -768,6 +798,40 @@ class FlankerTaskConfig(Config):
         self.no_of_blocks         = self.n_training_contexts
         self.blocked_phase_length = self.no_of_blocks * self.block_size
         return self
+
+    def set_arrows_duration(self, arrows_duration):
+        """Set the trial length in timesteps and keep every derived field consistent.
+
+        seq_len, stride and block_size are all computed from arrows_duration at
+        construction, and temporal_loss_weights is built to that length, so assigning the
+        attribute on its own leaves the config internally inconsistent — the model would
+        run 10-step trials against a 5-long weight vector and a stride of 5. That is not a
+        hypothetical: flanker_sweep applies its overrides with a plain setattr, so this is
+        the entry point a sweep must use to vary it.
+        """
+        self.arrows_duration      = int(arrows_duration)
+        self.seq_len              = self.arrows_duration
+        self.stride               = self.arrows_duration
+        self.block_size           = self.trials_per_context_block * self.arrows_duration
+        self.blocked_phase_length = self.no_of_blocks * self.block_size
+        self._set_temporal_weights()
+        return self
+
+    def _validate(self):
+        super()._validate()
+        # Needs at least one response step, and the target has to reach an output. With
+        # predict_first_frame=True the model at timestep t has seen frames 0..t-1, so a
+        # target appearing at frame `target_delay` first influences the output at
+        # t = target_delay + 1; a delay of arrows_duration - 1 would never be seen at all.
+        assert 0 <= self.target_delay <= self.arrows_duration - 2, (
+            f'target_delay={self.target_delay} must be in [0, arrows_duration - 2] '
+            f'(arrows_duration={self.arrows_duration}), or the target never reaches an output.'
+        )
+        assert len(self.temporal_loss_weights) == self.arrows_duration == self.seq_len, (
+            f'temporal_loss_weights has {len(self.temporal_loss_weights)} entries for '
+            f'arrows_duration={self.arrows_duration}, seq_len={self.seq_len}. '
+            f'Use set_arrows_duration() rather than assigning arrows_duration directly.'
+        )
 
     def _set_temporal_weights(self):
         """Compute temporal_loss_weights from response_start_timestep and temporal_decay_factor."""
@@ -859,6 +923,22 @@ class FlankerRandomTrialsConfig(FlankerTaskConfig):
         self.n_training_contexts  = self.n_trials
         self.no_of_blocks         = self.n_trials
         self.blocked_phase_length = self.n_trials * self.arrows_duration
+        return self
+
+    def set_arrows_duration(self, arrows_duration):
+        """Trial length, with this stage's own block derivation.
+
+        One DataLoader batch is exactly one trial here, so block_size is arrows_duration
+        rather than trials_per_context_block * arrows_duration, and the session length is
+        counted in trials. The base implementation would silently give this stage two
+        trials per batch and therefore one Z update per two trials.
+        """
+        self.arrows_duration      = int(arrows_duration)
+        self.seq_len              = self.arrows_duration
+        self.stride               = self.arrows_duration
+        self.block_size           = self.arrows_duration
+        self.blocked_phase_length = self.n_trials * self.arrows_duration
+        self._set_temporal_weights()
         return self
 
 

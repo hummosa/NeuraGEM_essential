@@ -69,8 +69,9 @@ from flanker_figure_utils import (CELLS, COL, band, bar_grid, bar_row, bars_with
                                   series, share_ylim, spec_post_conflict,
                                   spec_rt_by_outcome, spec_z_slot_update, sweep_root,
                                   _has, _interactive_kernel, _stack, _stack_curve)
+from flanker_analyses import _timestep_ticks
 from flanker_metrics import SIGNATURES
-from flanker_sweep_config import NOISE_LADDER, VARIANTS
+from flanker_sweep_config import DELAY_LADDER, NOISE_LADDER, VARIANTS
 
 #: Sweep run to read and write. None follows flanker_sweep_config.RUN_NAME;
 #: see flanker_sweep.SWEEP_RUNS for what each run contains.
@@ -158,9 +159,17 @@ def fig_within_trial(curves, out_dir, variant):
     axes[2].set_ylabel('Congruency effect on P(target)')
     compact_legend(axes[2], loc='lower right')
 
+    # The delay is a property of the session, identical across seeds of one variant.
+    delay = int(curves[0].get('target_delay', 0) or 0)
     for ax in axes:
-        ax.set_xticks(ts)
+        ax.set_xticks(_timestep_ticks(ad))
         ax.set_xlabel('Timestep within trial')
+        if delay:
+            # With predict_first_frame=True the target first reaches an output at
+            # delay + 1. Before that line the only evidence is the flankers, so the
+            # incongruent traces being on the wrong side of zero there IS the effect.
+            ax.axvline(delay + 1, color='k', linewidth=0.8, linestyle='-.', alpha=0.45,
+                       zorder=0)
 
     _stamp(fig, 'Within-trial dynamics', variant, len(curves))
     fig.tight_layout()
@@ -394,6 +403,120 @@ def fig_scorecard(effects, out_dir, variant):
 
 # ── 8. The noise ladder ───────────────────────────────────────────────────────
 
+def fig_ladder_series(out_dir, ladder, panels, xlabel, fname, title,
+                      invert=True):
+    """Every panel in `panels` plotted against a ladder of variants.
+
+    `ladder` is a list of (variant_name, x_value). Each panel is either a key into the
+    per-seed effects dict, or a tuple of (key, label, colour) triples sharing one axis.
+    Factored out of fig_noise_series so a second ladder — the target-onset delay — can
+    reuse the machinery with its own x axis and its own panel set.
+    """
+    levels, per_level = [], []
+    for name, x in ladder:
+        effects = collect_effects(name)
+        if effects:
+            levels.append(x)
+            per_level.append(effects)
+    if len(levels) < 2:
+        print(f'{fname} needs at least two levels on disk — skipping.')
+        return None
+
+    def stack(key):
+        return np.array([_stack(e, key) for e in per_level])       # (levels, seeds)
+
+    n = len(panels)
+    ncol = 4 if n > 4 else n
+    nrow = (n + ncol - 1) // ncol
+    fig, axes = plt.subplots(nrow, ncol, figsize=FigSize.grid(nrow, ncol, panel=FigSize.wide))
+    axes = np.atleast_1d(axes).ravel()
+    for ax, (key, ylabel, ref) in zip(axes, panels):
+        if isinstance(key, tuple):        # multiple series sharing one panel
+            for k, label, color in key:
+                series(ax, levels, stack(k), label, color, seed_lines=False)
+            compact_legend(ax, loc='best')
+        else:
+            series(ax, levels, stack(key), None, COL['incong'], seed_lines=True)
+        if ref is not None:
+            ax.axhline(ref, color='k', linewidth=0.6, linestyle=':', alpha=0.6)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(levels)
+        ax.tick_params(axis='x', labelsize=5)
+        if invert:
+            ax.invert_xaxis()
+    for ax in axes[n:]:
+        ax.set_visible(False)
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/{fname}')
+
+
+# ── 8b. The target-onset delay ladder ─────────────────────────────────────────
+
+#: RT first, because the delay's primary prediction is about WHEN the model responds.
+#: The two RT levels share a panel deliberately: a contrast alone cannot say whether
+#: congruent got faster or incongruent got slower, and with a delayed target the
+#: interesting case is congruent RT barely moving because the flankers already carry
+#: the answer.
+DELAY_PANELS = [
+    ('cong_effect_rt', 'Congruency effect on RT', 0.0),
+    ((('rt_cong', 'congruent', COL['cong']),
+      ('rt_incong', 'incongruent', COL['incong'])),
+     'RT (timesteps from trial start)', None),
+    ('cong_effect_acc', 'Congruency effect on accuracy', 0.0),
+    ('undecided_frac', 'Trials that never decided', None),
+    ((('acc_cong', 'congruent', COL['cong']),
+      ('acc_incong', 'incongruent', COL['incong'])),
+     'Accuracy', 0.5),
+    ('fasterr_incong_decided', 'Errors faster than correct (inc.)', 0.0),
+    ('peri', 'Interference drop (PERI)', 0.0),
+    ('pes_BI', 'Post-error slowing (PES)', None),
+]
+
+
+def fig_delay_series(out_dir, ladder=None):
+    """Every RT-relevant signature against the target-onset delay.
+
+    The prediction the delay tests: responses are later when the target is later, but
+    congruent trials are held up less than incongruent ones, because during the delay the
+    flankers alone already point at the answer. So `cong_effect_rt` should grow with delay
+    while congruent RT rises least — and incongruent accuracy should fall as early
+    flanker-driven responses become errors.
+
+    x is NOT inverted here: delay increases left to right, in the direction of the
+    manipulation, unlike the noise ladder which reads cleanest with the clean end on the left.
+    """
+    return fig_ladder_series(
+        out_dir, ladder or DELAY_LADDER, DELAY_PANELS,
+        xlabel='target_delay (timesteps)',
+        fname='group_12_delay_series.pdf',
+        title='The target-onset delay — does a later target mean a later response?',
+        invert=False)
+
+
+#: What changes behaviourally (top row) and why (bottom row). The paired-series panels
+#: give the cell levels rather than only a contrast: a difference score that shrinks cannot
+#: say whether interference fell or the task simply got easier.
+NOISE_PANELS = [
+    ('pes_BI',                  'Post-error slowing (PES)',        None),
+    ('pia_BI',                  'Post-error accuracy (PIA)',       0.0),
+    ('peri',                    'Interference drop (PERI)',        0.0),
+    ((('dist_effect_acc_cong', 'congruent', COL['cong']),
+      ('dist_effect_acc_incong', 'incongruent', COL['incong'])),
+     'Accuracy: near − far', 0.0),
+    ('dfocus_err_noisy',        'Δ focus after a noise-driven error', 0.0),
+    ('frac_err_noisy',          'Fraction of noise-driven errors', 0.5),
+    ((('acc_near_cong', 'near-congruent', COL['near_cong']),
+      ('acc_far_cong', 'far-congruent', COL['far_cong'])),
+     'Accuracy: congruent cells', 0.5),
+    ((('acc_near_incong', 'near-incongruent', COL['near_incong']),
+      ('acc_far_incong', 'far-incongruent', COL['far_incong'])),
+     'Accuracy: incongruent cells', 0.5),
+]
+
+
 def fig_noise_series(out_dir, ladder=None):
     """
     Every signature against stimulus noise, with the mechanism underneath.
@@ -405,63 +528,15 @@ def fig_noise_series(out_dir, ladder=None):
     error teaches the model to attend the target *less*, and the post-error signatures
     invert. The bottom-left panel is the load-bearing one: where Δ focus after a noise-driven
     error crosses zero is where the post-error effects should come back.
+
+    x is inverted: cleaner on the left, noisier on the right.
     """
-    ladder = ladder or NOISE_LADDER
-    levels, per_level = [], []
-    for name, noise in ladder:
-        effects = collect_effects(name)
-        if effects:
-            levels.append(noise)
-            per_level.append(effects)
-    if len(levels) < 2:
-        print('Noise series needs at least two levels on disk — skipping.')
-        return None
-
-    def stack(key):
-        return np.array([_stack(e, key) for e in per_level])       # (levels, seeds)
-
-    panels = [
-        ('pes_BI',                  'Post-error slowing (PES)',        None),
-        ('pia_BI',                  'Post-error accuracy (PIA)',       0.0),
-        ('peri',                    'Interference drop (PERI)',        0.0),
-        ((('dist_effect_acc_cong', 'congruent', COL['cong']),
-          ('dist_effect_acc_incong', 'incongruent', COL['incong'])),
-         'Accuracy: near − far', 0.0),
-        ('dfocus_err_noisy',        'Δ focus after a noise-driven error', 0.0),
-        ('frac_err_noisy',          'Fraction of noise-driven errors', 0.5),
-        # The cell accuracies themselves rather than a contrast, congruent pair and
-        # incongruent pair. A difference score that shrinks cannot say whether interference
-        # fell or the task got easier; these two panels can, because the levels are visible.
-        ((('acc_near_cong', 'near-congruent', COL['near_cong']),
-          ('acc_far_cong', 'far-congruent', COL['far_cong'])),
-         'Accuracy: congruent cells', 0.5),
-        # Both incongruent cells: same idea, so a change in the near-far contrast can be
-        # attributed to the near cell or the far one.
-        ((('acc_near_incong', 'near-incongruent', COL['near_incong']),
-          ('acc_far_incong', 'far-incongruent', COL['far_incong'])),
-         'Accuracy: incongruent cells', 0.5),
-    ]
-    fig, axes = plt.subplots(2, 4, figsize=FigSize.grid(2, 4, panel=FigSize.wide))
-    for ax, (key, ylabel, ref) in zip(axes.ravel(), panels):
-        if isinstance(key, tuple):        # multiple series sharing one panel
-            # Per-seed lines are left off here: two series x 20 seeds is 40 threads of
-            # spaghetti, and the comparison between the two means is the point.
-            for k, label, color in key:
-                series(ax, levels, stack(k), label, color, seed_lines=False)
-            compact_legend(ax, loc='best')
-        else:
-            series(ax, levels, stack(key), None, COL['incong'], seed_lines=True)
-        if ref is not None:
-            ax.axhline(ref, color='k', linewidth=0.6, linestyle=':', alpha=0.6)
-        ax.set_xlabel('arrow_noise_std')
-        ax.set_ylabel(ylabel)
-        ax.set_xticks(levels)
-        ax.tick_params(axis='x', labelsize=5)     # the ladder is dense once it has 7 rungs
-        ax.invert_xaxis()                 # cleaner on the left, noisier on the right
-
-    fig.suptitle('The noise ladder — behaviour above, the mechanism below')
-    fig.tight_layout()
-    return save(fig, f'{out_dir}/group_8_noise_series.pdf')
+    return fig_ladder_series(
+        out_dir, ladder or NOISE_LADDER, NOISE_PANELS,
+        xlabel='arrow_noise_std',
+        fname='group_8_noise_series.pdf',
+        title='The noise ladder — behaviour above, the mechanism below',
+        invert=True)
 
 
 # ── 9. What each trial teaches Z ──────────────────────────────────────────────
@@ -639,9 +714,13 @@ def main(variant=None, run=None, noise_series=None):
             build_variant(name)
         if noise_series:
             fig_noise_series(sweep_root())
+            # Only meaningful once more than one delay level is on disk; the builder says
+            # so and returns None otherwise, so calling it unconditionally is safe.
+            fig_delay_series(sweep_root())
         else:
-            print(f'\ngroup_8_noise_series skipped — it reloads every level on disk, not '
-                  f'just {names[0]}. Set BUILD_NOISE_SERIES = True to build it anyway.')
+            print(f'\ngroup_8_noise_series and group_12_delay_series skipped — they reload '
+                  f'every level on disk, not just {names[0]}. Set BUILD_NOISE_SERIES = True '
+                  f'to build them anyway.')
 
 
 def args_from_argv():

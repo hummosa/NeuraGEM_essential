@@ -89,7 +89,7 @@ output_loss_mask = [0, 0, 0, 0, 0, 1]   # loss only on dim 5 (direction)
 `predict_first_frame=True` → t=0 gets a zero frame; the response window starts at t=1.
 
 ```
-temporal_loss_weights = [0, 1.0, e^-λ, e^-2λ, e^-3λ]     λ = temporal_decay_factor
+temporal_loss_weights = [0, 1.0, e^-λ, e^-2λ, ...]       λ = temporal_decay_factor
 ```
 
 Responding early is worth more than responding late, which is what makes RT a meaningful
@@ -97,8 +97,104 @@ measure at all. `temporal_decay_factor = 0` → uniform weights.
 
 **If `arrows_duration` is ever changed, λ must change with it.** λ is a per-timestep
 decay, so stretching the window drives the tail toward zero and forces near-instant
-responses. Parameterize by the end-of-window weight instead:
-`temporal_decay_factor ≈ 2.1 / n_response_steps`.
+responses. Parameterise by the **end-of-window weight**, which is what actually sets the
+pressure:
+
+```
+end_weight = exp(-λ · (n_response_steps - 1))     ⇒     λ = -ln(end_weight) / (n_response_steps - 1)
+```
+
+The shipped setting targets `end_weight ≈ 0.41`. The 5-timestep trial ran λ = 0.3 over 4
+response steps (`e^-0.9 = 0.407`); the 10-timestep trial runs **λ = 0.112** over 9
+(`e^-0.896 = 0.408`), i.e. the same speed pressure over a longer window.
+
+(An earlier version of this file gave the rule as `λ ≈ 2.1 / n_response_steps`, which
+targets `end_weight ≈ 0.12` — a much sharper pressure than any shipped config has used.
+The formula above is the one the code follows.)
+
+**λ is held fixed across target-onset delays.** `_set_temporal_weights` rebuilds the
+window from λ, so a delay shortens nothing — `response_start_timestep` does not move. Were
+λ re-fitted per delay level, the delay conditions would differ in speed pressure as well as
+in onset, and the comparison would be confounded.
+
+### Changing the trial length
+
+`arrows_duration` is not a plain attribute. `seq_len`, `stride`, `block_size`,
+`blocked_phase_length` and `temporal_loss_weights` are all derived from it at construction,
+so **use `config.set_arrows_duration(n)`** — a bare assignment leaves the config internally
+inconsistent (10-step trials against a 5-long weight vector and a stride of 5), and
+`flanker_sweep` applies its overrides with a plain `setattr`, so this is not hypothetical.
+`FlankerRandomTrialsConfig` overrides the setter because one batch is one trial there, so
+its `block_size` is `arrows_duration` rather than a multiple of it. `_validate()` checks
+the invariant `len(temporal_loss_weights) == arrows_duration == seq_len`.
+
+---
+
+## The target-onset delay ("flankers first")
+
+The human task presents the **flankers before the target**. `config.target_delay` is that
+onset asynchrony, in timesteps: the flankers are on from frame 0 as usual, and for the
+first `target_delay` frames the centre slot carries background noise only.
+
+**It is the target that is delayed, not the flankers that are previewed.** That framing
+decides the whole implementation, because it says what must *not* be compensated for:
+
+| | Setting | Why |
+|---|---|---|
+| Speed pressure | `response_start_timestep` stays **1**; `temporal_loss_weights` unchanged | The model is asked for the target direction from t=1 whether or not the target has arrived. Zeroing the loss over the pre-target window would remove the very pressure that makes an early, flanker-driven response possible |
+| RT | measured from **trial start**, never re-referenced to onset | The question is whether the response is *delayed* when the target is late. Subtracting the delay back out would define the effect away |
+| Latent update | descends the same loss, pre-target window included | During the delay the LU has only flanker evidence against a target-direction loss, which is the conflict the task is about. `latent_aggregation_op='exponential_increase'` weights later timesteps more when pooling the Z gradient, so post-onset steps still dominate the update |
+
+So during the delay the read-out has nothing but the flankers. On a **congruent** trial they
+already point at the answer, and the model can commit before the target exists. On an
+**incongruent** trial the same early commitment is an error. That is the flanker effect,
+and the delay amplifies it.
+
+### Where it lives
+
+Only `FlankerRandomTrialsDataset` implements it. Stage 1 trains on simultaneous onset, and
+`FlankerTaskDataset` **asserts `target_delay == 0`** rather than ignoring it silently. Two
+consequences follow:
+
+- `stage1_fingerprint` is computed on the pretraining config, so a delay never invalidates
+  the model cache. Delay variants carry test-stage `overrides` and no `pretrain_overrides`,
+  which resolves them all to the `'shared'` pretrain tag — **every delay level reuses one
+  pretrained model set per seed** and costs no extra pretraining.
+- The read-out was calibrated on simultaneous onset, so its behaviour under a delay is an
+  extrapolation. That is the intent — it is a probe — but it means a *null* result is
+  ambiguous between "no delay effect" and "never calibrated for this". Training with the
+  delay is a one-line variant, since the knob lives on `FlankerTaskConfig`.
+
+The per-timestep target noise is drawn **unconditionally**, even while the target is absent,
+and only applied once onset has passed. Skipping the draw would desynchronise the RNG
+stream and hand each delay level a different trial sequence and different flanker noise;
+drawing it regardless means one seed presents the *same* trials at every delay, so the
+ladder is a within-seed comparison.
+
+### Reading the figures
+
+`extract_trials` returns `target_delay`, and every within-trial panel marks the first
+timestep at which the target can reach the output — `target_delay + 1`, because
+`predict_first_frame=True` means the model at timestep t has been fed frames 0..t-1. The
+marker is a reading aid only; no measure is referenced to it.
+
+`group_2_within_trial.pdf` and `run_flanker.py` Result 2 are where the mechanism shows:
+everything left of that line is flanker-driven, so congruent traces climbing and
+incongruent traces heading the wrong way *before* onset is the effect itself.
+
+### One prediction that may not survive
+
+The obvious prediction is that the congruency effect on RT grows with delay. **Watch for it
+to shrink or reverse instead.** `rt_interp` is time-to-threshold regardless of correctness,
+and a delay lets incongruent trials cross *early in the wrong direction* — so incongruent RT
+can fall even as incongruent accuracy collapses. A pilot at `target_delay = 4` (one short,
+deliberately undertrained session — not a result) showed incongruent accuracy falling far
+more than congruent, `fasterr_incong_decided` rising sharply, and `cong_effect_rt`
+shrinking rather than growing.
+
+This is why `DELAY_PANELS` puts the two RT *levels* on one axis rather than only their
+contrast, and pairs them with `cong_effect_acc` and `fasterr_incong_decided`: a pooled RT
+contrast alone cannot tell "incongruent got slower" from "incongruent errors got faster".
 
 ---
 
@@ -128,7 +224,8 @@ follows is what each knob *does* and why it matters, which does not drift. For a
 
 | Parameter | What it controls |
 |---|---|
-| `arrows_duration` | Timesteps per trial = `seq_len` = `stride`. Sets how many usable response steps exist, so it bounds RT resolution |
+| `arrows_duration` | Timesteps per trial = `seq_len` = `stride`. Sets how many usable response steps exist, so it bounds RT resolution. **10** (9 response steps); change it only through `set_arrows_duration()` |
+| `target_delay` | Timesteps the **target's** onset is delayed while the flankers stay on from frame 0 — the human onset asynchrony. Test stage only; `FlankerTaskDataset` asserts it is 0. See "The target-onset delay" below |
 | `trials_per_context_block` | Trials per block, Stage 1 only |
 | `signal_strength` | Arrow amplitude on active slots |
 | `arrow_noise_std` | Per-timestep noise on active slots. **The consequential one**: it decides how often the *target slot itself* misleads, which is what separates a bad-luck error from a control failure. The noise sweep is built on it |
@@ -538,9 +635,14 @@ seed; within-subject contrasts also get thin lines connecting each seed across c
 | `group_9_z_update.pdf` | Δ Z focus per cell, split correct vs. error; what a given inherited state buys in accuracy and in RT |
 | `group_10_post_conflict.pdf` | Post-incongruent slowing and accuracy — the conflict twin of `group_5`, trial A post-correct |
 | `group_11_z_slot_update.pdf` | The update per slot rather than as `focus`: fixed geometry, slot role, and the raw dL/dZ |
+| `group_12_delay_series.pdf` | Each RT-relevant signature against `target_delay` — does a later target mean a later response? |
 
-Every per-variant figure lands in that variant's own folder; `group_8_noise_series.pdf`
-spans the noise ladder and lands one level up, beside the variant folders.
+Every per-variant figure lands in that variant's own folder; `group_8_noise_series.pdf` and
+`group_12_delay_series.pdf` span a ladder of variants and land one level up, beside the
+variant folders. Both are built by `fig_ladder_series`, which takes a ladder of
+`(variant, x_value)` pairs and a panel set; `fig_noise_series` and `fig_delay_series` are
+thin wrappers that supply `NOISE_PANELS` / `DELAY_PANELS` and their own axis label. A
+ladder figure needs at least two levels on disk and prints a skip message otherwise.
 
 `group_10` and `group_11`, and `group_3`'s second row, are built from the `spec_*`
 builders in `flanker_figure_utils.py`, which `run_flanker.py` Results 1c, 3c and 5b also
@@ -651,12 +753,6 @@ models, and torch ≥ 2.6 defaults `weights_only` to `True`.
 ---
 
 ## Deferred work
-
-**Longer trials.** A 5-timestep trial gives only 4 usable response steps; interpolation
-helps but RT variance stays compressed. Lengthening to ~15 requires three coupled changes:
-rescale `temporal_decay_factor` (see Speed Pressure), raise `arrow_noise_std` by ≈√3 to
-avoid ceiling accuracy, and recalibrate `rt_threshold`. It would also allow modelling the
-flanker-before-target onset asynchrony present in the human task.
 
 **Blocked replication across seeds.** The retired blocked design is what originally
 produced the distance-interaction claim, and within a congruent block the local congruency

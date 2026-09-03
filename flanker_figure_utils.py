@@ -179,7 +179,8 @@ def session_curves(trials, n_bins=20, rt_bin_width=0.25):
     masks = {'near_cong': near & cong,    'far_cong': ~near & cong,
              'near_incong': near & ~cong, 'far_incong': ~near & ~cong}
 
-    out = {'acc_by_ts': {}, 'accum': {}, 'rt_density': {}, 'learning': {}}
+    out = {'acc_by_ts': {}, 'accum': {}, 'rt_density': {}, 'learning': {},
+           'target_delay': trials.get('target_delay', 0)}
 
     for key, m in masks.items():
         out['acc_by_ts'][key] = trials['correct'][m].mean(axis=0)

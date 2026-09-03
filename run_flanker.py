@@ -61,6 +61,7 @@ from flanker_analyses import (
     plot_accuracy_by_timestep, plot_rt_distribution, plot_rt_continuous,
     plot_scalar_bars, plot_trial, example_trial_indices, plot_correlation_structure,
     sync_gating, mirror_to_model, reset_Z_uniform,
+    mark_target_onset, _timestep_ticks,
 )
 # Panels shared with the group figures. Results 1c, 3c and 5b below draw from the same
 # `spec_*` builders flanker_sweep_figures.py uses, so the workbench view of a measure and
@@ -73,6 +74,30 @@ from flanker_figure_utils import (bar_grid, bar_row, share_ylim, spec_post_confl
                                   spec_rt_by_outcome, spec_z_slot_update, _has)
 
 fig_gaussian = False   # whether to overlay a Gaussian fit on RT PMFs
+
+# ── Target-onset delay ("flankers first") ─────────────────────────────────────
+#
+# Timesteps by which the TARGET arrow's onset is delayed in Stage 2. The flankers are on
+# from frame 0 throughout; for the first `target_delay` frames the centre slot carries
+# background noise only. 0 reproduces simultaneous onset, i.e. every result before this.
+#
+# It is set on the TEST config only (below). Stage 1 trains on simultaneous onset and
+# FlankerTaskDataset asserts the delay is 0, so this is a probe of what a read-out
+# calibrated on simultaneous onset does when the target is late — which also means a null
+# result is ambiguous between "no delay effect" and "never calibrated for this".
+#
+# Nothing is compensated for the delay. `response_start_timestep` stays 1 and the temporal
+# loss weights are unchanged, so the model is asked for the target direction from t=1
+# whether or not the target has arrived, and RT is measured from trial start. That is the
+# point: the question is whether the response is *delayed* when the target is late, and
+# whether the flankers alone are enough to answer early. Zeroing the loss over the
+# pre-target window, or re-referencing RT to onset, would define the effect away.
+#
+# Prediction: RT rises with the delay, but congruent trials are held up less than
+# incongruent ones — during the delay the flankers already point at the answer, so a
+# congruent trial can commit before the target exists and an incongruent one commits
+# wrongly. Read Result 2 first.
+target_delay = 4       # 0 = simultaneous onset; 9 response steps, so 4 leaves 5 post-onset
 
 # Result 6 (trial-history regression). False prints the ~6 rows that are results — the
 # human signatures and the mediation. True adds every model's full coefficient table and
@@ -132,8 +157,13 @@ config = FlankerTaskConfig(experiment_to_run='default')
 config.run_name = 'flanker_pretrain_v1'
 config.env_seed = 42
 
-training_noise_std = 0.9
-testing_noise_std = 0.9
+# 1.35 = 0.9 x 1.5, the old working point carried across the retiming to a 10-timestep
+# trial: evidence accumulates over the response window, so SNR grows as
+# sqrt(n_response_steps) and 4 -> 9 steps is a factor of 1.5. A first-order estimate, not a
+# calibration — check accuracy is off both ceiling and floor before reading anything into a
+# result, and let the sweep's noise ladder locate the real working point.
+training_noise_std = 1.35
+testing_noise_std = 1.35
 config.arrow_noise_std = training_noise_std
 
 # ── Stage-1 oracle gate jitter ────────────────────────────────────────────────
@@ -279,7 +309,7 @@ for (slc, label), color in zip(
     ax_thirds.plot(trials1['correct'][slc].mean(axis=0), color=color, label=label)
 ax_thirds.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.4)
 ax_thirds.axvspan(-0.5, config.response_start_timestep - 0.5, alpha=0.08, color='k')
-ax_thirds.set_xticks(range(trials1['ad']))
+ax_thirds.set_xticks(_timestep_ticks(trials1['ad']))
 ax_thirds.set_xlabel('Timestep within trial')
 ax_thirds.set_ylabel('P(target)')
 ax_thirds.set_ylim(0.3, 1.05)
@@ -320,12 +350,15 @@ test_config.no_of_steps_in_latent_space = 1
 update_config(test_config)   # was update_config(config): Stage 2 kept the class default
                              # bg_noise_std = 0.1 while Stage 1 trained at 0
 test_config.arrow_noise_std = testing_noise_std
+test_config.target_delay   = target_delay      # Stage 2 only; Stage 1 asserts it is 0
+test_config._validate()                        # bounds-checks target_delay against arrows_duration
 sync_gating(test_config, config)
 mirror_to_model(model, test_config)
 reset_Z_uniform(model, scale=0.2, seed=test_config.env_seed)
 
 print(f'Stage 2 | trials={test_config.n_trials}  p_congruent={test_config.p_congruent}  '
-      f'p_near={test_config.p_near}  Z_lr={test_config.Z_lr}')
+      f'p_near={test_config.p_near}  Z_lr={test_config.Z_lr}  '
+      f'arrows_duration={test_config.arrows_duration}  target_delay={test_config.target_delay}')
 
 logger_t, model_t, test_config, figs_t = train_model(
     test_config, seed=test_config.env_seed,
@@ -551,7 +584,8 @@ ax2.axhline(0,  color='k', linewidth=0.8, linestyle='-',  alpha=0.25)
 ax2.axhline( 1, color='k', linewidth=0.5, linestyle='--', alpha=0.2)
 ax2.axhline(-1, color='k', linewidth=0.5, linestyle='--', alpha=0.2)
 ax2.axvspan(-0.5, test_config.response_start_timestep - 0.5, alpha=0.08, color='k')
-ax2.set_xticks(range(trials['ad']))
+mark_target_onset(ax2, test_config, label=True)
+ax2.set_xticks(_timestep_ticks(trials['ad']))
 ax2.set_xlabel('Timestep within trial')
 ax2.set_ylabel('Output toward final decision\n(sign-normalised)')
 ax2.set_ylim(-1.1, 1.1)
@@ -562,7 +596,11 @@ export_fig(fig2, 'flanker_accumulation.pdf', test_config, caption=(
     "model's own final decision, so left and right decisions align on one axis; positive "
     "= accumulating toward whatever the model eventually chose. The model's analogue of "
     "the human beta-power lateralisation signal — incongruent trials should dip early "
-    "(flankers pull away from the eventual choice) and reverse late on correct trials."))
+    "(flankers pull away from the eventual choice) and reverse late on correct trials. "
+    "With a target-onset delay the dash-dotted line marks the first timestep at which the "
+    "target can reach the output; everything left of it is driven by the flankers alone, "
+    "so congruent traces climbing and incongruent traces heading the wrong way before that "
+    "line is the delay effect itself, not an artefact."))
 
 #%%
 # ── Result 3: sequential congruency, all four history cells ───────────────────

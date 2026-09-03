@@ -560,6 +560,15 @@ class FlankerTaskDataset(BaseTaskDataset):
         cfg = self.config
         data_seq, context_ids_seq, hlcid_seq = [], [], []
 
+        # The target-onset delay is a TEST-stage probe of a read-out trained on
+        # simultaneous onset, so Stage 1 does not implement it. Fail loudly rather than
+        # ignore a delay set on a pretraining config.
+        assert int(getattr(cfg, 'target_delay', 0)) == 0, (
+            f'target_delay={cfg.target_delay} was set on a Stage-1 pretraining config. '
+            'The delay is implemented in FlankerRandomTrialsDataset only; set it on the '
+            'test config.'
+        )
+
         for block_idx, blk_size in enumerate(self.block_sizes):
             target_slot = block_idx % cfg.n_slots   # rotate through slots across blocks
             n_trials = blk_size // cfg.arrows_duration
@@ -779,6 +788,11 @@ class FlankerRandomTrialsDataset(BaseTaskDataset):
 
         p_congruent = getattr(cfg, 'p_congruent', 0.5)
         p_near      = getattr(cfg, 'p_near', 0.5)
+        # Timesteps by which the target arrow's onset is delayed ("flankers first"). The
+        # flankers are present from frame 0 throughout; the target slot carries background
+        # noise only until frame `target_delay`. getattr, not attribute access, so a config
+        # unpickled from a run that predates the knob still loads.
+        target_delay = int(getattr(cfg, 'target_delay', 0))
 
         for blk_size in self.block_sizes:
             n_trials = blk_size // cfg.arrows_duration
@@ -792,10 +806,17 @@ class FlankerRandomTrialsDataset(BaseTaskDataset):
                 flanker_dir                 = true_direction if is_congruent else -true_direction
                 congruent_flag              = 1.0 if is_congruent else 0.0
 
-                for _ in range(cfg.arrows_duration):
+                for t in range(cfg.arrows_duration):
                     obs = self.rng.normal(0.0, cfg.bg_noise_std, cfg.n_slots).astype(np.float32)
-                    obs[target_slot] = float(true_direction * cfg.signal_strength
-                                             + self.rng.normal(0, cfg.arrow_noise_std))
+                    # Drawn unconditionally even while the target is absent, so the RNG
+                    # stream consumes the same number of variates at every delay. Skipping
+                    # the draw instead would desynchronise the stream and hand each delay
+                    # level a different trial sequence and different flanker noise, turning
+                    # a within-seed comparison into a between-sample one.
+                    target_obs = float(true_direction * cfg.signal_strength
+                                       + self.rng.normal(0, cfg.arrow_noise_std))
+                    if t >= target_delay:
+                        obs[target_slot] = target_obs
                     for fs in flanker_slots:
                         obs[fs] = float(flanker_dir * cfg.signal_strength
                                         + self.rng.normal(0, cfg.arrow_noise_std))

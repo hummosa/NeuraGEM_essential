@@ -335,6 +335,10 @@ def extract_trials(logger, config, rt_threshold=0.5, search_from=None):
         rt_threshold = rt_threshold,
         search_from  = search_from,
         ad           = ad,
+        # Timesteps the target's onset was delayed. Carried here so every downstream
+        # figure can mark onset without re-reading a config, and defaulted through
+        # getattr so a result pickled before the knob existed still extracts.
+        target_delay = int(getattr(config, 'target_delay', 0) or 0),
         n_trials     = n_trials,
         center_slot  = center,
     )
@@ -575,9 +579,47 @@ def trial_measure(trials, measure):
 
 # ── Plotting helpers ──────────────────────────────────────────────────────────
 
-def _style_trial_ax(ax, ad, response_start):
+def _timestep_ticks(ad):
+    """Tick positions for a within-trial axis, thinned so a panel-sized figure stays legible.
+
+    A 10-timestep trial puts ten labels on an axis a couple of inches wide, which overprints
+    at the figure sizes in plot_style.FigSize. Every second tick keeps the axis readable and
+    still lands on the last timestep for an even `ad`.
+    """
+    step = 1 if ad <= 6 else 2
+    return list(range(0, ad, step))
+
+
+def target_onset_timestep(config):
+    """First timestep at which the target arrow can influence the output, or None.
+
+    With predict_first_frame=True the model at timestep t has been fed frames 0..t-1, so a
+    target that first appears in frame `target_delay` reaches an output at t = delay + 1.
+    Returns None when there is no delay, so callers can skip drawing a marker.
+    """
+    delay = int(getattr(config, 'target_delay', 0) or 0)
+    return delay + 1 if delay > 0 else None
+
+
+def mark_target_onset(ax, config, label=False):
+    """Draw a vertical line where the delayed target first reaches the output.
+
+    Purely a reading aid: no measure is referenced to onset. RT is measured from trial
+    start, and the loss weights are unchanged by the delay, so this line marks when the
+    evidence arrives — not when the model is allowed to respond.
+    """
+    t_on = target_onset_timestep(config)
+    if t_on is None:
+        return
+    ax.axvline(t_on, color='k', linewidth=0.8, linestyle='-.', alpha=0.45, zorder=0,
+               label='target onset' if label else None)
+
+
+def _style_trial_ax(ax, ad, response_start, config=None):
     ax.axvspan(-0.5, response_start - 0.5, alpha=0.08, color='k')
-    ax.set_xticks(range(ad))
+    if config is not None:
+        mark_target_onset(ax, config)
+    ax.set_xticks(_timestep_ticks(ad))
     ax.set_xlabel('Timestep within trial')
     ax.legend(fontsize=5)
 
@@ -610,7 +652,7 @@ def plot_accuracy_by_timestep(ax, trials, specs, config, linestyles=None):
             ax.plot(correct[mask].mean(axis=0), color=color, linestyle=ls,
                     label=f'{label} (n={mask.sum()})')
     ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.4)
-    _style_trial_ax(ax, ad, config.response_start_timestep)
+    _style_trial_ax(ax, ad, config.response_start_timestep, config)
     ax.set_ylabel('P(target)')
     ax.set_ylim(0.3, 1.05)
 
@@ -683,10 +725,12 @@ def plot_rt(ax, trials, specs, config, interpolate=False, fit_gaussian=False,
                     pass
             ax.set_ylabel(f'P(RT = t)  [threshold = {rt_threshold}]')
 
-    ax.set_xticks(list(range(ad)) + [und_x])
-    ax.set_xticklabels([str(t) for t in range(ad)] + ['und.'], fontsize=6)
+    ticks = _timestep_ticks(ad)
+    ax.set_xticks(ticks + [und_x])
+    ax.set_xticklabels([str(t) for t in ticks] + ['und.'], fontsize=6)
     ax.set_xlabel('Timestep within trial')
     ax.axvspan(-0.5, config.response_start_timestep - 0.5, alpha=0.08, color='k')
+    mark_target_onset(ax, config)
     ax.set_ylim(bottom=0)
     ax.legend(fontsize=5)
 
@@ -1064,6 +1108,7 @@ def plot_trial(trials, config, trial=0, show_gate=True, show_loss_weights=True,
     row += 1
     ax_out = fig.add_subplot(gs[row, 0])
     ax_out.axvspan(-0.5, resp_start - 0.5, color='k', alpha=0.08, linewidth=0)
+    mark_target_onset(ax_out, config)
     if show_slot_channels:
         for d in range(n_out - 1):
             ax_out.plot(t_axis, out_full[:, d], color='#bbbbbb', linewidth=0.5, alpha=0.7,

@@ -58,6 +58,12 @@ N_PRETRAIN_TRIALS = 4000    # Stage 1, weights plastic, oracle Z
                             #  silently alter what a named run means)
 N_TEST_TRIALS     = 5000    # Stage 2, weights frozen, Z inferred, random trials
 
+# Timesteps per trial, applied through config.set_arrows_duration() in both stages. Stated
+# here for the same reason N_PRETRAIN_TRIALS is: a later change to the class default must
+# not silently alter what a named run on disk means. It was 5 (4 response steps); 10 gives
+# 9, which is what makes room for a delayed target onset and unbumps the RT density.
+ARROWS_DURATION   = 10
+
 # ── Manipulation ──────────────────────────────────────────────────────────────
 # One congruency level, matching the human task. It is a scalar, not a list: nothing
 # sweeps over it any more.
@@ -131,10 +137,21 @@ P_CORR_BY_DISTANCE = [1.0, 0.75, ARMS[ARM]['p_corr2'], 0.51, 0.5]
 # sweep and the single-session workbench were not running the same simulation. An
 # attribute-by-attribute diff of the two scripts' configs says this was the ONLY setting
 # that differed; keep it that way, and change run_flanker.py alongside it if it moves.
+# The stimulus noise a variant gets when it does NOT carry its own pretrain_overrides —
+# i.e. the delay ladder, whose whole point is to reuse one pretrained model set. The noise
+# ladder below overrides it per rung ("Variant Stage-1 overrides last, so they win").
+#
+# 1.35 is 0.9 x 1.5, the old working point carried across the retiming: evidence
+# accumulates over the response window, so SNR grows as sqrt(n_response_steps) and 4 -> 9
+# steps is a factor of 1.5. That is a first-order estimate, not a calibration — read the
+# real working point off the scorecard once the ladder has run.
+DELAY_BASE_NOISE = 1.35
+
 PRETRAIN_OVERRIDES = {                      # every variant's Stage 1
     'oracle_gate_jitter': ORACLE_GATE_JITTER,
     'p_corr_by_distance': P_CORR_BY_DISTANCE,
     'bg_noise_std':       0,
+    'arrow_noise_std':    DELAY_BASE_NOISE,
 }
 TEST_OVERRIDES = {
     'no_of_steps_in_latent_space': 1,
@@ -152,7 +169,17 @@ TEST_OVERRIDES = {
 # 0.6, 0.8 and 0.9 fill in the interesting stretch: the post-error signatures and the
 # sign of the latent's response to a bad-luck error both turn over between 1.0 and 0.7,
 # and four points were too coarse to locate that crossing.
+#
+# The retiming to 10 timesteps raised the SNR by ~1.5x, which slides the whole ladder
+# toward "too easy": the old top rung 1.3 is now worth about 0.87 of the old scale, i.e.
+# roughly where the old working point already was. Two higher rungs are ADDED rather than
+# the existing ones rescaled, because the rung names are also the directory names of the
+# 400 five-timestep result pickles already on disk, and several scripts default to them
+# (flanker_regression, flanker_near_cong_diagnostic). Renaming would strand all of that
+# for no gain; RUN_NAME already keeps the two worlds apart.
 VARIANTS = {
+    'noise19': dict(pretrain_overrides={'arrow_noise_std': 1.9}),   # added for ad=10
+    'noise16': dict(pretrain_overrides={'arrow_noise_std': 1.6}),   # added for ad=10
     'noise13': dict(pretrain_overrides={'arrow_noise_std': 1.3}),   # the original setting
     'noise10': dict(pretrain_overrides={'arrow_noise_std': 1.0}),
     'noise09': dict(pretrain_overrides={'arrow_noise_std': 0.9}),
@@ -163,8 +190,34 @@ VARIANTS = {
 }
 
 #: Ordered (variant, noise level) for the figures that plot against noise.
-NOISE_LADDER = [('noise13', 1.3), ('noise10', 1.0), ('noise09', 0.9), 
+NOISE_LADDER = [('noise19', 1.9), ('noise16', 1.6), ('noise13', 1.3),
+                ('noise10', 1.0), ('noise09', 0.9),
                 ('noise07', 0.7), ('noise04', 0.4)]
+
+# ── The target-onset delay ladder ─────────────────────────────────────────────
+#
+# "Flankers first": the flankers are on screen from frame 0 and the TARGET's onset is
+# delayed. The question is whether the response is delayed with it — and whether congruent
+# trials are held up less, because during the delay the flankers alone already point at
+# the answer.
+#
+# These are TEST-stage `overrides`, not `pretrain_overrides`, and that is the whole
+# economy of this axis: the stimulus the weights were trained on is unchanged, so
+# `pretrain_tag` resolves every rung to the 'shared' model set and all three levels reuse
+# ONE pretrained model per seed. Giving them pretrain_overrides would hand each level its
+# own cache tag and triple the pretraining bill for identical Stage-1 stimuli.
+#
+# Nothing here touches response_start_timestep or temporal_loss_weights. Speed pressure is
+# identical at every rung and RT is measured from trial start, so a delayed response shows
+# up as a larger RT rather than being defined away. See FlankerTaskConfig.target_delay.
+DELAY_LEVELS = [0, 2, 4]        # 9 response steps, so 4 still leaves 5 post-onset
+
+VARIANTS.update({
+    f'delay{d}': dict(overrides={'target_delay': d}) for d in DELAY_LEVELS
+})
+
+#: Ordered (variant, delay) for the delay-series figure.
+DELAY_LADDER = [(f'delay{d}', d) for d in DELAY_LEVELS]
 
 # ── I/O ───────────────────────────────────────────────────────────────────────
 # RUN_NAME is the single switch: it decides where a sweep writes AND which sweep every
@@ -177,7 +230,9 @@ NOISE_LADDER = [('noise13', 1.3), ('noise10', 1.0), ('noise09', 0.9),
 # reusing a cache across optimizers would silently run the old one.
 # One run per 2x2 cell, named after the arm, so the four never share a cache and every
 # figure script can be pointed at one of them with --run factorial_<arm>.
-RUN_NAME      = f'factorial_{ARM}'
+# ad10_ prefix, not factorial_: arrows_duration moved, so these results are not comparable
+# with the 400 pickles under factorial_* and must not land beside them.
+RUN_NAME      = f'ad10_{ARM}'
 EXPORT_ROOT   = './exports/flanker_random/sweeps'
 SKIP_EXISTING = True        # resume: skip jobs whose result pickle already exists
 

@@ -34,7 +34,7 @@ from configs import FlankerTaskConfig, FlankerRandomTrialsConfig
 from train_and_infer_functions import train_model
 from flanker_analyses import sync_gating, mirror_to_model, reset_Z_uniform
 from flanker_sweep_config import (
-    SEEDS, N_PRETRAIN_TRIALS, N_TEST_TRIALS, P_CONGRUENT,
+    SEEDS, N_PRETRAIN_TRIALS, N_TEST_TRIALS, P_CONGRUENT, ARROWS_DURATION,
     GATING, Z_INIT_SCALE, PRETRAIN_OVERRIDES, TEST_OVERRIDES, VARIANTS,
     RUN_NAME, EXPORT_ROOT, SKIP_EXISTING,
 )
@@ -298,6 +298,10 @@ def build_pretrain_config(seed: int, tag: str = 'shared') -> FlankerTaskConfig:
     # alone leaves those stale — the model would train for a different number of blocks
     # than the length implies.
     config.set_n_pretrain_trials(N_PRETRAIN_TRIALS)
+    # Same reasoning as set_n_pretrain_trials above, one level down: seq_len, stride,
+    # block_size and temporal_loss_weights are all derived from arrows_duration, so a bare
+    # assignment would run 10-step trials against a 5-long weight vector.
+    config.set_arrows_duration(ARROWS_DURATION)
     config.pre_gating  = (GATING == 'pre')
     config.post_gating = (GATING == 'post')
     for key, value in PRETRAIN_OVERRIDES.items():
@@ -386,6 +390,10 @@ def run_job(job: ExperimentJob, job_index: Optional[int] = None,
     test_config.env_seed    = job.seed
     test_config.p_congruent = P_CONGRUENT
     test_config.set_n_trials(N_TEST_TRIALS)
+    # Must match Stage 1: the weights were trained at this trial length, and Z is sized
+    # from seq_len. FlankerRandomTrialsConfig overrides the setter because one batch is
+    # one trial here, so block_size is arrows_duration rather than a multiple of it.
+    test_config.set_arrows_duration(ARROWS_DURATION)
     for key, value in TEST_OVERRIDES.items():
         setattr(test_config, key, value)
     # Stage-1 overrides are stimulus/task parameters shared by both stages, so they
