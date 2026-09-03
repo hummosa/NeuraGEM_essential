@@ -62,6 +62,15 @@ from flanker_analyses import (
     plot_scalar_bars, plot_trial, example_trial_indices, plot_correlation_structure,
     sync_gating, mirror_to_model, reset_Z_uniform,
 )
+# Panels shared with the group figures. Results 1c, 3c and 5b below draw from the same
+# `spec_*` builders flanker_sweep_figures.py uses, so the workbench view of a measure and
+# the across-seed view cannot drift apart. The cost is that a one-session panel has no
+# error bar — `bars_with_seeds` needs replicates and here there is one — so where the
+# trial-level spread is the point, use plot_scalar_bars with masks instead, as the older
+# Results do.
+from flanker_metrics import session_effects
+from flanker_figure_utils import (bar_grid, bar_row, share_ylim, spec_post_conflict,
+                                  spec_rt_by_outcome, spec_z_slot_update, _has)
 
 fig_gaussian = False   # whether to overlay a Gaussian fit on RT PMFs
 
@@ -485,6 +494,38 @@ export_fig(fig1c, 'flanker_session_and_rt_by_outcome.pdf', test_config, caption=
     "incongruent trials if they are flanker-driven."))
 
 #%%
+# ── Result 1c: RT for correct vs error, in each cell ──────────────────────────
+#
+# Result 1b splits RT by outcome pooled over distance. This adds the four cells and the
+# contrast itself, which is the quantity the scorecard scores.
+#
+# Human flanker errors are FAST: on an incongruent trial the flankers reach threshold
+# before the target does, so an error beats a correct response to the boundary. Positive
+# `fasterr` is that signature.
+#
+# Read the decided-only version. `rt_interp` gives a trial that never crossed the trial
+# end by the house convention, and errors are exactly the trials that fail to cross — so
+# on the uncensored measure a non-response reads as a very slow error rather than as no
+# response at all, which points the contrast the wrong way.
+
+sess_eff = session_effects(trials)
+
+fig1d, axes1d = bar_row(spec_rt_by_outcome(sess_eff, decided=True))
+share_ylim(axes1d[0], axes1d[1])        # the two level panels are the same quantity
+fig1d.suptitle('RT by outcome, per cell (decided trials only)', fontsize=7)
+fig1d.tight_layout()
+export_fig(fig1d, 'flanker_rt_by_outcome.pdf', test_config, caption=(
+    "Result 1c: RT for correct vs. error responses in each congruency x distance cell, "
+    "on trials that crossed threshold inside the window. Left two panels are the RT "
+    "levels (hollow = errors, the house fill convention for outcome); the right panel is "
+    "the contrast, positive where errors are faster than correct responses — the human "
+    "flanker signature, since on an incongruent trial the flankers reach threshold "
+    "first. Decided-only because errors fail to cross far more often than correct "
+    "responses, so the uncensored measure reports non-responses as slow errors. One "
+    "session, so the bars carry no error bar; the across-seed version is "
+    "flanker_sweep_figures group_3."))
+
+#%%
 # ── Result 2: within-trial evidence accumulation ──────────────────────────────
 #
 # Output is sign-normalised by the model's own final decision, so left and right
@@ -607,6 +648,37 @@ export_fig(fig4, 'flanker_sequential_by_repetition.pdf', test_config, caption=(
     "response repeated or switched, to rule out the repetition-priming confound (Mayr, "
     "Awh & Laurey 2003) — if the interaction only appears when repetitions are pooled "
     "in, it is priming, not control."))
+
+#%%
+# ── Result 3c: post-incongruent slowing and accuracy ──────────────────────────
+#
+# The conflict-triggered twin of Result 4 below: same shape, one factor changed. There
+# trial A is an error; here trial A is CORRECT and incongruent.
+#
+# That restriction is the whole measure. Incongruent trials fail more often, so an
+# unrestricted "after an incongruent trial" contrast is partly post-error slowing wearing
+# conflict's name — the same reason Result 3 restricts its history cells to post-correct.
+#
+# Positive slowing AND positive accuracy is the control-recruitment reading: conflict
+# recruits control, and the next trial is more deliberate. Trial B is split by congruency
+# because a target-focused state helps incongruent B and hurts congruent B.
+
+sess_eff = session_effects(trials)
+
+fig3c, axes3c = bar_row(spec_post_conflict(sess_eff))
+share_ylim(axes3c[0], axes3c[1])        # PCS against its decided-only companion
+fig3c.suptitle('Post-incongruent adaptation — post-correct trial A', fontsize=7)
+fig3c.tight_layout()
+export_fig(fig3c, 'flanker_post_conflict.pdf', test_config, caption=(
+    "Result 3c: post-incongruent slowing (PCS) and accuracy (PCA), trial A restricted to "
+    "correct responses so this is conflict adaptation rather than post-error adaptation. "
+    "Trial B split by congruency, since a target-focused state helps incongruent B and "
+    "hurts congruent B. The third bar in the PCS and PCA panels is the lag-2 cell "
+    "contrast II->I against CC->I, in the same unit as the lag-1 measure beside it. "
+    "Panel 2 is the decided-only RT companion: a large gap from panel 1 means the "
+    "contrast is carrying non-responses rather than speed. Panel 4 is the inherited "
+    "control state behind the behaviour. One session; the across-seed version is "
+    "flanker_sweep_figures group_10."))
 
 #%%
 # ── Result 4: post-error effects ──────────────────────────────────────────────
@@ -781,6 +853,45 @@ export_fig(fig7, 'flanker_z_update_drivers.pdf', test_config, caption=(
     "incongruent trials only — a description of the learning rule rather than of its "
     "consequence, so grouping it by the trial's own properties is legitimate, unlike "
     "reading a post-outcome Z level."))
+
+#%%
+# ── Result 5b: what the update does to each slot ──────────────────────────────
+#
+# Result 5 reads the update through `delta_focus` — centre minus the mean of the flankers
+# — which can only say whether the gate moved toward the target. This says where it went.
+#
+# Row 1 is the fixed geometry (centre, the near pair, the far pair). Row 2 is the role
+# each pair played on that trial, which is a different question: a near display leaves
+# slots 0 and 4 empty and a far display leaves 1 and 3, so the fixed geometry mixes
+# "distractor" with "nothing there".
+#
+# Row 3 appears only when the run logged gradients, and it is the one that is safe to
+# read as magnitude. `delta_z` is the change in the SOFTMAXED gate, so the five per-slot
+# values sum to ~0: the centre cannot rise without something else falling, and a negative
+# bar in rows 1 and 2 is not on its own evidence that a slot was suppressed. The raw
+# dL/dZ is under no such constraint. Note its sign is inverted relative to the update —
+# the step descends the gradient, so a positive dL/dZ is a slot the trial pushed DOWN.
+
+sess_eff = session_effects(trials)
+
+slot_rows = [spec_z_slot_update(sess_eff, grouping='geometry'),
+             spec_z_slot_update(sess_eff, grouping='role')]
+if _has(sess_eff, 'zgrad_centre_incong_err'):
+    slot_rows.append(spec_z_slot_update(sess_eff, grouping='geometry', measure='zgrad'))
+fig7b, axes7b = bar_grid(slot_rows)
+fig7b.suptitle('What the update does to each slot', fontsize=7)
+fig7b.tight_layout()
+export_fig(fig7b, 'flanker_z_slot_update.pdf', test_config, caption=(
+    "Result 5b: the update to Z per slot rather than collapsed into the focus index, "
+    "correct trials against errors (hollow). Row 1 fixed geometry, row 2 the role each "
+    "slot pair played on the trial — which pair is empty swaps with flanker distance, so "
+    "the two groupings are not the same decomposition. Row 3, when gradients were "
+    "logged, is the raw dL/dZ: delta_z is a change in the softmaxed gate and sums to ~0 "
+    "across slots, so a negative bar above is not by itself suppression, while the "
+    "gradient carries no such constraint. The gradient's sign is inverted relative to "
+    "the update, since the step descends it. Correct and error panels are deliberately "
+    "not on a shared y scale — an error's update is several times a correct trial's. One "
+    "session; the across-seed version is flanker_sweep_figures group_11."))
 
 #%%
 # ── Result 6: trial-history regression ────────────────────────────────────────

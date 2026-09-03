@@ -2,15 +2,25 @@
 flanker_metrics.py — every per-seed scalar measure computed from one test session.
 
 One session in, one flat dict of named effects out. `session_effects()` is a thin
-composition of five focused blocks, so a new measure goes in the block it belongs to
-rather than at the bottom of a growing function:
+composition of focused blocks, so a new measure goes in the block it belongs to rather
+than at the bottom of a growing function:
 
-    condition_masks     trial masks every block shares (congruency, distance, history)
-    behaviour_effects   accuracy and RT: cell means, congruency, distance
-    rt_outcome_effects  RT split by correct vs error, and how often no decision came
-    history_effects     sequential congruency, lag contrasts, the repetition control
-    post_error_effects  post-error slowing, accuracy, PERI
-    control_effects     the latent: focus, attention profile, what drives the update
+    condition_masks         trial masks every block shares (congruency, distance, history)
+    behaviour_effects       accuracy and RT: cell means, congruency, distance
+    rt_outcome_effects      RT split by correct vs error, and how often no decision came
+    history_effects         sequential congruency, lag contrasts, the repetition control
+    post_conflict_effects   post-incongruent slowing and accuracy, post-correct only
+    post_error_effects      post-error slowing, accuracy, PERI
+    control_effects         the latent: focus, attention profile, what drives the update
+    error_diagnosis_effects why errors fail to recruit control: the centre-evidence split
+    z_slot_effects          the same update per slot, rather than collapsed into `focus`
+
+Two conventions run through the blocks and a new measure has to honour both. A contrast
+that conditions on the *previous* trial's congruency is restricted to post-correct trials,
+or it is partly measuring post-error adaptation — incongruent trials fail more often. A
+contrast that compares correct against error responses in RT gets a `_decided` companion,
+because `rt_interp` parks non-responses at the trial end and errors fail to decide far
+more often, so the pooled number carries censoring as well as speed.
 
 The statistical contract does not live here: each seed is a synthetic subject, so every
 number below is *within* one session and is only meaningful once one-sample t-tested
@@ -130,10 +140,34 @@ def rt_outcome_effects(trials, m):
     for name, mask in _cells(m):
         e[f'dec_{name}'] = _frac(dec, mask)
         for on, om in (('corr', m['corr']), ('err', m['err'])):
-            e[f'rt_{name}_{on}']  = _mean(rt, mask & om)
-            e[f'dec_{name}_{on}'] = _frac(dec, mask & om)
+            e[f'rt_{name}_{on}']         = _mean(rt, mask & om)
+            e[f'rt_{name}_{on}_decided'] = _mean(rt, mask & om & dec)
+            e[f'dec_{name}_{on}']        = _frac(dec, mask & om)
         # Positive = errors are faster than correct responses in this cell.
-        e[f'fasterr_{name}'] = e[f'rt_{name}_corr'] - e[f'rt_{name}_err']
+        e[f'fasterr_{name}']         = e[f'rt_{name}_corr'] - e[f'rt_{name}_err']
+        e[f'fasterr_{name}_decided'] = (e[f'rt_{name}_corr_decided']
+                                        - e[f'rt_{name}_err_decided'])
+
+    # The same contrast pooled over distance, and then over everything — the scoreboard
+    # aggregate. `fasterr` on `rt_interp` is not a speed measure on its own: a trial that
+    # never crossed sits at the trial end by the house convention, and errors fail to
+    # decide far more often than correct responses do, so the pooled version reports that
+    # censoring as much as it reports speed. The `_decided` companion is the one to read
+    # and the one SIGNATURES scores, exactly as for `cong_effect_rt_decided` above. Both
+    # are kept: the gap between them *is* the censoring, and it belongs on the record.
+    for cn in CONGRUENCY:
+        for on, om in (('corr', m['corr']), ('err', m['err'])):
+            e[f'rt_{cn}_{on}']         = _mean(rt, m[cn] & om)
+            e[f'rt_{cn}_{on}_decided'] = _mean(rt, m[cn] & om & dec)
+            e[f'dec_{cn}_{on}']        = _frac(dec, m[cn] & om)
+        e[f'fasterr_{cn}']         = e[f'rt_{cn}_corr'] - e[f'rt_{cn}_err']
+        e[f'fasterr_{cn}_decided'] = e[f'rt_{cn}_corr_decided'] - e[f'rt_{cn}_err_decided']
+
+    for on, om in (('corr', m['corr']), ('err', m['err'])):
+        e[f'rt_{on}']         = _mean(rt, om)
+        e[f'rt_{on}_decided'] = _mean(rt, om & dec)
+    e['fasterr_overall']         = e['rt_corr'] - e['rt_err']
+    e['fasterr_overall_decided'] = e['rt_corr_decided'] - e['rt_err_decided']
 
     # The contrast the distance prediction is about, computed separately for correct and
     # error responses: does flanker distance move RT the same way when the target wins?
@@ -180,10 +214,64 @@ def history_effects(trials, m):
         ce_ac_i = _mean(acc, base & m['p_incong'] & m['cong']) - _mean(acc, base & m['p_incong'] & inc)
         e[f'sce_rt_{rname}']  = ce_rt_c - ce_rt_i
         e[f'sce_acc_{rname}'] = ce_ac_c - ce_ac_i
+
+    # Sustained conflict against sustained non-conflict, both into an incongruent trial —
+    # the cell contrast Collins & Nassar named directly. Derived here rather than in
+    # post_conflict_effects because the four cells it differences are local to this block.
+    # It is NOT a duplicate of `pca_BI` / `pcs_BI`: those are lag-1 and pool over t-2,
+    # this one requires the same congruency at both lags. The two can disagree whenever
+    # one lag carries the history effect on its own — which is what `lag1_contrast_*` and
+    # `lag2_contrast_*` above are there to detect.
+    e['pca_II_vs_CC'] = e['acc_II_to_I'] - e['acc_CC_to_I']
+    e['pcs_II_vs_CC'] = e['rt_II_to_I']  - e['rt_CC_to_I']
     return e
 
 
-# ── Block 4: post-error adaptation ────────────────────────────────────────────
+# ── Block 4: post-conflict (post-incongruent) adaptation ──────────────────────
+
+def post_conflict_effects(trials, m):
+    """
+    Post-incongruent slowing and accuracy — the conflict-triggered twin of post-error.
+
+    Trial A is the preceding trial and is restricted to **correct** responses. That
+    restriction is the whole reason this is a separate measure rather than a relabelling
+    of post_error_effects: incongruent trials fail more often, so an unrestricted "after
+    an incongruent trial" contrast is partly post-error slowing wearing conflict's name.
+    `history_effects` applies the same restriction for the same reason.
+
+    Trial B is split by congruency, mirroring post_error_effects, because a target-focused
+    control state helps incongruent B and hurts congruent B — pooling B averages an effect
+    against its own opposite.
+
+    Positive `pcs_B*` = slower after conflict, positive `pca_B*` = more accurate after
+    conflict. That pairing is what a control-recruitment account predicts and what the
+    human data is expected to show. Only the B-incongruent pair is in SIGNATURES; the
+    B-congruent pair is computed and plotted because it is the control that separates a
+    control setting from a general slowdown, but no directional prediction was committed
+    to for it — the same treatment `pes_BC` / `pia_BC` already get.
+    """
+    acc, rt, foc_in = (trials['correct_at_decision'].astype(float),
+                       trials['rt_interp'], trials['focus_in'])
+    dec = m['decided']
+    e = {}
+    for bn, bm in [('I', m['incong']), ('C', m['cong'])]:
+        base       = m['valid'] & m['pc'] & bm
+        after_inc  = base & m['p_incong']
+        after_cong = base & m['p_cong']
+        e[f'pca_B{bn}'] = _mean(acc, after_inc) - _mean(acc, after_cong)
+        e[f'pcs_B{bn}'] = _mean(rt,  after_inc) - _mean(rt,  after_cong)
+        # Decided-only companion, per the convention in the module docstring: an
+        # incongruent trial A is followed by a B that fails to decide at a different rate,
+        # so the rt_interp version carries some of that rather than pure speed.
+        e[f'pcs_B{bn}_decided'] = _mean(rt, after_inc & dec) - _mean(rt, after_cong & dec)
+        # The inherited control state behind the behaviour. focus_in is what B started
+        # from, so it already contains A's own update and nothing of B's.
+        e[f'focus_in_diff_conflict_B{bn}'] = (_mean(foc_in, after_inc)
+                                              - _mean(foc_in, after_cong))
+    return e
+
+
+# ── Block 5: post-error adaptation ────────────────────────────────────────────
 
 def post_error_effects(trials, m):
     """Post-error slowing and accuracy, with trial A restricted to incongruent trials."""
@@ -207,7 +295,7 @@ def post_error_effects(trials, m):
     return e
 
 
-# ── Block 5: the control state ────────────────────────────────────────────────
+# ── Block 6: the control state ────────────────────────────────────────────────
 
 def control_effects(trials, m):
     """
@@ -247,12 +335,26 @@ def control_effects(trials, m):
         for on, om in (('err', ~m['corr']), ('corr', m['corr'])):
             e[f'dfocus_{d}_{on}'] = _mean(dfoc, m[d] & m['incong'] & om)
     e['dfocus_near_minus_far_err'] = e['dfocus_near_err'] - e['dfocus_far_err']
+
+    # The same update across the *full* congruency x distance grid, and split by outcome.
+    # The four keys above are incongruent-only and keep their old names; these carry the
+    # congruency in the key, matching `acc_{cell}` and `rt_{cell}_{outcome}` elsewhere, so
+    # a panel can ask what each kind of trial teaches Z rather than only what an
+    # incongruent one does. Congruent trials are the half of the list that has nothing to
+    # be misled by, so their update is the baseline the incongruent cells are read against.
+    for name, mask in _cells(m):
+        e[f'dfocus_{name}'] = _mean(dfoc, mask)
+        for on, om in (('corr', m['corr']), ('err', m['err'])):
+            e[f'dfocus_{name}_{on}'] = _mean(dfoc, mask & om)
+    for cn in CONGRUENCY:
+        e[f'dfocus_{cn}'] = _mean(dfoc, m[cn])
+    e['dfocus_cong_effect'] = e['dfocus_incong'] - e['dfocus_cong']
     e['focus_in_after_near_err'] = _mean(foc_in, m['valid'] & m['p_incong'] & m['p_near'] & m['perr'])
     e['focus_in_after_far_err']  = _mean(foc_in, m['valid'] & m['p_incong'] & m['p_far']  & m['perr'])
     return e
 
 
-# ── Block 6: why errors fail to recruit control ───────────────────────────────
+# ── Block 7: why errors fail to recruit control ───────────────────────────────
 
 def error_diagnosis_effects(trials, m):
     """
@@ -302,7 +404,70 @@ def error_diagnosis_effects(trials, m):
     return e
 
 
-# ── Block 7: the circularity behind the missing post-error improvement ────────
+# ── Block 8: what the update does to each slot ────────────────────────────────
+
+#: Slot groups for the per-slot view of the update, by fixed geometry.
+SLOT_GROUPS = {'centre': [CENTRE_SLOT], 'near': NEAR_SLOTS, 'far': FAR_SLOTS}
+
+
+def z_slot_effects(trials, m):
+    """
+    The update to Z per slot, rather than collapsed into the scalar `focus`.
+
+    `delta_focus` is z_act[centre] minus the mean of the flankers, so it can only answer
+    "did the gate move toward the target". These keys open that up: what a correct trial
+    and an error each did to the centre slot, to the near pair and to the far pair.
+
+    Two groupings, because neither contains the other:
+
+      geometry  `dz_{centre,near,far}_...` — the fixed slots, 2 / 1&3 / 0&4. The literal
+                decomposition, and what to read when the question is the spatial profile
+                of the gate.
+      role      `dz_{flank,empty}_...` — the pair that actually held arrows on that trial
+                against the pair that held none. Which physical pair is which swaps with
+                trial distance: a near display leaves slots 0 and 4 empty, a far display
+                leaves 1 and 3. So the geometry grouping mixes "distractor" with "nothing
+                there", and a claim about the learning rule needs the role grouping.
+
+    **`delta_z` lives on the simplex.** It is the change in the *softmaxed* gate, so the
+    five per-slot values sum to ~0 by construction: the centre slot cannot rise without
+    something else falling, and a negative bar is not on its own evidence that anything
+    was suppressed. `z_grad` is the un-normalised companion — the aggregated dL/dZ that
+    drove the update, under no such constraint — and is included whenever the run logged
+    it. `extract_trials` leaves it None otherwise, so these keys are absent rather than
+    NaN, and a figure has to check for them.
+    """
+    dz = trials['delta_z']
+    e  = {}
+
+    # Plain mean, not nanmean: a delta_z row is either all-finite or all-NaN (trial 0
+    # inherited nothing), so the NaN propagates to that trial and `_mean` drops it —
+    # whereas nanmean would warn on the empty slice and quietly invent a value.
+    def _slot_keys(prefix, per_trial):
+        """One per-trial measure, over outcome x (pooled / congruency / the four cells)."""
+        for on, om in (('corr', m['corr']), ('err', m['err'])):
+            e[f'{prefix}_{on}'] = _mean(per_trial, om)
+            for cn in CONGRUENCY:
+                e[f'{prefix}_{cn}_{on}'] = _mean(per_trial, m[cn] & om)
+            for name, mask in _cells(m):
+                e[f'{prefix}_{name}_{on}'] = _mean(per_trial, mask & om)
+
+    # take_along_axis keeps the role grouping a single vectorised pass: `flank` is the
+    # (n, 2) index of the slots holding arrows this trial, `empty` its complement.
+    flank = np.where(m['near'][:, None], NEAR_SLOTS, FAR_SLOTS)
+    empty = np.where(m['near'][:, None], FAR_SLOTS, NEAR_SLOTS)
+
+    for source, tag in ((dz, 'dz'), (trials.get('z_grad'), 'zgrad')):
+        if source is None:
+            continue
+        for gname, slots in SLOT_GROUPS.items():
+            _slot_keys(f'{tag}_{gname}', source[:, slots].mean(axis=1))
+        _slot_keys(f'{tag}_flank', np.take_along_axis(source, flank, axis=1).mean(axis=1))
+        _slot_keys(f'{tag}_empty', np.take_along_axis(source, empty, axis=1).mean(axis=1))
+    return e
+
+
+# ── Block 9: the circularity behind the missing post-error improvement ────────
 
 #: Trial positions relative to the event, for the event-locked analysis.
 EVENT_LAGS = np.arange(-2, 3)
@@ -363,16 +528,23 @@ def event_locked(trials, lags=EVENT_LAGS, n_bins=8):
     out['dfocus_err_clean'] = _mean(dfoc, inc_all & m['err'] & clean)
 
     # How much accuracy a given inherited focus buys on incongruent trials — the exchange
-    # rate that turns the control gap into the behavioural one.
+    # rate that turns the control gap into the behavioural one. `curve_rt` is the same
+    # bins read in RT, which is the other half of the price: control that is not there has
+    # to be paid for either in accuracy or in time, and a model that pays in only one of
+    # them is not doing what a human does. RT is `rt_interp`, so trials that never crossed
+    # sit at the trial end by the house convention rather than being dropped.
+    rt  = trials['rt_interp']
     inc = m['incong'] & ~np.isnan(foc)
     edges = np.nanquantile(foc[inc], np.linspace(0, 1, n_bins + 1))
-    centres, means = [], []
+    centres, means, rts = [], [], []
     for lo, hi in zip(edges[:-1], edges[1:]):
         sel = inc & (foc >= lo) & (foc < hi)
         if sel.sum() > 20:
             centres.append(np.nanmean(foc[sel]))
             means.append(acc[sel].mean())
+            rts.append(np.nanmean(rt[sel]))
     out['curve_x'], out['curve_y'] = np.array(centres), np.array(means)
+    out['curve_rt'] = np.array(rts)
     out['lags'] = np.asarray(lags)
     return out
 
@@ -384,7 +556,8 @@ def session_effects(trials):
     m = condition_masks(trials)
     e = {}
     for block in (behaviour_effects, rt_outcome_effects, history_effects,
-                  post_error_effects, control_effects, error_diagnosis_effects):
+                  post_conflict_effects, post_error_effects, control_effects,
+                  error_diagnosis_effects, z_slot_effects):
         e.update(block(trials, m))
     return e
 
@@ -402,8 +575,21 @@ SIGNATURES = [
     ('dist_effect_acc_incong', 'Distance: accuracy, incongruent',   -1, 'flanker proximity'),
     ('dist_effect_acc_cong',   'Distance: accuracy, congruent',     +1, 'flanker proximity'),
     ('dist_effect_rt_incong',  'Distance: RT, incongruent',         +1, 'flanker proximity'),
+    # Errors on incongruent trials are flanker-driven, so they beat the target to
+    # threshold: positive `fasterr` = errors faster than correct responses. Scored on the
+    # decided-only version, because the rt_interp one is dominated by the higher
+    # non-response rate on errors rather than by speed. `fasterr_cong_decided` at -1 —
+    # congruent errors as slow lapses — is a defensible fourth row and is deliberately
+    # left out until someone commits to that prediction; the key is computed either way.
+    ('fasterr_incong_decided', 'Errors faster than correct (inc.)', +1, 'flanker fast errors'),
     ('pes_BI',                 'Post-error slowing (B incong)',     +1, 'Rabbitt 1966'),
     ('pia_BI',                 'Post-error accuracy (B incong)',    +1, 'post-error improvement'),
+    # The conflict-triggered twin of the two rows above, post-correct A only. Positive is
+    # slower AND more accurate after an incongruent trial — a control-recruitment account,
+    # which is the reading Collins & Nassar put on the human data. `pcs_BC` / `pca_BC` are
+    # computed and plotted but not scored: no direction was committed to for them.
+    ('pcs_BI',                 'Post-incong. slowing (B incong)',   +1, 'conflict adaptation'),
+    ('pca_BI',                 'Post-incong. accuracy (B incong)',  +1, 'conflict adaptation'),
     ('peri',                   'PERI (interference drops)',         +1, 'Ridderinkhof 2002'),
     ('sce_acc_repeat',         'Gratton, response repeats',         +1, 'Gratton 1992'),
     ('sce_acc_switch',         'Gratton, response switches',        +1, 'Mayr, Awh & Laurey 2003'),

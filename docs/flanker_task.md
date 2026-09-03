@@ -223,9 +223,11 @@ stimulus noise rather than being fixed.
 
 ---
 
-## Three analysis conventions
+## Five analysis conventions
 
-These are enforced in `flanker_analyses.py`; ignoring them produces wrong Z conclusions.
+The first three are enforced in `flanker_analyses.py`; ignoring them produces wrong Z
+conclusions. The last two are enforced in `flanker_metrics.py` and decide whether a
+sequential or an outcome-conditioned measure is the thing it claims to be.
 
 **Plotting RT.** `plot_rt(ax, trials, specs, config, interpolate=False)` is the one
 entry point. `interpolate=False` (default) draws the empirical PMF over the integer
@@ -277,6 +279,23 @@ means nothing if the other four rose too. `z_act` is the activated version and
 `reset_Z_uniform()` should be used instead of `set_Z(randn_like(Z) * 0.2)` when starting a
 new stage: the latter gives every timestep a different random start which LU never
 corrects, leaving frozen noise on the gate.
+
+**4. A contrast on the previous trial's congruency is restricted to post-correct trials.**
+Incongruent trials fail more often, so "after an incongruent trial" is also "after an
+error" unless trial A's outcome is held fixed. Without the restriction, post-incongruent
+slowing and post-error slowing are the same measure with two names.
+`history_effects` and `post_conflict_effects` both apply it (`m['valid'] & m['pc']`); the
+post-error block holds the mirror-image factor fixed instead, restricting trial A to
+incongruent trials and splitting on outcome.
+
+**5. An RT contrast between correct and error responses gets a `_decided` companion.**
+`rt_interp` gives a trial that never crossed the trial end (convention 1), and errors are
+disproportionately the trials that fail to cross — so on the uncensored measure a
+non-response reads as a very slow error. `fasterr_*_decided` is what `SIGNATURES` scores
+and `fasterr_*` is kept beside it, because the gap between the two *is* the censoring.
+`cong_effect_rt_decided` is the older instance of the same convention. At
+`rt_threshold = 0.2` the two barely differ (98%+ of trials decide); at 0.5 they differ a
+lot, which is exactly why the pair is reported rather than one of them chosen.
 
 ---
 
@@ -417,14 +436,17 @@ reset_Z_uniform(model, scale=0.2, seed=None)   # re-seed Z, shared across timest
 | `flanker_correlation_structure.pdf` | The Stage-1 `p_corr_by_distance` profile that teaches the model near ≠ far |
 | `flanker_congruency_distance.pdf` / `_bars.pdf` | Congruency effect and the near > far interaction |
 | `flanker_session_and_rt_by_outcome.pdf` | Accuracy across the frozen session; RT for correct vs error within each congruency |
+| `flanker_rt_by_outcome.pdf` | Result 1c — the same split per cell, plus the fast-error contrast, decided trials only |
 | `flanker_accumulation.pdf` | Within-trial evidence accumulation, sign-normalised — the BPL analogue |
 | `flanker_sequential_congruency.pdf` | All four history cells (CC/CI/IC/II) → I **and** → C, post-correct only |
 | `flanker_sequential_timecourse.pdf` | The same history cells as within-trial accuracy and RT curves |
 | `flanker_post_error_timecourse.pdf` | Post-error cells as within-trial curves |
 | `flanker_sequential_by_repetition.pdf` | Does the sequential effect survive response-repetition control? |
+| `flanker_post_conflict.pdf` | Result 3c — post-incongruent slowing and accuracy, post-correct trial A |
 | `flanker_post_error.pdf` | Post-error slowing / accuracy / inherited control state, incongruent A only |
 | `flanker_post_error_near_far.pdf` | Do near errors drive more adaptation than far errors? |
 | `flanker_z_update_drivers.pdf` | What *produces* the control update (`delta_focus`, `pe`) |
+| `flanker_z_slot_update.pdf` | Result 5b — the same update per slot, geometry and role, plus the raw dL/dZ |
 
 ### Confound controls applied
 
@@ -507,11 +529,26 @@ seed; within-subject contrasts also get thin lines connecting each seed across c
 |---|---|
 | `group_1_fingerprint.pdf` | Accuracy and RT in the four cells; congruency effect by distance; **distance effect decomposed within each congruency** |
 | `group_2_within_trial.pdf` | P(target) build-up, evidence accumulation, congruency cost over timesteps |
-| `group_3_rt.pdf` | RT densities by congruency and by outcome, and the trials that never decide |
+| `group_3_rt.pdf` | Row 1: RT densities by congruency and by outcome, and the trials that never decide. Row 2: the same densities per cell for correct and for error, and the fast-error contrast |
 | `group_4_history.pdf` | Four history cells → I and → C; Gratton effect vs. response repetition |
 | `group_5_post_error.pdf` | Post-error slowing and accuracy, inherited Z focus, what drives the update |
-| `group_6_scorecard.pdf` | Every human signature on one axis, matched or not |
-| `group_7_noise_series.pdf` | Each signature against `arrow_noise_std` — why the post-error failures happen |
+| `group_6_circularity.pdf` | The control deficit precedes the error, so post-error state is circular |
+| `group_7_scorecard.pdf` | Every human signature on one axis, matched or not |
+| `group_8_noise_series.pdf` | Each signature against `arrow_noise_std` — why the post-error failures happen |
+| `group_9_z_update.pdf` | Δ Z focus per cell, split correct vs. error; what a given inherited state buys in accuracy and in RT |
+| `group_10_post_conflict.pdf` | Post-incongruent slowing and accuracy — the conflict twin of `group_5`, trial A post-correct |
+| `group_11_z_slot_update.pdf` | The update per slot rather than as `focus`: fixed geometry, slot role, and the raw dL/dZ |
+
+Every per-variant figure lands in that variant's own folder; `group_8_noise_series.pdf`
+spans the noise ladder and lands one level up, beside the variant folders.
+
+`group_10` and `group_11`, and `group_3`'s second row, are built from the `spec_*`
+builders in `flanker_figure_utils.py`, which `run_flanker.py` Results 1c, 3c and 5b also
+draw from — one panel definition, two callers, so the workbench and the group view of a
+measure cannot drift apart. `_as_replicates` is what absorbs the difference between them:
+a seed is the replicate at group level, the session is the replicate in the workbench. The
+cost is that a single-replicate panel has no error bar, so where the trial-level spread is
+the point, `flanker_analyses.plot_scalar_bars` with masks is still the right tool.
 
 ```bash
 python flanker_sweep_figures.py                    # every variant in the sweep
@@ -520,6 +557,43 @@ python flanker_sweep_figures.py --variant noise10
 
 Colours follow the shared flanker palette in `plot_style.FLANKER_COLORS` — hue for
 congruency, shade for distance, fill for outcome. See `figure_style.md`.
+
+### What the three new measures say (baseline arm, `noise13`, 20 seeds)
+
+All three are 20/20 seeds and p < 0.001, so the directions below are not seed noise.
+
+**Post-incongruent adaptation splits the human prediction in half.** Accuracy behaves:
+`pca_BI` = +0.080, more accurate on an incongruent trial after an incongruent one, and
+`pca_BC` = −0.039, the cost on a congruent trial that a genuine control adjustment has to
+pay. RT does not: `pcs_BI` = −0.238, the model gets *faster* after conflict, and the lag-2
+cell contrast agrees (II→I is 0.33 timesteps faster and 0.109 more accurate than CC→I).
+That is the interference-reduction (Gratton) pattern, not the slower-and-more-deliberate
+pattern — the model buys accuracy without paying in time, so it has no speed/accuracy
+trade-off to trade. `pcs_BI` is scored +1 in `SIGNATURES` on the deliberateness reading,
+so it currently reads 0/20; that row is a claim about the human data, and if the
+interference-reduction reading is the right one for this dataset the sign should flip.
+
+**The model does not show fast errors.** `fasterr_incong_decided` = −0.047: errors are
+*slower* than correct responses, and much more so on congruent trials (−0.199). Censoring
+is not the explanation — at `rt_threshold = 0.2` about 98% of trials decide in both cells
+— so this is a real mismatch with the human data rather than a measurement artifact.
+
+Neither failure is a property of one noise level. Across the whole ladder `pcs_BI` is
+negative at 0/20 seeds at every rung (−0.24 at 1.3 through −0.34 at 0.4) and
+`fasterr_incong_decided` stays between −0.045 and −0.089, so lowering stimulus noise — the
+manipulation that repairs the post-error signatures — does not touch either of these. They
+are structural, not a regime the model happens to be in. (`pca_BI` does fade, +0.080 to
++0.002 at `arrow_noise_std` 0.4, which is the accuracy ceiling documented above rather
+than a loss of adaptation.)
+
+**Congruent errors are what teach the controller to stop attending.** Per slot, an
+incongruent error moves the gate the way an error monitor would want: centre +0.042,
+flanker slots −0.040. A congruent error does the opposite and three times harder: centre
+−0.138, flanker slots +0.049. Nothing in the incongruent half of the list is wrong with
+the update rule; the damage is done by the half of the trials that had nothing to be
+misled by. This bears directly on the deferred experiment below — an error-gated learning
+rate that does not condition on congruency would amplify the harmful update more than the
+helpful one.
 
 Note the difference between the **interaction** and the **simple effects** of distance.
 `interaction_acc` is a difference of differences and collapses the two directional
@@ -595,6 +669,56 @@ that the result is blocked, because blocked and interleaved numbers are not comp
 accuracy is often still climbing when the weights are frozen — i.e. the spatial weighting
 the distance prediction depends on may not have converged. Check the Stage-1 learning
 curve before treating a weak distance effect as a property of the model.
+
+**Error-gated inference learning rate.** Matt Nassar's proposal: raise the latent learning
+rate after a perceived error, and ask whether that produces post-error slowing, post-error
+accuracy gains, and better overall accuracy — the last being the normative rationale for
+making the adjustment at all. Not implemented; this is the costed design.
+
+*Step 0, free, do it first.* `event_locked` already returns `curve_rt` — RT on incongruent
+trials against the inherited control state — and `group_9_z_update.pdf` panel 4 draws it
+across 20 seeds already on disk. Read its slope. If RT *falls* as inherited focus rises,
+then anything that leaves the post-error state better focused predicts post-error
+**speeding**, and this mechanism cannot produce PES on its own. The post-incongruent
+result above says exactly that is the risk: the model already gets faster and more
+accurate together, with no trade-off between them.
+
+*The signal.* `_latent_update_step` in `train_and_infer_functions.py` already computes
+`before_optim_loss`, the pre-LU per-element loss; masked to the response dim by
+`_mask_loss` that is the model's own prediction error. It is legitimately available, since
+it is exactly what LU descends — the model never sees the direction as *input*
+(`input_feed_mask` zeroes dim 5), only in the loss. A binary variant is the sign of the
+response-window-weighted output against `inputs[..., -1]`.
+
+*The mechanism.* Scale the Z optimizer's learning rate for that trial's LU step, then
+restore it. It must patch `model.Z_optimizer.param_groups[*]['lr']` — **not**
+`config.Z_lr`, which is baked in at construction and is Gotcha 1 below.
+`flanker_analyses.mirror_to_model` is the existing example of doing it right.
+
+*Timing.* `update_latent_before_weights = False`, so trial *t*'s LU runs at the end of
+trial *t*. Scaling **that** step is what trial *t+1* inherits, which is the mechanism as
+described. Scaling the trial *after* the error is a different model and delays the effect
+by one trial; if both are wanted they are two variants, not one knob.
+
+*Config.* `Z_lr_error_mode = None` (`'binary'` | `'pe'`), `Z_lr_error_gain = 1.0`,
+`Z_lr_error_threshold` — all default-inert, so every pickled run and every existing figure
+is unchanged. Log the per-trial learning rate so `extract_trials` can expose it and the
+analysis can confirm the gate fired at roughly `1 - acc_overall`.
+
+*Sweep.* Test-stage `overrides`, not `pretrain_overrides` — the stimulus is unchanged, so
+these variants reuse the baseline pretrained models and cost no re-pretraining:
+`'errlr2': dict(overrides={'Z_lr_error_mode': 'binary', 'Z_lr_error_gain': 2.0})`.
+
+*The prediction that decides it.* The model's error signal cannot separate a noise-driven
+error from a flanker-driven one — that is what `error_diagnosis_effects` and
+`frac_err_noisy` / `dfocus_err_noisy` measure — and, per the slot-wise result above, it
+also cannot separate a congruent error from an incongruent one. A flat gain amplifies all
+of them, including the congruent-error update that is both the largest and the one
+pointing away from the target. So the gain has to be crossed with the noise ladder, and a
+congruency-conditioned gate is the obvious second variant. Expect help where
+`dfocus_err_noisy` has already crossed zero (low `arrow_noise_std`) and harm where it has
+not; `group_8_noise_series.pdf` is the figure that would show it. Read-outs: `pes_BI`,
+`pia_BI`, `peri`, `dfocus_err_noisy`, and `acc_overall` for the normative question.
 
 (The trial-history regression that used to sit here is built: `flanker_regression.py`,
 documented in `flanker_regression.md`.)

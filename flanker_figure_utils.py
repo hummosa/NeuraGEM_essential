@@ -7,10 +7,27 @@ than in any one figure script:
     loading    collect_effects / collect_sessions / pretrain_curves — variant-aware
     per-seed   session_curves — the curves that get averaged across seeds
     panels     bars_with_seeds, band, dots_with_ci, series
+    specs      spec_* — panel definitions shared by the group and single-session scripts
 
 Figure scripts import from here:
 
     flanker_sweep_figures.py   the group figures, in the order the story is told
+    run_flanker.py             the single-session workbench, for the panels they share
+
+One panel, two callers
+──────────────────────
+The two scripts differ in one thing only: what a replicate is. At group level it is a
+seed, in the workbench it is the single session. `_as_replicates` absorbs that — it takes
+either a list of per-seed effect dicts or one `session_effects` dict — and the `spec_*`
+builders on top of it return panel definitions both scripts hand to `bar_row` / `bar_grid`.
+So a change to a shared panel lands in both figures at once, which is the point.
+
+The cost, stated once: with a single replicate `bars_with_seeds` draws one dot and no
+whisker, so a workbench panel built this way has no error bar where the mask-based
+`flanker_analyses.plot_scalar_bars` would show a trial-level SEM. That is already true of
+`plot_circularity`'s bar panels in run_flanker's Result 4c. Use `plot_scalar_bars` when
+the trial-level spread is the point; use these when the group figure and the workbench
+figure must not drift apart.
 
 Conventions
 ───────────
@@ -127,6 +144,25 @@ def _stack(effects, key):
 
 def _stack_curve(curves, group, key):
     return np.array([c[group][key] for c in curves], dtype=float)
+
+
+def _as_replicates(effects, key):
+    """
+    Per-replicate values of one effect, whichever caller is asking.
+
+    `effects` is either a list of per-seed dicts (the group scripts, one replicate per
+    seed) or a single `flanker_metrics.session_effects` dict (the workbench, one
+    replicate). Everything downstream — means, SEMs, the seed dots — then works unchanged.
+    """
+    if isinstance(effects, dict):
+        return np.array([effects[key]], dtype=float)
+    return _stack(effects, key)
+
+
+def _has(effects, key):
+    """Whether an effect key exists at all — `z_grad` is optional, so its keys may not be."""
+    probe = effects if isinstance(effects, dict) else (effects[0] if effects else {})
+    return key in probe
 
 
 # ── Per-session curves ────────────────────────────────────────────────────────
@@ -293,6 +329,32 @@ def bar_row(panels, height=2.0):
     return fig, axes
 
 
+def bar_grid(rows, height=2.0):
+    """
+    A grid of bar panels — `bar_row` when one row is not enough. Returns (fig, axes).
+
+    rows : list of rows, each a list of (groups, kwargs) exactly as `bar_row` takes.
+
+    Column widths come from the widest tick label in that column, for the same reason
+    `bar_row` sizes by label: a grid of equal columns leaves the two-bar panels half empty
+    and crushes the six-bar ones. Short rows leave their trailing axes hidden rather than
+    blank-framed.
+    """
+    ncol   = max(len(row) for row in rows)
+    widths = [max(bar_panel_width(groups)
+                  for row in rows for j, (groups, _) in enumerate(row) if j == i)
+              for i in range(ncol)]
+    fig, axes = plt.subplots(len(rows), ncol, squeeze=False,
+                             figsize=FigSize.custom(sum(widths), height * len(rows)),
+                             gridspec_kw={'width_ratios': widths})
+    for row, ax_row in zip(rows, axes):
+        for ax, (groups, kw) in zip(ax_row, row):
+            bars_with_seeds(ax, groups, **kw)
+        for ax in ax_row[len(row):]:
+            ax.set_visible(False)
+    return fig, axes
+
+
 def band(ax, x, arr, label, color, linestyle='-'):
     """Mean ± SEM band across seeds. arr is (n_seeds, n_points)."""
     arr = np.asarray(arr, dtype=float)
@@ -377,6 +439,66 @@ def _interactive_kernel():
         return False
     ip = get_ipython()
     return ip is not None and hasattr(ip, 'kernel')
+
+
+def landing_marks(ev):
+    """
+    Where the trial *after* each kind of event actually starts, as `exchange_panel` marks.
+
+    `focus_in` is the state a trial inherited, so lag +1 is what the next trial started
+    from — the error's own update is already in it. Reading those two x positions off the
+    exchange curve is what turns the control gap into a behavioural price.
+    """
+    next_lag = list(ev['lags']).index(1)
+    return [(np.nanmean(ev[key], axis=0)[next_lag], colour, label)
+            for key, colour, label in (('focus_err', COL['error'], 'after error'),
+                                       ('focus_corr', COL['cong'], 'after correct'))]
+
+
+def exchange_panel(ax, curves_x, curves_y, ylabel, marks=(), n_grid=8, title=None):
+    """
+    What a given inherited control state buys — the exchange rate, averaged over sessions.
+
+    `curves_x` / `curves_y` are one array per replicate: the focus bin centres and the
+    measure in each bin, as `flanker_metrics.event_locked` returns them (`curve_x` with
+    `curve_y` for accuracy or `curve_rt` for RT). The bin edges are session quantiles, so
+    no two sessions share them — each curve is resampled onto a common 0–1 parameterisation
+    before averaging, and the mean x is plotted against the mean y. The band is SEM across
+    replicates and is dropped when there is only one, which is the single-session case
+    rather than an error.
+
+    marks : (x, colour, label) triples for the landing points worth naming — the states
+            the trial after an error and after a correct trial actually inherited, so the
+            gap can be read off the curve as a cost rather than left as a number.
+
+    Both curve arguments are sequences *over replicates*, never a single curve: a caller
+    with one session has to wrap it, `[ev['curve_x']]`, the way run_flanker.py's Result 4c
+    already does for `curve_x` and `curve_y`. It does not wrap `curve_rt`, which rides
+    along unused there, so an RT panel added to that call site needs the same wrapping —
+    passing the bare array iterates its scalars and fails in `len(cy)`.
+    """
+    grid = np.linspace(0, 1, n_grid)
+    xs = np.array([np.interp(grid, np.linspace(0, 1, len(cx)), cx) for cx in curves_x])
+    ys = np.array([np.interp(grid, np.linspace(0, 1, len(cy)), cy) for cy in curves_y])
+    mu_x, mu_y = xs.mean(axis=0), ys.mean(axis=0)
+    ax.plot(mu_x, mu_y, color=COL['neutral'], linewidth=1.2, marker='o', markersize=2.5)
+    if len(ys) > 1:
+        se_y = ys.std(axis=0, ddof=1) / np.sqrt(ys.shape[0])
+        ax.fill_between(mu_x, mu_y - se_y, mu_y + se_y, color=COL['neutral'],
+                        alpha=0.18, linewidth=0)
+    for x, colour, label in marks:
+        ax.axvline(x, color=colour, linewidth=0.9, linestyle='--')
+        # A one-off annotation deliberately below the global tick size, so two labels fit
+        # inside a paper-width panel without pushing the curve around.
+        ax.text(x, ax.get_ylim()[1], ' ' + label, rotation=90, fontsize=4.5,
+                color=colour, va='top')
+    ax.set_xlabel('Control state inherited')
+    ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    return ax
 
 
 def plot_circularity(axes, ev, replicate='seeds'):
@@ -464,29 +586,147 @@ def plot_circularity(axes, ev, replicate='seeds'):
     axes[3].set_title('4. So the next trial is worse (PIA)')
 
     # 5. The exchange rate between control and accuracy, with both landing points marked.
-    grid = np.linspace(0, 1, 8)
-    xs = np.array([np.interp(grid, np.linspace(0, 1, len(cx)), cx) for cx in ev['curve_x']])
-    ys = np.array([np.interp(grid, np.linspace(0, 1, len(cy)), cy) for cy in ev['curve_y']])
-    mu_x, mu_y = xs.mean(axis=0), ys.mean(axis=0)
-    axes[4].plot(mu_x, mu_y, color=COL['neutral'], linewidth=1.2, marker='o', markersize=2.5)
-    if n_rep > 1:
-        se_y = ys.std(axis=0, ddof=1) / np.sqrt(ys.shape[0])
-        axes[4].fill_between(mu_x, mu_y - se_y, mu_y + se_y, color=COL['neutral'],
-                             alpha=0.18, linewidth=0)
-    next_lag = list(lags).index(1)
-    for key, colour, label in (('focus_err', COL['error'], 'after error'),
-                               ('focus_corr', COL['cong'], 'after correct')):
-        state = np.nanmean(ev[key], axis=0)[next_lag]     # what the NEXT trial inherited
-        axes[4].axvline(state, color=colour, linewidth=0.9, linestyle='--')
-        axes[4].text(state, axes[4].get_ylim()[1], ' ' + label, rotation=90, fontsize=4.5,
-                     color=colour, va='top')
-    axes[4].set_xlabel('Control state inherited')
-    axes[4].set_ylabel('Accuracy, incongruent trials')
-    axes[4].set_title('5. What the gap costs')
+    #    Drawn by `exchange_panel`, which flanker_sweep_figures.fig_z_update calls again
+    #    for the RT version of the same curve.
+    exchange_panel(axes[4], ev['curve_x'], ev['curve_y'],
+                   'Accuracy, incongruent trials',
+                   marks=landing_marks(ev), title='5. What the gap costs')
     for ax in (axes[0], axes[3], axes[4]):
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
     return axes
+
+
+# ── Shared panel specs ────────────────────────────────────────────────────────
+#
+# Each returns a list of (groups, kwargs) that `bar_row` or `bar_grid` draws. Both the
+# group figures and run_flanker.py build from these, so the two never drift.
+
+def spec_post_conflict(effects):
+    """
+    Post-incongruent slowing and accuracy — the conflict twin of the post-error panels.
+
+    Trial A is post-correct throughout (`flanker_metrics.post_conflict_effects` enforces
+    it), so this is conflict adaptation rather than post-error adaptation; without that
+    restriction the two are the same measure, because incongruent trials error more.
+
+    Trial B is split by congruency for the reason the post-error figure splits it: a
+    target-focused state helps incongruent B and hurts congruent B. The third bar in the
+    RT and accuracy panels is the lag-2 cell contrast (II->I against CC->I) — same unit,
+    so it sits with the lag-1 measure it should be read against rather than in a panel of
+    its own. Panel 2 is the decided-only RT companion; a large gap between it and panel 1
+    means the contrast is carrying non-responses rather than speed.
+    """
+    def g(key, label, color):
+        return (_as_replicates(effects, key), label, color)
+
+    return [
+        ([g('pcs_BI', 'B incong', COL['incong']),
+          g('pcs_BC', 'B cong', COL['cong']),
+          g('pcs_II_vs_CC', 'II→I\nvs CC→I', COL['neutral'])],
+         dict(ylabel='Post-incongruent slowing (RT)', baseline=0.0, title='PCS')),
+        ([g('pcs_BI_decided', 'B incong', COL['incong']),
+          g('pcs_BC_decided', 'B cong', COL['cong'])],
+         dict(ylabel='Post-incongruent slowing (RT)', baseline=0.0,
+              title='PCS, decided only')),
+        ([g('pca_BI', 'B incong', COL['incong']),
+          g('pca_BC', 'B cong', COL['cong']),
+          g('pca_II_vs_CC', 'II→I\nvs CC→I', COL['neutral'])],
+         dict(ylabel='Post-incongruent accuracy change', baseline=0.0, title='PCA')),
+        ([g('focus_in_diff_conflict_BI', 'B incong', COL['incong']),
+          g('focus_in_diff_conflict_BC', 'B cong', COL['cong'])],
+         dict(ylabel='Δ inherited Z focus', baseline=0.0, title='the state behind it')),
+    ]
+
+
+def spec_rt_by_outcome(effects, decided=True):
+    """
+    RT for correct against error responses, in each congruency x distance cell.
+
+    Human flanker errors are fast: on an incongruent trial the flankers reach threshold
+    before the target does, so an error beats a correct response. Positive `fasterr` is
+    that signature.
+
+    `decided=True` reads the trials that actually crossed threshold inside the window.
+    That is the default and the version SIGNATURES scores, because `rt_interp` parks a
+    non-response at the trial end and errors fail to decide far more often than correct
+    responses — so the pooled contrast reports censoring as much as speed. Pass
+    `decided=False` for the uncensored version and read the two together.
+
+    Three panels: the RT levels for correct trials, the same for errors, and the contrast.
+    The two level panels are drawn on one shared y scale by the caller (they are the same
+    quantity), which the contrast panel is not part of.
+    """
+    suffix = '_decided' if decided else ''
+    note   = ' (decided)' if decided else ''
+
+    def g(key, label, color):
+        return (_as_replicates(effects, key), label, color)
+
+    return [
+        ([g(f'rt_{k}_corr{suffix}', lbl, COL[k]) for k, lbl in CELLS],
+         dict(ylabel=f'RT (timesteps){note}', title='correct')),
+        ([g(f'rt_{k}_err{suffix}', lbl, COL[k]) for k, lbl in CELLS],
+         dict(ylabel=f'RT (timesteps){note}', title='errors',
+              hollow=[True] * len(CELLS))),
+        ([g(f'fasterr_{k}{suffix}', lbl, COL[k]) for k, lbl in CELLS],
+         dict(ylabel='RT correct − RT error', baseline=0.0,
+              title='+ = errors are faster')),
+    ]
+
+
+#: Slot groups as they are labelled on a figure, per grouping. 'geometry' is the fixed
+#: slot layout; 'role' is what the slots held on that trial, which swaps with distance.
+SLOT_GROUPINGS = {
+    'geometry': [('centre', 'centre'), ('near', 'near\npair'), ('far', 'far\npair')],
+    'role':     [('flank', 'flanker\nslots'), ('empty', 'empty\nslots')],
+}
+
+#: Congruency order inside a slot-group panel: the baseline condition first. Congruent
+#: trials have nothing to be misled by, so their update is what the incongruent one is
+#: read against.
+CONGRUENCY_ORDER = ('cong', 'incong')
+
+#: Shade per slot group, on the existing three-step ramp within each congruency hue —
+#: pooled/mid for the centre slot, the dark near shade and the light far shade for the
+#: pairs. The role groups reuse the same two shades, which is honest: 'flanker' IS the
+#: near pair on a near trial and the far pair on a far one.
+SLOT_SHADE = {'centre': '', 'near': 'near_', 'far': 'far_',
+              'flank': 'near_', 'empty': 'far_'}
+
+
+def spec_z_slot_update(effects, grouping='geometry', measure='dz'):
+    """
+    What a trial's update did to each slot, correct against error — two panels.
+
+    `flanker_metrics.z_slot_effects` computes both groupings and the docstring there says
+    why both are needed: a near display leaves slots 0 and 4 empty and a far display
+    leaves 1 and 3, so the fixed geometry mixes "distractor" with "nothing there".
+
+    `measure='dz'` is the change in the softmaxed gate and therefore sums to ~0 across the
+    five slots — a rise at centre is necessarily a fall elsewhere, which is what the zero
+    line is for. `measure='zgrad'` is the aggregated dL/dZ that drove the update, under no
+    such constraint, and exists only when the run logged gradients.
+
+    The two panels are deliberately not on a shared y scale, for the reason
+    `fig_z_update` gives: an error's update is several times a correct trial's, so sharing
+    flattens the correct panel onto its baseline and hides what it is there to show.
+    """
+    groups = SLOT_GROUPINGS[grouping]
+    ylabel = ('Δ Z per slot (softmax gate)' if measure == 'dz'
+              else 'dL/dZ per slot (raw gradient)')
+
+    def bars(outcome):
+        return [(_as_replicates(effects, f'{measure}_{g}_{cn}_{outcome}'),
+                 f'{lbl}\n{"inc" if cn == "incong" else "con"}',
+                 COL[f'{SLOT_SHADE[g]}{cn}'])
+                for g, lbl in groups for cn in CONGRUENCY_ORDER]
+
+    return [(bars('corr'), dict(ylabel=ylabel, baseline=0.0,
+                                title=f'correct trials — {grouping}')),
+            (bars('err'), dict(ylabel=ylabel, baseline=0.0,
+                               title=f'errors — {grouping}',
+                               hollow=[True] * (2 * len(groups))))]
 
 
 def save(fig, path, note=None):

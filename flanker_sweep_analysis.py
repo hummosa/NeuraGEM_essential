@@ -152,6 +152,21 @@ def main(variant=None):
                  ('dist_effect_rt_incong',  'RT, incongruent (expect +)')],
            'RESULT 1c — simple effects of distance (near minus far), within congruency')
 
+    # Human flanker errors are fast: on an incongruent trial the flankers cross threshold
+    # before the target does. Read the decided-only rows — errors fail to cross far more
+    # often than correct responses, and rt_interp gives a non-crossing trial the trial
+    # end, so the uncensored contrast reports non-responses as slow errors.
+    report(eff, [('fasterr_cong',            'errors faster, congruent'),
+                 ('fasterr_incong',          'errors faster, incongruent'),
+                 ('fasterr_cong_decided',    '  ... congruent, decided only'),
+                 ('fasterr_incong_decided',  '  ... incongruent, decided only'),
+                 ('fasterr_overall_decided', '  ... pooled, decided only'),
+                 ('rt_corr_decided',         'RT, correct (decided)'),
+                 ('rt_err_decided',          'RT, error   (decided)'),
+                 ('dec_incong_err',          'decided fraction, incong errors'),
+                 ('dec_incong_corr',         'decided fraction, incong correct')],
+           'RESULT 1d — RT for correct vs error (+ = errors are faster)')
+
     report(eff, [('acc_CC_to_I', 'accuracy CC->I'),
                  ('acc_CI_to_I', 'accuracy CI->I'),
                  ('acc_IC_to_I', 'accuracy IC->I'),
@@ -176,6 +191,21 @@ def main(variant=None):
     paired(eff, 'sce_rt_repeat', 'sce_rt_switch', 'RT SCE: repeat - switch')
     paired(eff, 'sce_acc_repeat', 'sce_acc_switch', 'acc SCE: repeat - switch')
 
+    # Post-incongruent adaptation, trial A restricted to CORRECT responses. Without that
+    # restriction this is partly post-error slowing under another name, since incongruent
+    # trials fail more often. Positive slowing AND positive accuracy is the
+    # control-recruitment reading; a negative slowing with positive accuracy is the
+    # interference-reduction (Gratton) one, and the two are different claims.
+    report(eff, [('pcs_BI', 'post-incong slowing, B incong'),
+                 ('pcs_BC', 'post-incong slowing, B cong'),
+                 ('pcs_BI_decided', '  ... B incong, decided only'),
+                 ('pca_BI', 'post-incong accuracy, B incong'),
+                 ('pca_BC', 'post-incong accuracy, B cong'),
+                 ('pcs_II_vs_CC', 'RT  II->I minus CC->I (lag 2)'),
+                 ('pca_II_vs_CC', 'acc II->I minus CC->I (lag 2)'),
+                 ('focus_in_diff_conflict_BI', 'focus_in: inc - con A, B incong')],
+           'RESULT 3c — post-incongruent adaptation (post-correct trial A)')
+
     report(eff, [('pes_BI', 'post-error slowing, B incong'),
                  ('pes_BC', 'post-error slowing, B cong'),
                  ('pia_BI', 'post-error accuracy, B incong'),
@@ -190,6 +220,21 @@ def main(variant=None):
                  ('dfocus_far_corr',  'delta focus, far-incong correct'),
                  ('dfocus_near_minus_far_err', 'near - far (errors)')],
            'RESULT 5 — what drives the control update')
+
+    # The same update per slot instead of collapsed into the focus index. delta_z is the
+    # change in the SOFTMAXED gate, so the five slots sum to ~0 and a negative row is not
+    # on its own evidence of suppression — it is where the centre slot's rise was paid
+    # for. The role rows are the ones a learning-rule claim needs: which pair is empty
+    # swaps with flanker distance, so the geometry rows mix distractor with nothing-there.
+    report(eff, [('dz_centre_cong_corr',  'dZ centre, congruent correct'),
+                 ('dz_centre_incong_corr','dZ centre, incongruent correct'),
+                 ('dz_centre_cong_err',   'dZ centre, congruent error'),
+                 ('dz_centre_incong_err', 'dZ centre, incongruent error'),
+                 ('dz_flank_incong_err',  'dZ flanker slots, incong error'),
+                 ('dz_empty_incong_err',  'dZ empty slots, incong error'),
+                 ('dz_flank_cong_err',    'dZ flanker slots, cong error'),
+                 ('dz_empty_cong_err',    'dZ empty slots, cong error')],
+           'RESULT 5b — the update, slot by slot')
 
 
 if __name__ == '__main__':

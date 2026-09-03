@@ -16,6 +16,9 @@ The story, and the figure that carries each step:
     6  circularity    the control deficit precedes the error, so post-error state is circular
     7  scorecard      every human signature on one axis, matched or not
     8  noise_series   and less stimulus noise makes errors informative again
+    9  z_update       what each kind of trial teaches Z, and what the state buys
+   10  post_conflict  the conflict twin of 5: is the model slower and better after conflict
+   11  z_slot_update  the same update per slot, so the gate's own profile is visible
 
 The noise_series panels are per-seed effects from flanker_metrics.session_effects, stacked
 across noise levels and re-plotted with x = arrow_noise_std:
@@ -40,6 +43,12 @@ Run:
     python flanker_sweep_figures.py --variant noise10
     python flanker_sweep_figures.py --run sweep_noise --variant noise04
 
+In a Jupyter / VS Code interactive window there is no command line to read — sys.argv
+belongs to the kernel — so the module knobs below stand in for it: DEFAULT_VARIANT picks
+one variant (None sweeps through the whole ladder) and BUILD_NOISE_SERIES decides whether
+the cross-variant group_8 figure is built. Run as a script, the command line wins and both
+knobs are ignored, so batch jobs keep their existing meaning.
+
 Panel primitives and loading live in flanker_figure_utils.py; the per-seed measures in
 flanker_metrics.py.
 """
@@ -53,10 +62,13 @@ import matplotlib.pyplot as plt
 
 from plot_style import FigSize
 
-from flanker_figure_utils import (CELLS, COL, band, bar_row, bars_with_seeds,
+from flanker_figure_utils import (CELLS, COL, band, bar_grid, bar_row, bars_with_seeds,
                                   collect_effects, collect_sessions, compact_legend,
-                                  dots_with_ci, out_dir_for, plot_circularity, save,
-                                  series, share_ylim, sweep_root, _stack, _stack_curve)
+                                  dots_with_ci, exchange_panel, landing_marks,
+                                  out_dir_for, plot_circularity, save,
+                                  series, share_ylim, spec_post_conflict,
+                                  spec_rt_by_outcome, spec_z_slot_update, sweep_root,
+                                  _has, _interactive_kernel, _stack, _stack_curve)
 from flanker_metrics import SIGNATURES
 from flanker_sweep_config import NOISE_LADDER, VARIANTS
 
@@ -64,8 +76,24 @@ from flanker_sweep_config import NOISE_LADDER, VARIANTS
 #: see flanker_sweep.SWEEP_RUNS for what each run contains.
 RUN = None
 
-DEFAULT_VARIANT = 'noise07' # noise10
-RT_THRESHOLD = None      # this imports value from flanker_sweep_config, but can be overridden here for a different threshold
+#: Which variant to build when there is no command line to read — i.e. in a Jupyter /
+#: VS Code interactive window. A single name ('noise09') builds just that variant, which
+#: is what you usually want while iterating on a figure; None sweeps through every variant
+#: in the ladder. Ignored when this file is run as a script: there `--variant` says it, and
+#: passing no argument keeps meaning "every variant", which run_flanker_factorial.sh needs.
+DEFAULT_VARIANT = 'noise09'
+
+#: Whether to also build group_8_noise_series, the one cross-variant figure. It reloads
+#: EVERY level on disk whatever DEFAULT_VARIANT says, so it is the slow half of a run that
+#: was only meant to rebuild one variant. None decides from the variant — the ladder figure
+#: is built when the whole ladder is being built anyway, and skipped otherwise. True or
+#: False forces it either way.
+BUILD_NOISE_SERIES = None
+
+#: RT threshold these figures are computed at. None follows flanker_sweep_config; a number
+#: overrides it here without editing the sweep config. This has to be threaded through both
+#: `collect_sessions` and `extract_trials` below — setting the module variable alone used to
+#: do nothing, because build_variant re-imported the config value over the top of it.
 RT_THRESHOLD = 0.2
 
 def _stamp(fig, text, variant, n):
@@ -153,19 +181,20 @@ def fig_rt(curves, effects, out_dir, variant, interpolate=False):
 
     The third panel is the undecided rate per cell, which is a condition effect in its own
     right: incongruent trials fail to decide about three times as often as congruent ones.
+
+    The second row splits RT by outcome *within each cell*, which the pooled panel above
+    cannot do. Human flanker errors are fast — on an incongruent trial the flankers reach
+    threshold before the target — so the contrast in the last panel is the signature, and
+    it is the decided-only version because errors are exactly the trials that fail to
+    cross: on `rt_interp` a non-response sits at the trial end and would read as a slow
+    error rather than as no response at all.
     """
-    fig, axes = plt.subplots(1, 3, figsize=FigSize.row(3, panel=FigSize.wide))
+    fig, axes = plt.subplots(2, 3, figsize=FigSize.grid(2, 3, panel=FigSize.wide))
     ad = len(curves[0]['rt_x']) - 1
     x  = curves[0]['rt_bins'] if interpolate else curves[0]['rt_x']
     group = 'rt_density' if interpolate else 'rt_pmf'
 
-    for ax, keys, title in [(axes[0], [('cong', 'congruent', COL['cong']),
-                                       ('incong', 'incongruent', COL['incong'])],
-                             'by congruency'),
-                            (axes[1], [('correct', 'correct', COL['correct']),
-                                       ('error', 'error', COL['error'])], 'by outcome')]:
-        for key, label, color in keys:
-            band(ax, x, _stack_curve(curves, group, key), label, color)
+    def _rt_axis(ax, title):
         if interpolate:
             ax.set_xlabel('RT (timesteps)')
             ax.set_ylabel('Density')
@@ -176,13 +205,36 @@ def fig_rt(curves, effects, out_dir, variant, interpolate=False):
             ax.set_ylabel('P(RT = t)')
         ax.set_title(title)
         compact_legend(ax, loc='upper center')
-    share_ylim(axes[0], axes[1])
 
-    bars_with_seeds(axes[2], [(1.0 - _stack(effects, f'dec_{k}'), lbl, COL[k])
-                              for k, lbl in CELLS],
+    for ax, keys, title in [(axes[0, 0], [('cong', 'congruent', COL['cong']),
+                                          ('incong', 'incongruent', COL['incong'])],
+                             'by congruency'),
+                            (axes[0, 1], [('correct', 'correct', COL['correct']),
+                                          ('error', 'error', COL['error'])], 'by outcome')]:
+        for key, label, color in keys:
+            band(ax, x, _stack_curve(curves, group, key), label, color)
+        _rt_axis(ax, title)
+    share_ylim(axes[0, 0], axes[0, 1])
+
+    bars_with_seeds(axes[0, 2], [(1.0 - _stack(effects, f'dec_{k}'), lbl, COL[k])
+                                 for k, lbl in CELLS],
                     'Undecided fraction', title='never crossed threshold')
 
-    _stamp(fig, 'Reaction time and non-responses', variant, len(curves))
+    # Row 2: the same distributions per cell, correct and error side by side, then the
+    # contrast the scorecard scores. Dashed = error, the line-plot counterpart of the
+    # hollow bars elsewhere (plot_style.outcome_style — outcome rides on fill, not hue).
+    for ax, outcome, ls, title in [(axes[1, 0], 'corr', '-', 'correct, by cell'),
+                                   (axes[1, 1], 'err', '--', 'errors, by cell')]:
+        for key, lbl in CELLS:
+            band(ax, x, _stack_curve(curves, group, f'{key}_{outcome}'),
+                 lbl.replace('\n', '-'), COL[key], linestyle=ls)
+        _rt_axis(ax, title)
+    share_ylim(axes[1, 0], axes[1, 1])
+
+    groups, kw = spec_rt_by_outcome(effects, decided=True)[2]
+    bars_with_seeds(axes[1, 2], groups, **kw)
+
+    _stamp(fig, 'Reaction time, non-responses, and RT by outcome', variant, len(curves))
     fig.tight_layout()
     return save(fig, f'{out_dir}/group_3_rt.pdf')
 
@@ -412,15 +464,138 @@ def fig_noise_series(out_dir, ladder=None):
     return save(fig, f'{out_dir}/group_8_noise_series.pdf')
 
 
+# ── 9. What each trial teaches Z ──────────────────────────────────────────────
+
+def fig_z_update(effects, trials_list, out_dir, variant):
+    """
+    The control update each kind of trial produces, and what the resulting state buys.
+
+    `delta_focus` is the update a trial *generated*, not the state it sat in, and that
+    distinction is the only reason this figure may be grouped by the trial's own
+    condition at all: reading a focus level after conditioning on the outcome is circular
+    — a focused Z is what made the trial correct — while the update describes the learning
+    rule, so grouping it by the trial's own properties is legitimate. This is the group
+    version of run_flanker.py's Result 5, which shows the same contrast in one session.
+
+    Panels 1 and 2 hold the four congruency x distance cells and split them by outcome
+    rather than pooling, because the two halves answer different questions: a correct
+    trial's update is what maintains the state, an error's is the correction the model
+    actually makes. The error panel is drawn hollow — the house convention for an error
+    cell, so outcome never has to spend a hue.
+
+    The two panels are deliberately NOT on a shared y scale. An error's update is three to
+    five times a correct trial's, so sharing flattens the correct panel onto its baseline
+    and hides what it is there to show: that congruent trials teach Z *away* from the
+    target while incongruent ones do not. Read the magnitudes off the two axes, which
+    differ by design; group_6's third panel is where the pooled sizes are compared on one
+    scale.
+
+    Panels 3 and 4 are the exchange rate: how much accuracy, and how much RT, a given
+    inherited control state buys on incongruent trials, with the states the trial after an
+    error and after a correct trial actually inherited marked on both. Panel 3 is the same
+    quantity as group_6's fifth panel, repeated here so the pair reads together — a
+    control account says the gap has to be paid for in speed as well as in accuracy, and a
+    model that charges for it in only one of the two is not reproducing the human
+    trade-off.
+    """
+    from flanker_metrics import event_locked
+
+    fig, axes = plt.subplots(1, 4, figsize=FigSize.row(4, panel=FigSize.wide))
+
+    for ax, outcome, title in [(axes[0], 'corr', 'correct trials'),
+                               (axes[1], 'err', 'errors')]:
+        bars_with_seeds(ax, [(_stack(effects, f'dfocus_{k}_{outcome}'), lbl, COL[k])
+                             for k, lbl in CELLS],
+                        'Δ Z focus (this trial\'s update)', baseline=0.0, title=title,
+                        hollow=[outcome == 'err'] * len(CELLS))
+
+    # Sessions are the replicate, as in fig_circularity: event_locked returns per-event
+    # traces, averaged within a session before stacking.
+    per_session = [event_locked(tr) for tr in trials_list]
+    ev = {'lags': per_session[0]['lags']}
+    for key in ('focus_err', 'focus_corr'):
+        ev[key] = np.array([np.nanmean(s[key], axis=0) for s in per_session])
+    marks = landing_marks(ev)
+
+    for ax, key, ylabel in [(axes[2], 'curve_y',  'Accuracy, incongruent trials'),
+                            (axes[3], 'curve_rt', 'RT (timesteps), incongruent trials')]:
+        exchange_panel(ax, [s['curve_x'] for s in per_session],
+                       [s[key] for s in per_session], ylabel, marks=marks)
+
+    _stamp(fig, 'What each trial teaches Z, and what the state buys', variant, len(effects))
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/group_9_z_update.pdf')
+
+
+# ── 10. The conflict twin of the post-error figure ────────────────────────────
+
+def fig_post_conflict(effects, out_dir, variant):
+    """
+    Is the model slower and more accurate after conflict, the way a human is?
+
+    The deliberate parallel of `fig_post_error`: same shape, same trial-B split, one
+    factor changed. There trial A is an error; here trial A is *correct* and incongruent.
+    That restriction is what makes this conflict adaptation rather than a second view of
+    post-error adaptation — incongruent trials fail more often, so an unrestricted
+    "after an incongruent trial" contrast is partly post-error slowing under another name.
+
+    Panels are built from `spec_post_conflict`, which run_flanker.py's Result 3c also
+    draws, so the workbench and the group version cannot drift apart.
+    """
+    fig, axes = bar_row(spec_post_conflict(effects))
+    share_ylim(axes[0], axes[1])        # PCS against its decided-only companion
+    _stamp(fig, 'Post-incongruent adaptation (post-correct trial A)', variant, len(effects))
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/group_10_post_conflict.pdf')
+
+
+# ── 11. The update, slot by slot ──────────────────────────────────────────────
+
+def fig_z_slot_update(effects, out_dir, variant):
+    """
+    What the update did to each slot, rather than to the scalar focus index.
+
+    `delta_focus` — the measure every other Z panel uses — is centre minus the mean of the
+    flankers, so it can only say whether the gate moved toward the target. These rows say
+    where it went. Row 1 is the fixed geometry (centre, the near pair, the far pair); row
+    2 is the role each pair played on that trial, which is not the same thing, because a
+    near display leaves slots 0 and 4 empty and a far display leaves 1 and 3.
+
+    Row 3 appears only when the run logged gradients. It matters because `delta_z` is the
+    change in the *softmaxed* gate and therefore sums to ~0 across slots — the centre
+    cannot rise without something else falling, so a negative bar in rows 1 and 2 is not
+    on its own evidence of suppression. The raw dL/dZ carries no such constraint and is
+    the honest read of what the trial's error actually asked for.
+
+    Correct and error panels are not on a shared y scale, for the reason `fig_z_update`
+    gives: an error's update is several times a correct trial's, and sharing would flatten
+    the correct panel onto its baseline.
+    """
+    rows = [spec_z_slot_update(effects, grouping='geometry'),
+            spec_z_slot_update(effects, grouping='role')]
+    if _has(effects, 'zgrad_centre_incong_err'):
+        rows.append(spec_z_slot_update(effects, grouping='geometry', measure='zgrad'))
+    fig, axes = bar_grid(rows)
+    _stamp(fig, 'What the update does to each slot', variant, len(effects))
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/group_11_z_slot_update.pdf')
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _rt_threshold():
+    """The RT threshold to read sessions at — the module knob, else the sweep's own."""
+    from flanker_sweep_config import RT_THRESHOLD as SWEEP_RT_THRESHOLD
+    return SWEEP_RT_THRESHOLD if RT_THRESHOLD is None else RT_THRESHOLD
+
+
 def build_variant(variant, out_dir=None):
-    """The seven per-variant figures."""
+    """The ten per-variant figures."""
     from flanker_analyses import extract_trials
     from flanker_sweep import load_condition
-    from flanker_sweep_config import RT_THRESHOLD
 
-    effects, curves = collect_sessions(variant)
+    rt_threshold = _rt_threshold()
+    effects, curves = collect_sessions(variant, rt_threshold=rt_threshold)
     if not effects:
         print(f'  [{variant}] no results on disk — skipping.')
         return
@@ -430,23 +605,43 @@ def build_variant(variant, out_dir=None):
     fig_rt(curves, effects, out_dir, variant)
     fig_history(effects, out_dir, variant)
     fig_post_error(effects, out_dir, variant)
-    trials_list = [extract_trials(r['train_logger'], r['config'], rt_threshold=RT_THRESHOLD)
+    trials_list = [extract_trials(r['train_logger'], r['config'], rt_threshold=rt_threshold)
                    for r in load_condition(variant)]
     fig_circularity(trials_list, out_dir, variant)
     fig_scorecard(effects, out_dir, variant)
+    fig_z_update(effects, trials_list, out_dir, variant)
+    fig_post_conflict(effects, out_dir, variant)
+    fig_z_slot_update(effects, out_dir, variant)
 
 
-def main(variant=None, run=None):
+def main(variant=None, run=None, noise_series=None):
     from flanker_sweep import use_run
+
+    # DEFAULT_VARIANT applies only where the command line cannot: inside a kernel, sys.argv
+    # belongs to the kernel, so `--variant` can never be typed and the module knob is the
+    # only way to say "just this one". Run as a script the command line stays authoritative
+    # and no argument still means every variant.
+    if variant is None and _interactive_kernel():
+        variant = DEFAULT_VARIANT
+    if noise_series is None:
+        noise_series = BUILD_NOISE_SERIES
+    if noise_series is None:
+        noise_series = variant is None      # the ladder figure needs the whole ladder
 
     # Everything below resolves paths through RUN_NAME, so one context manager steers both
     # what is read and where the figures are written.
     with use_run(run or RUN or None) as active:
-        print(f'sweep run: {active}')
-        for name in ([variant] if variant else list(VARIANTS)):
+        names = [variant] if variant else list(VARIANTS)
+        print(f'sweep run: {active}  |  variants: {", ".join(names)}  |  '
+              f'rt_threshold: {_rt_threshold()}')
+        for name in names:
             print(f'\n── {name} ──')
             build_variant(name)
-        fig_noise_series(sweep_root())
+        if noise_series:
+            fig_noise_series(sweep_root())
+        else:
+            print(f'\ngroup_8_noise_series skipped — it reloads every level on disk, not '
+                  f'just {names[0]}. Set BUILD_NOISE_SERIES = True to build it anyway.')
 
 
 def args_from_argv():

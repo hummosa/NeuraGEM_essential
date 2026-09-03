@@ -1,0 +1,15 @@
+{
+  "venvPath": "/users/ahummos/venvs",
+  "venv": "neo",
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "archive",
+    "exports"
+  ],
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "none",
+  "reportUnusedExpression": "none"
+}
