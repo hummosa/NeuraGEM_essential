@@ -97,7 +97,7 @@ fig_gaussian = False   # whether to overlay a Gaussian fit on RT PMFs
 # incongruent ones — during the delay the flankers already point at the answer, so a
 # congruent trial can commit before the target exists and an incongruent one commits
 # wrongly. Read Result 2 first.
-target_delay = 4       # 0 = simultaneous onset; 9 response steps, so 4 leaves 5 post-onset
+target_delay = 1       # 0 = simultaneous onset; 9 response steps, so 4 leaves 5 post-onset
 
 # Result 6 (trial-history regression). False prints the ~6 rows that are results — the
 # human signatures and the mediation. True adds every model's full coefficient table and

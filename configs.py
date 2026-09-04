@@ -832,6 +832,17 @@ class FlankerTaskConfig(Config):
             f'arrows_duration={self.arrows_duration}, seq_len={self.seq_len}. '
             f'Use set_arrows_duration() rather than assigning arrows_duration directly.'
         )
+        # predict_first_frame=False shortens the output sequence to seq_len - 1, which the
+        # flanker analysis layer is not built for: _log_batch would store arrows_duration
+        # inputs against arrows_duration - 1 outputs, and extract_trials reshapes both by
+        # arrows_duration. Fail here, at construction, rather than with a tensor-size error
+        # inside _mask_loss or a reshape error deep in extract_trials.
+        assert self.predict_first_frame, (
+            'predict_first_frame=False is not supported by the flanker task. The loss '
+            'target (dim 5, the true direction) is constant within a trial, so next-frame '
+            'prediction buys nothing here, while the shorter output sequence misaligns '
+            'extract_trials and every within-trial panel. See docs/flanker_task.md.'
+        )
 
     def _set_temporal_weights(self):
         """Compute temporal_loss_weights from response_start_timestep and temporal_decay_factor."""

@@ -88,6 +88,26 @@ output_loss_mask = [0, 0, 0, 0, 0, 1]   # loss only on dim 5 (direction)
 
 `predict_first_frame=True` → t=0 gets a zero frame; the response window starts at t=1.
 
+**It is not optional here, and it is not a leftover.** `_validate()` rejects
+`predict_first_frame=False` at construction. Two reasons:
+
+- *It buys nothing.* The loss target is dim 5, the true direction, which is **constant
+  across every frame of a trial**. "Predict the next frame's direction" and "report this
+  frame's direction" are the same target, so next-frame prediction has no content to
+  predict. (It earns its keep in `RotatingTargetsConfig`, where the cue step must predict
+  where the attack lands — a genuine transition.)
+- *It breaks the alignment.* With `False` the model consumes `seq_len - 1` steps, so
+  `_log_batch` stores `arrows_duration` inputs against `arrows_duration - 1` outputs while
+  `extract_trials` reshapes both by `arrows_duration`. Measured: it first dies in
+  `_mask_loss` (`tensor a (9) must match tensor b (10)`); shorten `temporal_loss_weights`
+  to compensate and it dies later in `extract_trials`
+  (`cannot reshape array of size 1080 into shape (120,10)`). Both are loud, but the fix is
+  a rewrite of the trial-alignment convention, not a config flip.
+
+What `True` actually costs is one dead timestep: t=0 has seen no evidence and carries zero
+loss weight, so a 10-step trial yields 9 usable response steps. To reclaim it, raise
+`arrows_duration` — do not flip the flag.
+
 ```
 temporal_loss_weights = [0, 1.0, e^-λ, e^-2λ, ...]       λ = temporal_decay_factor
 ```
