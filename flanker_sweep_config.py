@@ -202,6 +202,13 @@ DELAY_LADDER = [(f'delay{d}', d) for d in DELAY_LEVELS]
 # ad10_ prefix: arrows_duration moved from 5 to 10, so these results are not comparable
 # with the 400 pickles under factorial_* and must not land beside them.
 RUN_NAME      = 'ad10_delay'
+
+#: The variant every entry point reads when none is named. 'delay1' is the rung
+#: run_flanker.py currently runs, so the workbench figures and a no-argument group run
+#: describe the same condition. Without this the two disagreed: the figure script had its
+#: own DEFAULT_VARIANT while the analysis script fell through to next(iter(VARIANTS)),
+#: which is whichever rung happens to be declared first.
+DEFAULT_VARIANT = 'delay1'
 EXPORT_ROOT   = './exports/flanker_random/sweeps'
 SKIP_EXISTING = True        # resume: skip jobs whose result pickle already exists
 

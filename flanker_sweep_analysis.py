@@ -25,7 +25,7 @@ from plot_style import FigSize
 from flanker_analyses import extract_trials
 from flanker_metrics import session_effects
 from flanker_sweep import load_condition, result_path
-from flanker_sweep_config import RT_THRESHOLD, SEEDS, VARIANTS
+from flanker_sweep_config import DEFAULT_VARIANT, RT_THRESHOLD, SEEDS, VARIANTS
 
 import os
 
@@ -101,7 +101,7 @@ def paired(effects, key_a, key_b, label):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(variant=None):
-    variant = variant or next(iter(VARIANTS))
+    variant = variant or DEFAULT_VARIANT
     print('=' * 84)
     print(f'ACROSS-SUBJECT SUMMARY  (each seed = one subject, variant={variant})')
     print('=' * 84)
@@ -238,7 +238,7 @@ def main(variant=None):
 
 
 if __name__ == '__main__':
-    # `python flanker_sweep_analysis.py noise04` for one variant; no argument uses the
-    # first in flanker_sweep_config.VARIANTS.
+    # `python flanker_sweep_analysis.py delay4` for one variant; no argument uses
+    # flanker_sweep_config.DEFAULT_VARIANT.
     import sys
     main(sys.argv[1] if len(sys.argv) > 1 else None)
