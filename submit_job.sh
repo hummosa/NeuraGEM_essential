@@ -7,9 +7,6 @@
 # than `afterok`: a flanker test task calls ensure_pretrained() itself, so one failed
 # pretrain task should not block the other 99 test tasks.
 #
-# FLANKER_ARM, if set in the environment, is written into the submitted script and selects
-# the 2x2 cell in flanker_sweep_config.ARMS. See run_flanker_factorial.sh.
-#
 # Prints the SLURM job id on the last line so a caller can chain dependencies.
 
 VALID="learning | generalization_tests | mean_prediction | flanker_pretrain | flanker | rotation_slips | curriculum"
@@ -86,10 +83,6 @@ JOBID=$(sbatch --parsable $DEPENDENCY --array=0-$MAX_TASK_ID%$MAX_PARALLEL <<EOF
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=hummosa@live.com
 
-# The 2x2 cell for the flanker factorial; expanded at SUBMIT time, so the value is baked
-# into this script rather than inherited from whatever environment the task lands in.
-export FLANKER_ARM="$FLANKER_ARM"
-
 # Activate env and run
 source $HOME/load_python_venv.sh
 
@@ -98,5 +91,5 @@ EOF
 )
 
 echo "Submitted array jobs 0..$MAX_TASK_ID for '$EXPERIMENT_NAME' with max parallelism $MAX_PARALLEL." \
-     "${FLANKER_ARM:+arm=$FLANKER_ARM}" "${AFTER_JOBID:+after=$AFTER_JOBID}"
+     "${AFTER_JOBID:+after=$AFTER_JOBID}"
 echo "$JOBID"

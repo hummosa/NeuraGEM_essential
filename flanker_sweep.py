@@ -37,6 +37,7 @@ from flanker_sweep_config import (
     SEEDS, N_PRETRAIN_TRIALS, N_TEST_TRIALS, P_CONGRUENT, ARROWS_DURATION,
     GATING, Z_INIT_SCALE, PRETRAIN_OVERRIDES, TEST_OVERRIDES, VARIANTS,
     RUN_NAME, EXPORT_ROOT, SKIP_EXISTING,
+    ORACLE_GATE_JITTER, RT_THRESHOLD, NOISE_LADDER, DELAY_LEVELS,
 )
 
 
@@ -49,6 +50,11 @@ from flanker_sweep_config import (
 # entry point prints the run it used.
 
 SWEEP_RUNS = {
+    'ad10_delay': 'CURRENT. 10-timestep trials (was 5), and the target-onset delay ladder '
+                  '"flankers first" crossed with a four-rung noise ladder. Runs exactly '
+                  "what run_flanker.py runs — see flanker_sweep_config's parity rule and "
+                  'check_parity(). Not comparable with any factorial_* or sweep_* run '
+                  'below: those are all five-timestep trials.',
     'factorial_nojit_pc52': 'FACTORIAL BASELINE: no oracle gate jitter, p_corr_by_distance[2] '
                             '= 0.52. The 2x2 reference cell — neither Stage-1 knob on.',
     'factorial_jit_pc52':   'FACTORIAL: oracle gate jitter (0.5, 1.5), p_corr[2] = 0.52. '
@@ -312,6 +318,40 @@ def build_pretrain_config(seed: int, tag: str = 'shared') -> FlankerTaskConfig:
     return config
 
 
+def build_test_config(seed: int, variant: str) -> FlankerRandomTrialsConfig:
+    """The Stage-2 config for one (seed, variant), exactly as run_job runs it.
+
+    Factored out of run_job so that check_parity() can compare it against run_flanker.py
+    without training anything. Gating and the Stage-1-only settings are NOT applied here —
+    run_job copies those off the loaded model, which is the only place they are known.
+    """
+    spec           = VARIANTS.get(variant, {})
+    overrides      = spec.get('overrides', {})
+    stim_overrides = spec.get('pretrain_overrides', {})
+
+    config = FlankerRandomTrialsConfig(experiment_to_run='default')
+    config.run_name    = f'{RUN_NAME}_{variant}_seed-{seed}'
+    config.env_seed    = seed
+    config.p_congruent = P_CONGRUENT
+    config.set_n_trials(N_TEST_TRIALS)
+    # Must match Stage 1: the weights were trained at this trial length, and Z is sized
+    # from seq_len. FlankerRandomTrialsConfig overrides the setter because one batch is
+    # one trial here, so block_size is arrows_duration rather than a multiple of it.
+    config.set_arrows_duration(ARROWS_DURATION)
+    for key, value in TEST_OVERRIDES.items():
+        setattr(config, key, value)
+    # Stage-1 overrides are stimulus/task parameters shared by both stages, so they must
+    # apply here too: arrow_noise_std would otherwise train and test at different values
+    # with no warning.
+    for key, value in stim_overrides.items():
+        setattr(config, key, value)
+    # Test-stage overrides last, so they win.
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    config._validate()
+    return config
+
+
 def ensure_pretrained(seed: int, tag: str = 'shared') -> None:
     """Train and cache the Stage-1 model for one seed, plus its learning curve.
 
@@ -385,26 +425,7 @@ def run_job(job: ExperimentJob, job_index: Optional[int] = None,
           + (f'  {overrides}' if overrides else ''))
     model = load_pretrained(job.seed, tag)
 
-    test_config = FlankerRandomTrialsConfig(experiment_to_run='default')
-    test_config.run_name    = f'{RUN_NAME}_{job.variant}_seed-{job.seed}'
-    test_config.env_seed    = job.seed
-    test_config.p_congruent = P_CONGRUENT
-    test_config.set_n_trials(N_TEST_TRIALS)
-    # Must match Stage 1: the weights were trained at this trial length, and Z is sized
-    # from seq_len. FlankerRandomTrialsConfig overrides the setter because one batch is
-    # one trial here, so block_size is arrows_duration rather than a multiple of it.
-    test_config.set_arrows_duration(ARROWS_DURATION)
-    for key, value in TEST_OVERRIDES.items():
-        setattr(test_config, key, value)
-    # Stage-1 overrides are stimulus/task parameters shared by both stages, so they
-    # must apply here too. p_corr_by_distance happens to be unused at test, but
-    # something like arrow_noise_std would otherwise train and test at different
-    # values without any warning.
-    for key, value in stim_overrides.items():
-        setattr(test_config, key, value)
-    # Test-stage overrides last, so they win.
-    for key, value in overrides.items():
-        setattr(test_config, key, value)
+    test_config = build_test_config(job.seed, job.variant)
 
     # model.config is the pretraining config the model was built with; the gating
     # choice lives there, and a freshly constructed stage config would revert it.
@@ -468,8 +489,131 @@ def load_condition(variant: str, seeds: Optional[List[int]] = None) -> List[Dict
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+# ── The parity rule ───────────────────────────────────────────────────────────
+#
+# The sweep must run the same simulation as run_flanker.py. This asserts it two ways,
+# neither of which duplicates a value that could go stale:
+#
+#   1. The sweep's own configs may differ from the plain class defaults ONLY in the keys
+#      listed in _PARITY_ALLOWED. A new hidden override therefore fails the check rather
+#      than silently changing what the group figures describe.
+#   2. The handful of scalars run_flanker.py pins in its own source are read back out of
+#      that source and compared. Regex rather than import, because run_flanker.py is a
+#      `#%%` cell script that trains a model on import.
+
+#: Keys the sweep is allowed to set away from the class default, with why.
+_PARITY_ALLOWED = {
+    'oracle_gate_jitter':          'pinned; run_flanker.py pins it too',
+    'no_of_steps_in_latent_space': 'pinned; run_flanker.py sets it on the test config',
+    'arrow_noise_std':             'the noise ladder axis',
+    'target_delay':                'the delay ladder axis',
+    # session length and its derived block counts
+    'n_pretrain_trials': 'session length', 'n_training_contexts': 'derived',
+    'no_of_blocks': 'derived', 'blocked_phase_length': 'derived',
+    'n_trials': 'session length', 'block_size': 'derived',
+    'arrows_duration': 'trial length', 'seq_len': 'derived', 'stride': 'derived',
+    'temporal_loss_weights': 'derived from arrows_duration',
+    'p_congruent': 'pinned; matches the human task',
+    'pre_gating': 'GATING', 'post_gating': 'GATING',
+    # bookkeeping, not simulation
+    'run_name': '', '_run_name': '', 'export_path': '', 'env_seed': '',
+    'experiment_to_run': '', 'dataset_name': '',
+}
+
+_WORKBENCH = 'run_flanker.py'
+
+
+def _workbench_scalars(path: str = _WORKBENCH) -> dict:
+    """Scalars run_flanker.py pins in its own source. Regex: importing it would train."""
+    import re
+    text = open(path).read()
+
+    def grab(pattern, cast=float):
+        m = re.search(pattern, text, re.M)
+        return cast(m.group(1)) if m else None
+
+    return {
+        'target_delay':       grab(r'^target_delay\s*=\s*([0-9]+)', int),
+        'training_noise_std': grab(r'^training_noise_std\s*=\s*([0-9.]+)'),
+        'testing_noise_std':  grab(r'^testing_noise_std\s*=\s*([0-9.]+)'),
+        'oracle_gate_jitter': grab(r'^config\.oracle_gate_jitter\s*=\s*(\([^)]*\)|None)',
+                                   lambda s: None if s == 'None' else eval(s)),
+        'rt_threshold':       grab(r'extract_trials\(logger_t,\s*test_config,\s*rt_threshold=([0-9.]+)'),
+    }
+
+
+def check_parity(verbose: bool = True) -> bool:
+    """Assert the sweep runs what run_flanker.py runs. Returns True if it does."""
+    import numpy as np
+
+    def same(a, b):
+        try:
+            if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+                return len(a) == len(b) and np.allclose(a, b)
+            if isinstance(a, float) or isinstance(b, float):
+                return np.isclose(a, b)
+            return a == b
+        except Exception:
+            return a == b
+
+    problems = []
+
+    # 1. sweep configs vs plain class defaults
+    base_pre, base_test = FlankerTaskConfig(), FlankerRandomTrialsConfig()
+    pairs = [('Stage 1', base_pre, build_pretrain_config(0, tag=next(iter(VARIANTS)))),
+             ('Stage 2', base_test, build_test_config(0, next(iter(VARIANTS))))]
+    for stage, base, built in pairs:
+        for k, v in vars(built).items():
+            if k in _PARITY_ALLOWED:
+                continue
+            if k in vars(base) and not same(vars(base)[k], v):
+                problems.append(f'{stage}: {k} = {v!r} but configs.py default is '
+                                f'{vars(base)[k]!r} (not in _PARITY_ALLOWED)')
+
+    # 2. the scalars run_flanker.py pins in its source
+    try:
+        wb = _workbench_scalars()
+    except FileNotFoundError:
+        wb = {}
+        if verbose:
+            print(f'  ({_WORKBENCH} not found — source check skipped)')
+    if wb.get('oracle_gate_jitter', '<none>') != '<none>':
+        if not same(wb['oracle_gate_jitter'], ORACLE_GATE_JITTER):
+            problems.append(f'oracle_gate_jitter: {_WORKBENCH} has '
+                            f'{wb["oracle_gate_jitter"]!r}, sweep has {ORACLE_GATE_JITTER!r}')
+    if wb.get('training_noise_std') and wb.get('testing_noise_std'):
+        if not same(wb['training_noise_std'], wb['testing_noise_std']):
+            problems.append(
+                f'{_WORKBENCH}: training_noise_std={wb["training_noise_std"]} != '
+                f'testing_noise_std={wb["testing_noise_std"]}. arrow_noise_std is a '
+                f'stimulus parameter and must match across stages.')
+    if wb.get('rt_threshold') and not same(wb['rt_threshold'], RT_THRESHOLD):
+        problems.append(f'rt_threshold: {_WORKBENCH} reads at {wb["rt_threshold"]}, '
+                        f'sweep at {RT_THRESHOLD}')
+    if wb.get('target_delay') is not None and wb['target_delay'] not in DELAY_LEVELS:
+        problems.append(f'{_WORKBENCH} runs target_delay={wb["target_delay"]}, which is '
+                        f'not a rung of DELAY_LEVELS={DELAY_LEVELS}')
+
+    if verbose:
+        if wb:
+            print(f'{_WORKBENCH} pins: ' + '  '.join(f'{k}={v!r}' for k, v in wb.items()))
+        print(f'sweep pins:     oracle_gate_jitter={ORACLE_GATE_JITTER!r}  '
+              f'arrows_duration={ARROWS_DURATION}  rt_threshold={RT_THRESHOLD}')
+        print(f'ladders:        noise {[n for _, n in NOISE_LADDER]}  delay {DELAY_LEVELS}')
+        if problems:
+            print(f'\nPARITY FAILED ({len(problems)}):')
+            for p in problems:
+                print(f'  - {p}')
+        else:
+            print('\nPARITY OK — the sweep runs what the workbench runs.')
+    return not problems
+
+
 def main(mode: str = 'full') -> None:
     task_id_str = os.environ.get('SLURM_ARRAY_TASK_ID')
+
+    if mode == 'parity':
+        raise SystemExit(0 if check_parity() else 1)
 
     if mode == 'pretrain':
         jobs = pretrain_jobs()
@@ -497,5 +641,13 @@ def main(mode: str = 'full') -> None:
         run_job(jobs[task_id], job_index=task_id, total=total)
 
 
+_MODES = ('full', 'pretrain', 'parity')
+
 if __name__ == '__main__':
-    main('pretrain' if 'pretrain' in sys.argv[1:] else 'full')
+    # Explicit allowlist, and an unknown argument is an ERROR. The old form was
+    # `'pretrain' if 'pretrain' in sys.argv[1:] else 'full'`, which silently turned any
+    # typo — or any new mode — into a full sweep of every seed x variant.
+    args = [a for a in sys.argv[1:] if not a.startswith('-')]
+    if len(args) > 1 or (args and args[0] not in _MODES):
+        raise SystemExit(f'Usage: python flanker_sweep.py [{" | ".join(_MODES)}]')
+    main(args[0] if args else 'full')

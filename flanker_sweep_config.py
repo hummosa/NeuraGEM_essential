@@ -1,26 +1,50 @@
 """
-Configuration for the flanker noise sweep.
+Configuration for the flanker sweep.
 
-Edit this file to change what flanker_sweep.py runs — seeds, session lengths, the noise
-levels, export paths. The runner itself holds no settings.
+Edit this file to change what flanker_sweep.py runs — seeds, session lengths, the ladders,
+export paths. The runner itself holds no settings.
 
-Design
-──────
-Each seed is a synthetic subject with its own Stage-1 pretraining, i.e. its own weights.
-`arrow_noise_std` is a stimulus parameter, so it has to be the same in training and test:
-every noise level therefore gets its own pretrained model per seed, and the comparison
-across noise is between-subject rather than within.
+The parity rule
+───────────────
+**This sweep must run the same simulation as run_flanker.py, the single-session
+workbench.** That is the whole contract: the workbench is where parameters get tuned by
+eye, and the sweep is where the same model is run across seeds for statistics. If they
+drift, the group figures stop describing the sessions the workbench figures show.
+
+Parity is achieved by *inheriting* the class defaults in configs.FlankerTaskConfig rather
+than restating them here. Anything this file pins is something run_flanker.py also pins
+explicitly; anything it stays silent about (`p_corr_by_distance`, `arrow_noise_std`,
+`bg_noise_std`, `latent_activation`, `temporal_decay_factor`, the Z optimizer settings)
+comes from the class, so editing configs.py moves both scripts together.
+
+That is a deliberate reversal of this file's old policy of restating every value "so a
+config change cannot silently alter what a named run means". Reproducibility is preserved
+a better way: `stage1_fingerprint` records the values a run actually used into a sidecar
+beside every model, `check_pretrain_fingerprint` refuses a cache trained under different
+settings, and `flanker_sweep.describe_runs()` reports what is on disk. Those read the real
+config, so they cannot go stale the way a duplicated constant can.
+
+`flanker_sweep.check_parity()` asserts the rule, and is worth running after any edit to
+configs.py or to this file.
 
 What is crossed
 ───────────────
-Three axes: the noise ladder below (5 levels), and two Stage-1 knobs — oracle gate jitter
-and p_corr_by_distance[2] — crossed 2x2 into four separate sweep runs, one per ARM. The
-noise ladder runs inside every arm.
+Two ladders, and they are cheap in very different ways:
 
-Everything else is held at exactly what run_flanker.py, the single-session workbench,
-runs; the two scripts' configs were diffed attribute by attribute and only bg_noise_std
-differed (see PRETRAIN_OVERRIDES). Keep it that way — an axis that is not in ARMS or
-VARIANTS is a silent departure from the simulation the workbench figures describe.
+  NOISE_LADDER  `arrow_noise_std` is a stimulus parameter, so it must match across Stage 1
+                and Stage 2. Every rung therefore needs its OWN pretrained model per seed,
+                and the comparison across noise is between-subject.
+
+  DELAY_LADDER  `target_delay` is Stage-2 only — the weights never see it — so every rung
+                carries test-stage `overrides` and no `pretrain_overrides`, which resolves
+                them all to the 'shared' pretrain tag. All four delays reuse ONE model set
+                per seed and cost no extra pretraining.
+
+Axes that used to be here and are gone: the 2x2 ARMS factorial over oracle gate jitter x
+p_corr_by_distance[2] (its result is recorded — 9 of 11 human signatures matched without
+jitter against 8 with — and it hard-coded a p_corr profile that no longer matches
+configs.py, which is exactly the drift the parity rule exists to prevent); p_congruent (the
+proportion-congruent effect is established); and Z_decay.
 
 Why noise
 ─────────
@@ -30,19 +54,22 @@ the *target slot's own samples* often point the wrong way, so most errors are ba
 rather than too little control. The latent update minimises this trial's prediction error,
 so on those trials it correctly attends the target *less* — locally right, globally
 anti-adaptive. Lowering the noise should shrink the share of such errors and restore the
-signatures. That single prediction is what this sweep tests.
+signatures.
 
-The axes that used to be here are gone: p_congruent (the proportion-congruent effect is
-established and does not need re-running), Z_decay (its role as the control-magnitude knob
-is understood), and the spatial gradient (the steep setting is now the default in
-configs.py, so it is the model rather than a variant).
+Why delay
+─────────
+"Flankers first": the flankers are on from frame 0 and the TARGET's onset is delayed. Does
+a later target mean a later response, and do the flankers alone let a congruent trial
+commit early? Nothing is compensated for the delay — speed pressure and the RT origin are
+unchanged. See FlankerTaskConfig.target_delay and docs/flanker_task.md.
 
-Running the four arms
-─────────────────────
-    FLANKER_ARM=nojit_pc52 python flanker_sweep.py pretrain     # then without `pretrain`
+Running it
+──────────
+    python flanker_sweep.py pretrain     # populate the model cache first
+    python flanker_sweep.py              # then the test sessions
 
-On SLURM, `./run_flanker_factorial.sh` submits all four arms with the right array sizes
-and pretrain -> test dependencies, and collects the two figures per arm.
+On SLURM, `./run_flanker_sweep.sh submit` sizes both arrays from this file and wires the
+pretrain -> test dependency.
 """
 
 import os
@@ -73,70 +100,19 @@ P_CONGRUENT = 0.5
 GATING = 'post'             # 'pre' or 'post' multiplicative gating
 Z_INIT_SCALE = 0.2          # Z re-seed before the test session
 
-# ── The 2x2: oracle gate jitter x p_corr_by_distance[2] ───────────────────────
+# Redraws the sharpness of the Stage-1 oracle gate every training trial. Pinned here
+# because run_flanker.py pins it too (and to the same value) — it is one of the few
+# settings the workbench sets explicitly rather than inheriting.
 #
-# Two Stage-1 knobs are crossed, one sweep run per cell. The cell is chosen by the
-# FLANKER_ARM environment variable, so all four arms read this file unedited and no
-# submission can race a mid-flight edit:
-#
-#     FLANKER_ARM=nojit_pc52 python flanker_sweep.py        # the baseline arm
-#
-# jitter   Redraws the sharpness of the oracle gate on every training trial. None is the
-#          fixed oracle every run before this used; (0.5, 1.5) is the jittered arm.
-#          Stage 1 varies WHICH slot the oracle points at (the target rotates) but never
-#          HOW SHARPLY: softmax(one-hot / softmax_temp) is peak 0.405 on every training
-#          trial at the default temperature. The weights are therefore calibrated to emit
-#          +-1 at that one sharpness, and at a sharper gate they overshoot. Stage 2 infers
-#          Z freely and runs sharper than 0.405 on roughly three quarters of trials.
-#          Because the latent update descends squared error, on a congruent trial (whose
-#          sign is already right at every gate) the only remaining gradient is "make the
-#          output smaller", and the update obeys it by flattening the gate. Half the list
-#          therefore teaches the controller to stop attending, it drifts onto slots that
-#          carry no arrow, and near-flanker trials — which leave the OUTER slots empty,
-#          the damaging case — pay for it as a spurious near-vs-far accuracy difference on
-#          CONGRUENT trials. Full diagnosis: flanker_near_cong_diagnostic.py.
-#
-#          WHAT THIS FACTORIAL FOUND (20 seeds, arrow_noise_std 0.9). Jitter is not as
-#          critical as that story implies. It was adopted against runs with
-#          bg_noise_std = 0.1; at 0 the near-vs-far congruent artifact is already gone
-#          without it (+0.011, matches humans, in the no-jitter baseline). What jitter
-#          then does is mostly cost: it REVERSES PERI, +0.073 -> -0.188, and pushes the
-#          incongruent RT distance effect out of significance, +0.137 -> +0.097. It also
-#          raises the control state, mean focus 0.342 -> 0.391 — Z runs sharper — which is
-#          the mechanism to suspect for both. Its one real gain is post-error slowing,
-#          pes_BI 0.108 (n.s.) -> 0.375. Net: 9 of 11 human signatures matched without
-#          jitter, 8 with. The baseline arm is the one to build on.
-#
-#          Across the whole ladder jitter never matches MORE signatures than the baseline
-#          at any level — ties at 1.3 and 0.7 (cleaner at 0.7: 0 opposite vs 1), loses at
-#          1.0, 0.9 and 0.4. Its one consistent effect is raising mean focus ~0.05 at every
-#          level. The PERI reversal is mid-ladder: at arrow_noise_std 0.4 jitter roughly
-#          doubles PERI instead, 0.397 -> 0.936.
-#
-# p_corr2  p_corr_by_distance[2] — the probability that a companion two slots from the
-#          target matches it. 0.52 is barely above chance, 0.58 is the stronger coupling.
-#          The rest of the profile is held at [1.0, 0.75, _, 0.51, 0.5]. Nothing in it may
-#          dip below 0.5: a companion that predicted the OPPOSITE direction taught the
-#          model negative read-out weights at that distance (see configs.py).
-ARMS = {
-    'nojit_pc52': dict(jitter=None,       p_corr2=0.52),   # baseline: neither knob on
-    'jit_pc52':   dict(jitter=(0.5, 1.5), p_corr2=0.52),   # jitter only
-    'nojit_pc58': dict(jitter=None,       p_corr2=0.58),   # correlation only
-    'jit_pc58':   dict(jitter=(0.5, 1.5), p_corr2=0.58),   # both
-}
+# NOTE, and worth revisiting: the case for jitter was built when `latent_activation` was
+# 'softmax', where the oracle gate is the same vector on every training trial (peak 0.405
+# at Z_dim=5) and the read-out is only ever calibrated at that one sharpness. With
+# `latent_activation = 'none'` the gate is the raw one-hot instead, so jitter is now a
+# plain gain knob on a peak of 1.0 rather than a fix for a degenerate softmax. The 20-seed
+# factorial that measured jitter (9 of 11 signatures without it, 8 with) predates that
+# change and does not describe the current model.
+ORACLE_GATE_JITTER = (0.5, 1.5)
 
-ARM = os.environ.get('FLANKER_ARM', 'nojit_pc52')
-if ARM not in ARMS:
-    raise ValueError(f'FLANKER_ARM={ARM!r} is not one of {sorted(ARMS)}')
-
-ORACLE_GATE_JITTER = ARMS[ARM]['jitter']
-P_CORR_BY_DISTANCE = [1.0, 0.75, ARMS[ARM]['p_corr2'], 0.51, 0.5]
-
-# bg_noise_std is 0 in BOTH stages, which is what run_flanker.py's update_config() does.
-# The class default is 0.1 and every sweep before this one silently inherited it, so the
-# sweep and the single-session workbench were not running the same simulation. An
-# attribute-by-attribute diff of the two scripts' configs says this was the ONLY setting
-# that differed; keep it that way, and change run_flanker.py alongside it if it moves.
 # The stimulus noise a variant gets when it does NOT carry its own pretrain_overrides —
 # i.e. the delay ladder, whose whole point is to reuse one pretrained model set. The noise
 # ladder below overrides it per rung ("Variant Stage-1 overrides last, so they win").
@@ -145,72 +121,66 @@ P_CORR_BY_DISTANCE = [1.0, 0.75, ARMS[ARM]['p_corr2'], 0.51, 0.5]
 # accumulates over the response window, so SNR grows as sqrt(n_response_steps) and 4 -> 9
 # steps is a factor of 1.5. That is a first-order estimate, not a calibration — read the
 # real working point off the scorecard once the ladder has run.
-DELAY_BASE_NOISE = 1.35
-
+# ── What the sweep pins, and what it inherits ─────────────────────────────────
+#
+# Only `oracle_gate_jitter`, because run_flanker.py pins that one explicitly too. Every
+# other stimulus and model parameter — p_corr_by_distance, arrow_noise_std, bg_noise_std,
+# latent_activation, temporal_decay_factor, the Z optimizer settings — is inherited from
+# configs.FlankerTaskConfig so that editing configs.py moves the workbench and the sweep
+# together. That is the parity rule; see the module docstring, and
+# flanker_sweep.check_parity() which asserts it.
 PRETRAIN_OVERRIDES = {                      # every variant's Stage 1
     'oracle_gate_jitter': ORACLE_GATE_JITTER,
-    'p_corr_by_distance': P_CORR_BY_DISTANCE,
-    'bg_noise_std':       0,
-    'arrow_noise_std':    DELAY_BASE_NOISE,
 }
 TEST_OVERRIDES = {
+    # run_flanker.py sets this on its test config explicitly; the class default is also 1,
+    # but the workbench states it, so the sweep does too.
     'no_of_steps_in_latent_space': 1,
-    'bg_noise_std':                0,
 }
 
-# ── Variants: the noise ladder ────────────────────────────────────────────────
+# ── Ladder 1: stimulus noise ──────────────────────────────────────────────────
 # `arrow_noise_std` is the SD of the per-timestep noise on each arrow, against a signal of
-# 1.0. At 1.3 the target slot misleads on a large minority of trials; at 0.4 it almost
-# never does. Everything else is held fixed.
+# 1.0. High values mean the target slot's own samples mislead on a large minority of
+# trials; low values mean it almost never does.
 #
-# These are `pretrain_overrides` because the stimulus has to match across stages —
-# flanker_sweep applies them to the test config too, and gives each level its own model
-# cache so a level can never accidentally read another's weights.
-# 0.6, 0.8 and 0.9 fill in the interesting stretch: the post-error signatures and the
-# sign of the latent's response to a bad-luck error both turn over between 1.0 and 0.7,
-# and four points were too coarse to locate that crossing.
+# These are `pretrain_overrides` because the stimulus must match across stages —
+# flanker_sweep applies them to the test config too, and gives each rung its own model
+# cache so a rung can never accidentally read another's weights.
 #
-# The retiming to 10 timesteps raised the SNR by ~1.5x, which slides the whole ladder
-# toward "too easy": the old top rung 1.3 is now worth about 0.87 of the old scale, i.e.
-# roughly where the old working point already was. Two higher rungs are ADDED rather than
-# the existing ones rescaled, because the rung names are also the directory names of the
-# 400 five-timestep result pickles already on disk, and several scripts default to them
-# (flanker_regression, flanker_near_cong_diagnostic). Renaming would strand all of that
-# for no gain; RUN_NAME already keeps the two worlds apart.
+# The rungs are named for their value and bracket the class default (1.35). The retiming
+# to 10 timesteps raised SNR by ~1.5x, so these sit higher than the five-timestep ladder
+# did; `RUN_NAME` keeps the two worlds in separate directories, and the old rung names
+# (noise13/10/09/07/04) still address the 400 five-timestep pickles under factorial_*.
 VARIANTS = {
-    'noise19': dict(pretrain_overrides={'arrow_noise_std': 1.9}),   # added for ad=10
-    'noise16': dict(pretrain_overrides={'arrow_noise_std': 1.6}),   # added for ad=10
-    'noise13': dict(pretrain_overrides={'arrow_noise_std': 1.3}),   # the original setting
-    'noise10': dict(pretrain_overrides={'arrow_noise_std': 1.0}),
-    'noise09': dict(pretrain_overrides={'arrow_noise_std': 0.9}),
-    # 'noise08': dict(pretrain_overrides={'arrow_noise_std': 0.8}),
-    'noise07': dict(pretrain_overrides={'arrow_noise_std': 0.7}),
-    # 'noise06': dict(pretrain_overrides={'arrow_noise_std': 0.6}),
-    'noise04': dict(pretrain_overrides={'arrow_noise_std': 0.4}),   # near-clean target
+    'noise19':  dict(pretrain_overrides={'arrow_noise_std': 1.9}),
+    'noise135': dict(pretrain_overrides={'arrow_noise_std': 1.35}),  # the class default
+    'noise10':  dict(pretrain_overrides={'arrow_noise_std': 1.0}),
+    'noise06':  dict(pretrain_overrides={'arrow_noise_std': 0.6}),   # near-clean target
 }
 
 #: Ordered (variant, noise level) for the figures that plot against noise.
-NOISE_LADDER = [('noise19', 1.9), ('noise16', 1.6), ('noise13', 1.3),
-                ('noise10', 1.0), ('noise09', 0.9),
-                ('noise07', 0.7), ('noise04', 0.4)]
+NOISE_LADDER = [('noise19', 1.9), ('noise135', 1.35), ('noise10', 1.0), ('noise06', 0.6)]
 
-# ── The target-onset delay ladder ─────────────────────────────────────────────
+# ── Ladder 2: the target-onset delay ──────────────────────────────────────────
 #
 # "Flankers first": the flankers are on screen from frame 0 and the TARGET's onset is
-# delayed. The question is whether the response is delayed with it — and whether congruent
-# trials are held up less, because during the delay the flankers alone already point at
-# the answer.
+# delayed. Does a later target mean a later response, and do the flankers alone let a
+# congruent trial commit before the target exists?
 #
-# These are TEST-stage `overrides`, not `pretrain_overrides`, and that is the whole
-# economy of this axis: the stimulus the weights were trained on is unchanged, so
-# `pretrain_tag` resolves every rung to the 'shared' model set and all three levels reuse
-# ONE pretrained model per seed. Giving them pretrain_overrides would hand each level its
-# own cache tag and triple the pretraining bill for identical Stage-1 stimuli.
+# TEST-stage `overrides`, not `pretrain_overrides`, and that is the whole economy of this
+# axis: the stimulus the weights were trained on is unchanged, so `pretrain_tag` resolves
+# every rung to the 'shared' model set and all four delays reuse ONE pretrained model per
+# seed. Giving them pretrain_overrides would hand each rung its own cache tag and
+# quadruple the pretraining bill for identical Stage-1 stimuli.
+#
+# The 'shared' set trains at the class default `arrow_noise_std`, so the delay ladder runs
+# at whatever run_flanker.py runs at — parity again.
 #
 # Nothing here touches response_start_timestep or temporal_loss_weights. Speed pressure is
 # identical at every rung and RT is measured from trial start, so a delayed response shows
 # up as a larger RT rather than being defined away. See FlankerTaskConfig.target_delay.
-DELAY_LEVELS = [0, 2, 4]        # 9 response steps, so 4 still leaves 5 post-onset
+DELAY_LEVELS = [0, 1, 2, 4]     # 1 is what run_flanker.py currently runs; 9 response
+                                # steps, so even 4 leaves 5 post-onset
 
 VARIANTS.update({
     f'delay{d}': dict(overrides={'target_delay': d}) for d in DELAY_LEVELS
@@ -228,13 +198,20 @@ DELAY_LADDER = [(f'delay{d}', d) for d in DELAY_LEVELS]
 # Never reuse a run name for different settings. The latent optimizer is baked into the
 # pretrained model at construction and `mirror_to_model` can only patch lr/decay, so
 # reusing a cache across optimizers would silently run the old one.
-# One run per 2x2 cell, named after the arm, so the four never share a cache and every
-# figure script can be pointed at one of them with --run factorial_<arm>.
-# ad10_ prefix, not factorial_: arrows_duration moved, so these results are not comparable
+#
+# ad10_ prefix: arrows_duration moved from 5 to 10, so these results are not comparable
 # with the 400 pickles under factorial_* and must not land beside them.
-RUN_NAME      = f'ad10_{ARM}'
+RUN_NAME      = 'ad10_delay'
 EXPORT_ROOT   = './exports/flanker_random/sweeps'
 SKIP_EXISTING = True        # resume: skip jobs whose result pickle already exists
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
-RT_THRESHOLD = 0.2
+# Matches run_flanker.py's extract_trials(rt_threshold=0.5) — parity applies to how
+# sessions are READ as well as how they are run, since the threshold sets
+# correct_at_decision and therefore every one of the 11 signatures.
+#
+# It is a post-hoc parameter: changing it re-reads the pickles and needs no re-running.
+# Worth re-sweeping at the new trial length — 10 timesteps give the decision variable far
+# longer to accumulate, and a pilot showed ~37% of trials undecided at 0.5 against ~10% at
+# five timesteps. See docs/rt_threshold_experiment.md.
+RT_THRESHOLD = 0.5
