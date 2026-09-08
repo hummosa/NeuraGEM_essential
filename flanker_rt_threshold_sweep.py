@@ -1,0 +1,1025 @@
+"""
+flanker_rt_threshold_sweep.py — how much of the scorecard is `rt_threshold = 0.5`?
+
+`rt_threshold` is a **post-hoc analysis parameter**, not a simulation one. It is applied by
+`flanker_analyses.extract_trials()` to the `train_logger` already stored in every result
+pickle, so every threshold can be re-applied to the runs on disk. Nothing here retrains,
+and nothing here submits a job.
+
+It is also not only an RT knob. The threshold defines the decision point, so it also sets
+`correct_at_decision` — every one of the 11 human signatures in `flanker_metrics.SIGNATURES`
+depends on it, the accuracy ones included.
+
+What this script produces
+─────────────────────────
+For each (variant x seed x threshold) it recomputes `session_effects` and then,
+across seeds, the same PASS / null / OPP verdict `flanker_sweep_figures.fig_scorecard`
+draws. `_effect_size` is imported from that module rather than reimplemented, so the
+verdict rule here is the scorecard's rule by construction and cannot drift from it.
+
+Two threshold families are run:
+
+    abs     a fixed absolute |output| level, 0.2 … 0.7 — what the project uses today.
+    quant   a per-session level set at a fixed quantile of that session's own
+            max|output| distribution, so every session is scored at the same
+            *undecided rate* instead of the same absolute criterion. This is the
+            robustness check for comparisons along a ladder: the undecided rate runs
+            ~4% at delay 0 and ~21% at delay 4, so a fixed 0.5 is demonstrably not the
+            same decision criterion at both ends.
+
+Alongside the headline numbers it computes **decided-only** versions of the four RT-based
+signatures. Undecided trials are all assigned `rt = arrows_duration` by convention (see
+`_interpolated_rt`, which documents why dropping or extrapolating them was rejected), and
+that pile-up grows with the threshold — so the decided-only column says how much of a
+signature's threshold dependence is speed and how much is failure-to-respond. It is a
+diagnostic, not a proposed change of convention.
+
+Usage
+─────
+    .venv/bin/python flanker_rt_threshold_sweep.py pilot      # one variant, ~20 s
+    .venv/bin/python flanker_rt_threshold_sweep.py sweep      # 8 variants x 6 thr, ~5 min
+    .venv/bin/python flanker_rt_threshold_sweep.py report     # tables + figures from the cache
+    .venv/bin/python flanker_rt_threshold_sweep.py hypotheses # the H1-H6 tables
+    .venv/bin/python flanker_rt_threshold_sweep.py all        # the three above, in order
+
+    .venv/bin/python flanker_rt_threshold_sweep.py figures    # one folder per threshold
+
+`figures` is the separate one: instead of putting the threshold on an axis, it redraws the
+project's own scorecard and both ladder figures once per threshold into
+`by_threshold/rt<value>/`, one folder per threshold, so the series can be flipped through
+without any of it touching the canonical figures.
+
+Everything is written to `exports/flanker_random/rt_threshold/`, a new folder — the
+existing run directories and their figures are never touched.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import sys
+import time
+
+os.environ.setdefault('MPLBACKEND', 'Agg')
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+import plot_style
+plot_style.set_plot_style()
+from plot_style import FigSize
+
+import flanker_sweep
+from flanker_analyses import extract_trials
+from flanker_figure_utils import COL, save
+from flanker_metrics import SIGNATURES, condition_masks, session_effects, _mean
+from flanker_sweep_config import (DEFAULT_VARIANT, DELAY_LADDER, NOISE_LADDER,
+                                  RT_THRESHOLD, RUN_NAME, SEEDS)
+# The scorecard's own effect-size function. Imported, not copied: the whole point of this
+# script is to report the verdicts fig_scorecard would draw, so the two must not diverge.
+from flanker_sweep_figures import _effect_size
+
+
+# ── What is swept ─────────────────────────────────────────────────────────────
+
+#: Absolute |output| thresholds. 0.5 is the value in `flanker_sweep_config.RT_THRESHOLD`.
+THRESHOLDS = (0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
+
+#: The five levels the brief's pilot table used, so `pilot` reproduces it exactly.
+PILOT_THRESHOLDS = (0.20, 0.35, 0.50, 0.65, 0.80)
+
+#: Per-session thresholds placed at these quantiles of the session's own max|output|,
+#: i.e. these undecided rates by construction. 0.10 brackets the rate an absolute 0.5
+#: produces across the delay ladder (~0.04 at delay 0, ~0.21 at delay 4), which is what
+#: makes it the like-for-like comparison.
+QUANTILES = (0.05, 0.10, 0.20)
+
+# ── What replaced the arms ────────────────────────────────────────────────────
+#
+# This script was written against the retired 2x2 factorial, where `arm` was the outer
+# grouping and the noise ladder ran inside each arm. The sweep now has ONE run with two
+# ladders, so `ladder` ('noise' | 'delay') takes that outer slot and `x` carries the rung
+# value. Panels that compared four arms now compare the delay rungs, which is the same
+# shape of question — and a sharper one here, because the undecided rate runs 4% at
+# delay 0 to 21% at delay 4, so a fixed absolute threshold is demonstrably not the same
+# criterion at both ends.
+
+#: Every variant the sweep covers, as (variant, x, ladder).
+LADDERS = ([(v, x, 'noise') for v, x in NOISE_LADDER]
+           + [(v, x, 'delay') for v, x in DELAY_LADDER])
+
+#: The rung each "one variant" table and figure defaults to.
+BASELINE_VARIANT = DEFAULT_VARIANT
+
+OUT_DIR = './exports/flanker_random/rt_threshold'
+EFFECTS_CSV = f'{OUT_DIR}/effects.csv'
+VERDICTS_CSV = f'{OUT_DIR}/verdicts.csv'
+FLIPS_CSV = f'{OUT_DIR}/flips.csv'
+
+SIG_KEYS = [k for k, _, _, _ in SIGNATURES]
+SIG_SIGN = {k: s for k, _, s, _ in SIGNATURES}
+SIG_LABEL = {k: lbl for k, lbl, _, _ in SIGNATURES}
+
+#: Extra per-cell measures carried alongside the signatures.
+EXTRA_KEYS = ['undecided_frac', 'undecided_frac_cong', 'undecided_frac_incong',
+              'acc_overall', 'focus_all', 'gate_peak']
+
+#: The RT-based signatures, and the decided-only counterpart computed for each.
+RT_SIGNATURES = ('cong_effect_rt', 'dist_effect_rt_incong', 'peri', 'pes_BI')
+
+#: The accuracy row of `fig_effects_vs_threshold`. Column order is chosen so that related
+#: measures sit side by side in both directions: columns 1 and 2 pair each family's
+#: congruency and distance effects, columns 2-3 put the two accuracy distance effects
+#: (incongruent, congruent) next to each other, and columns 3-4 keep the RT row's two
+#: post-error measures (PERI, PES) together. Column 4 is the matched post-error pair,
+#: PES above PIA.
+ACC_SIGNATURES = ('cong_effect_acc', 'dist_effect_acc_incong', 'dist_effect_acc_cong',
+                  'pia_BI')
+
+#: What each panel actually computes, for the y-axis. The panel title names the signature;
+#: this names the arithmetic, which is what tells you which way is which. These are RAW
+#: contrasts, unlike `fig_scorecard`, which multiplies every effect by its expected human
+#: sign so that positive always means "matches humans". `Acc: Near−Far (Incon)` running
+#: negative therefore agrees with the scorecard showing it positive — near flankers cost
+#: more than far ones on incongruent trials, which is both the raw negative number and the
+#: human-matching direction.
+PANEL_FORMULA = {
+    'cong_effect_rt':         'RT: Incon−Con',
+    'dist_effect_rt_incong':  'RT: Near−Far (Incon)',
+    'peri':                   'RT: CE(postCorr)−CE(postErr)',
+    'pes_BI':                 'RT: postErr−postCorr (Incon)',
+    'cong_effect_acc':        'Acc: Con−Incon',
+    'dist_effect_acc_incong': 'Acc: Near−Far (Incon)',
+    'dist_effect_acc_cong':   'Acc: Near−Far (Con)',
+    'pia_BI':                 'Acc: postErr−postCorr (Incon)',
+}
+
+
+# ── Per-session measures the metrics module does not already provide ──────────
+
+def response_amplitude(trials, config):
+    """
+    Per-trial max |output| inside the response window — the quantity the threshold cuts.
+
+    `_interpolated_rt` searches `|output|` from `config.response_start_timestep` onward and
+    calls a trial decided if it ever exceeds the threshold, so this maximum is a sufficient
+    statistic for `decided`: a session's undecided fraction at threshold t is exactly the
+    fraction of this array at or below t. That makes it the right thing to look at when
+    asking whether one absolute threshold means the same thing in two arms.
+    """
+    a = np.abs(trials['output_traj'])[:, config.response_start_timestep:]
+    return a.max(axis=1)
+
+
+def decided_only_effects(trials):
+    """
+    The four RT-based signatures recomputed on trials that actually crossed threshold.
+
+    Undecided trials are assigned `rt = arrows_duration` — one value above every decided
+    RT — so as the threshold rises they form a growing high-RT pile-up in whichever cells
+    fail most. Incongruent trials fail roughly four times more often than congruent ones,
+    so that pile-up loads directly onto the congruency effect. These keys strip it out.
+
+    `_interpolated_rt`'s docstring is explicit that dropping those trials was tried and
+    rejected: censoring them biases incongruent RT downward and shrinks the effect. So the
+    decided-only number is not a better estimate of the congruency effect — it is the
+    lower bound that isolates how much of the threshold dependence is speed rather than
+    failure to respond. The honest reading is that the truth sits between the two columns.
+    """
+    m = condition_masks(trials)
+    rt, dec = trials['rt_interp'], m['decided']
+    e = {}
+
+    e['cong_effect_rt'] = _mean(rt, m['incong'] & dec) - _mean(rt, m['cong'] & dec)
+    for cn in ('cong', 'incong'):
+        e[f'dist_effect_rt_{cn}'] = (_mean(rt, m['near'] & m[cn] & dec)
+                                     - _mean(rt, m['far'] & m[cn] & dec))
+
+    # Post-error slowing and PERI, same cells as post_error_effects but decided-only.
+    after_err = m['valid'] & m['p_incong'] & m['perr']
+    after_cor = m['valid'] & m['p_incong'] & m['pc']
+    e['pes_BI'] = (_mean(rt, after_err & m['incong'] & dec)
+                   - _mean(rt, after_cor & m['incong'] & dec))
+    ce_err = (_mean(rt, after_err & m['incong'] & dec)
+              - _mean(rt, after_err & m['cong'] & dec))
+    ce_cor = (_mean(rt, after_cor & m['incong'] & dec)
+              - _mean(rt, after_cor & m['cong'] & dec))
+    e['peri'] = ce_cor - ce_err
+    return e
+
+
+# ── The sweep ─────────────────────────────────────────────────────────────────
+
+def session_row(trials, base):
+    """One output row: every signature, the extras, and the decided-only RT columns."""
+    e = session_effects(trials)
+    row = dict(base)
+    row.update({k: e.get(k, np.nan) for k in SIG_KEYS})
+    row.update({k: e.get(k, np.nan) for k in EXTRA_KEYS})
+    dec = decided_only_effects(trials)
+    row.update({f'{k}__dec': dec.get(k, np.nan) for k in RT_SIGNATURES})
+    return row
+
+
+def sweep(ladders=LADDERS, thresholds=THRESHOLDS,
+          quantiles=QUANTILES, seeds=None, verbose=True):
+    """
+    Recompute every signature at every threshold, for every run on disk.
+
+    Each pickle is unpickled **once** and the threshold loop runs inside it: unpickling is
+    ~0.14 s and `extract_trials` + `session_effects` together are ~0.03 s, so loading per
+    threshold would cost 7x for nothing.
+
+    Returns a long-ish wide DataFrame, one row per
+    (ladder, variant, seed, mode, threshold), the unit every later table groups over.
+    """
+    seeds = list(range(SEEDS)) if seeds is None else list(seeds)
+    rows, t_start = [], time.time()
+
+    with flanker_sweep.use_run(RUN_NAME):
+        for variant, x, ladder in ladders:
+            n_loaded = 0
+            for seed in seeds:
+                res = flanker_sweep.load_result(seed, variant)
+                if res is None:
+                    continue
+                n_loaded += 1
+                logger, config = res['train_logger'], res['config']
+                base = dict(ladder=ladder, variant=variant, x=x, seed=seed)
+
+                # The amplitude distribution is threshold-independent, so it is read
+                # once per session from any extraction and carried on every row.
+                trials0 = extract_trials(logger, config, rt_threshold=RT_THRESHOLD)
+                amp = response_amplitude(trials0, config)
+                amp_stats = {'amp_median': float(np.median(amp)),
+                             'amp_q10': float(np.quantile(amp, 0.10)),
+                             'amp_q25': float(np.quantile(amp, 0.25)),
+                             'amp_frac_below_0.5': float((amp <= 0.5).mean())}
+
+                jobs = ([('abs', t, t) for t in thresholds]
+                        + [('quant', q, float(np.quantile(amp, q))) for q in quantiles])
+                for mode, nominal, thr in jobs:
+                    trials = (trials0 if (mode == 'abs' and thr == RT_THRESHOLD)
+                              else extract_trials(logger, config, rt_threshold=thr))
+                    row = session_row(trials, {**base, 'mode': mode,
+                                               'threshold': nominal, 'thr_abs': thr})
+                    row.update(amp_stats)
+                    rows.append(row)
+            if verbose:
+                print(f'  {ladder:6s} {variant:9s} {n_loaded:2d} seeds '
+                      f'({time.time() - t_start:5.1f}s)')
+    return pd.DataFrame(rows)
+
+
+# ── Scoring: the verdict fig_scorecard would draw ─────────────────────────────
+
+def verdict(values, sign):
+    """
+    PASS / null / OPP for one signature across seeds, by `fig_scorecard`'s exact rule.
+
+    `_effect_size` divides by the across-seed SD and multiplies by the human sign, so the
+    colour test `mean - 1.96*sem > 0` is a two-sided z-test of the across-seed mean at
+    alpha = .05. Returns (verdict, d, sem, n).
+
+    The middle verdict is spelled `n.s.` rather than `null`: `pandas.read_csv` treats the
+    bare string "null" as a missing value, so a CSV written with it reads back as NaN and
+    a whole row of non-significant cells silently vanishes from a pivot table.
+    """
+    d = _effect_size(np.asarray(values, dtype=float), sign)
+    if len(d) < 2:
+        return 'n/a', np.nan, np.nan, len(d)
+    mean, sem = d.mean(), d.std(ddof=1) / np.sqrt(len(d))
+    v = 'PASS' if mean - 1.96 * sem > 0 else 'OPP' if mean + 1.96 * sem < 0 else 'n.s.'
+    return v, float(mean), float(sem), len(d)
+
+
+def score(df, keys=None, suffix=''):
+    """
+    Collapse the per-seed table to one verdict per (ladder, variant, mode, threshold, signature).
+
+    `suffix` selects the decided-only columns (`'__dec'`) instead of the headline ones,
+    so the same scoring path serves both and they cannot be scored differently.
+    """
+    keys = keys or SIG_KEYS
+    out = []
+    group_cols = ['ladder', 'variant', 'x', 'mode', 'threshold']
+    for (ladder, variant, x, mode, thr), g in df.groupby(group_cols, sort=False):
+        for key in keys:
+            col = f'{key}{suffix}'
+            if col not in g:
+                continue
+            vals = g[col].to_numpy(dtype=float)
+            v, d, sem, n = verdict(vals, SIG_SIGN[key])
+            out.append(dict(ladder=ladder, variant=variant, x=x, mode=mode,
+                            threshold=thr, signature=key, label=SIG_LABEL[key],
+                            verdict=v, d=d, d_sem=sem, n_seeds=n,
+                            raw_mean=float(np.nanmean(vals)),
+                            n_sign_match=int((vals * SIG_SIGN[key] > 0).sum()),
+                            thr_abs=float(g['thr_abs'].mean()),
+                            undecided=float(g['undecided_frac'].mean())))
+    return pd.DataFrame(out)
+
+
+def flip_table(verdicts, mode='abs'):
+    """
+    Every (ladder, variant, signature) whose verdict is not constant over the range.
+
+    A conclusion that appears in one row of this table is threshold-dependent: the same
+    seeds, the same simulation, a different post-hoc cut, a different answer.
+    """
+    v = verdicts[verdicts['mode'] == mode]
+    rows = []
+    for (ladder, variant, x, sig), g in v.groupby(['ladder', 'variant', 'x', 'signature'],
+                                                  sort=False):
+        g = g.sort_values('threshold')
+        seq = list(g['verdict'])
+        if len(set(seq)) <= 1:
+            continue
+        at_default = g.loc[np.isclose(g['threshold'], RT_THRESHOLD), 'verdict']
+        row = dict(ladder=ladder, variant=variant, x=x, signature=sig,
+                   label=SIG_LABEL[sig],
+                   at_default=(at_default.iloc[0] if len(at_default) else 'n/a'),
+                   verdicts='|'.join(seq),
+                   # A signature that only softens (PASS -> null) is a weaker problem than
+                   # one that reverses (PASS -> OPP); the two are separated here so the
+                   # recommendation can weight them differently.
+                   reverses=bool({'PASS', 'OPP'} <= set(seq)))
+        for thr, vd in zip(g['threshold'], seq):
+            row[f'thr_{thr:g}'] = vd
+        rows.append(row)
+    cols = ['ladder', 'variant', 'x', 'signature', 'label', 'at_default', 'reverses']
+    out = pd.DataFrame(rows)
+    if len(out):
+        out = out[cols + [c for c in out.columns if c not in cols]]
+    return out
+
+
+def matched_counts(verdicts, mode='abs'):
+    """
+    Signatures passing / opposing at each (ladder, variant, threshold) — the scorecard count.
+
+    Restricted to the registered signatures, so passing in a table that also carries the
+    decided-only diagnostic rows cannot inflate the count past len(SIGNATURES).
+    """
+    v = verdicts[(verdicts['mode'] == mode) & (verdicts['signature'].isin(SIG_KEYS))]
+    g = v.groupby(['ladder', 'variant', 'x', 'threshold'], sort=False)
+    out = g.apply(lambda x: pd.Series({
+        'matched': int((x['verdict'] == 'PASS').sum()),
+        'opp': int((x['verdict'] == 'OPP').sum()),
+        'ns': int((x['verdict'] == 'n.s.').sum()),
+        'undecided': float(x['undecided'].mean()),
+        'thr_abs': float(x['thr_abs'].mean()),
+    }), include_groups=False)
+    return out.reset_index()
+
+
+# ── Figures ───────────────────────────────────────────────────────────────────
+#
+# Each ladder gets its own sequential ramp, so a panel's colour says which ladder it is
+# about before the legend is read: viridis for stimulus noise, magma for target delay.
+# Both run dark-to-light with the rung value, so "more of the manipulation" is always the
+# lighter end.
+
+NOISE_COLORS = plt.cm.viridis(np.linspace(0.05, 0.85, len(NOISE_LADDER)))
+DELAY_COLORS = plt.cm.magma(np.linspace(0.25, 0.75, len(DELAY_LADDER)))
+DELAY_LABELS = {v: f'delay {x}' for v, x in DELAY_LADDER}
+NOISE_LABELS = {v: f'noise {x}' for v, x in NOISE_LADDER}
+
+
+def _mark_default(ax):
+    """A thin rule at the threshold the project currently uses."""
+    ax.axvline(RT_THRESHOLD, color='k', linewidth=0.6, alpha=0.35, zorder=0)
+
+
+def _line(ax, x, mu, sem, color, label, linestyle='-'):
+    ax.plot(x, mu, color=color, linewidth=1.0, linestyle=linestyle, label=label)
+    if sem is not None:
+        ax.fill_between(x, mu - sem, mu + sem, color=color, alpha=0.18, linewidth=0)
+
+
+def _seed_stats(df, col, group):
+    """Mean and SEM across seeds of `col`, ordered by threshold."""
+    g = df.groupby(group, sort=True)[col]
+    return g.mean().index.to_numpy(dtype=float), g.mean().to_numpy(), \
+        (g.std(ddof=1) / np.sqrt(g.count())).to_numpy()
+
+
+def fig_undecided(df, out_dir):
+    """
+    The mechanism: how many trials the threshold pushes out of the decided set.
+
+    Undecided trials are not dropped — they are pinned at `rt = arrows_duration`, above
+    every decided RT. So the left panel is also a picture of how large a high-RT pile-up
+    each threshold manufactures, and the right panel is whether the delay rungs get the
+    same-sized pile-up from the same absolute cut. They do not.
+    """
+    d = df[df['mode'] == 'abs']
+    fig, axes = plt.subplots(1, 2, figsize=FigSize.row(2))
+
+    base = d[d['ladder'] == 'noise']
+    for (variant, noise), color in zip(NOISE_LADDER, NOISE_COLORS):
+        sub = base[base['variant'] == variant]
+        x, mu, sem = _seed_stats(sub, 'undecided_frac', 'threshold')
+        _line(axes[0], x, mu, sem, color, f'{noise}')
+    axes[0].set_title('by stimulus noise (delay 0)', fontsize=6)
+    axes[0].legend(title='arrow noise', fontsize=4.5, title_fontsize=4.5,
+                   frameon=False, loc='upper left')
+
+    for variant, color in zip(dict(DELAY_LADDER), DELAY_COLORS):
+        sub = d[(d['ladder'] == 'delay') & (d['variant'] == variant)]
+        if not len(sub):
+            continue
+        x, mu, sem = _seed_stats(sub, 'undecided_frac', 'threshold')
+        _line(axes[1], x, mu, sem, color, DELAY_LABELS[variant])
+    axes[1].set_title('by target delay (noise 1.35)', fontsize=6)
+    axes[1].legend(fontsize=4.5, frameon=False, loc='upper left')
+
+    for ax in axes:
+        _mark_default(ax)
+        ax.set_xlabel('rt_threshold (|output|)')
+        ax.set_ylabel('undecided fraction')
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/fig_1_undecided.pdf')
+
+
+def fig_signatures(verdicts, out_dir, variant=None):
+    """
+    Every signature's effect size against threshold, one line per delay rung.
+
+    The grey band is the region where the 95% CI would still contain zero at this n, so a
+    line inside it is a `null` verdict and a line above it is `PASS`. Reading the crossings
+    off this figure is the same operation `fig_scorecard` performs at a single threshold.
+    """
+    variant = variant or BASELINE_VARIANT
+    v = verdicts[(verdicts['mode'] == 'abs') & (verdicts['variant'] == variant)]
+    # Sized from the registry, not hard-coded: SIGNATURES has grown from 11 to 14 and a
+    # fixed 3x4 silently dropped the last two before running off the end of `axes`. The
+    # +1 reserves a cell for the legend.
+    cols = 4
+    rows = -(-(len(SIG_KEYS) + 1) // cols)
+    fig, axes = plt.subplots(rows, cols, figsize=FigSize.grid(rows, cols), sharex=True)
+    for ax, key in zip(axes.ravel(), SIG_KEYS):
+        for dvariant, color in zip(dict(DELAY_LADDER), DELAY_COLORS):
+            sub = v[(v['variant'] == dvariant) & (v['signature'] == key)].sort_values('threshold')
+            if not len(sub):
+                continue
+            x = sub['threshold'].to_numpy(dtype=float)
+            _line(ax, x, sub['d'].to_numpy(), 1.96 * sub['d_sem'].to_numpy(),
+                  color, DELAY_LABELS[dvariant])
+        # The decision boundary, drawn once from the baseline variant's n.
+        n = float(v['n_seeds'].max())
+        ax.axhspan(-1.96 / np.sqrt(n), 1.96 / np.sqrt(n), color=COL['null'],
+                   alpha=0.15, linewidth=0, zorder=0)
+        ax.axhline(0, color='k', linewidth=0.6, alpha=0.6, zorder=1)
+        _mark_default(ax)
+        ax.set_title(SIG_LABEL[key], fontsize=5)
+    spare = axes.ravel()[len(SIG_KEYS):]
+    for ax in spare:
+        ax.axis('off')
+    if len(spare):
+        spare[0].legend(*axes.ravel()[0].get_legend_handles_labels(),
+                        fontsize=5, frameon=False, loc='center')
+    for ax in axes[-1]:
+        ax.set_xlabel('rt_threshold')
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Cohen's d (+ = human)")
+    fig.suptitle(f'{variant}: signature effect size vs rt_threshold', fontsize=7)
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/fig_2_signatures.pdf')
+
+
+def fig_matched(counts, out_dir):
+    """
+    How many signatures the model matches, as a function of the analysis cut.
+
+    If the count peaks at the value the project already uses, that is worth saying out
+    loud: a post-hoc parameter tuned — even unintentionally — to maximise a scorecard is
+    a researcher degree of freedom, and the honest report is the whole curve.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=FigSize.row(2))
+
+    for variant, color in zip(dict(DELAY_LADDER), DELAY_COLORS):
+        sub = counts[(counts['ladder'] == 'delay') & (counts['variant'] == variant)]
+        if not len(sub):
+            continue
+        sub = sub.sort_values('threshold')
+        axes[0].plot(sub['threshold'], sub['matched'], marker='o', markersize=3,
+                     color=color, linewidth=1.0, label=DELAY_LABELS[variant])
+    axes[0].set_title('by target delay (noise 1.35)', fontsize=6)
+    axes[0].legend(fontsize=4.5, frameon=False, loc='lower center')
+
+    base = counts[counts['ladder'] == 'noise']
+    for (variant, noise), color in zip(NOISE_LADDER, NOISE_COLORS):
+        sub = base[base['variant'] == variant].sort_values('threshold')
+        axes[1].plot(sub['threshold'], sub['matched'], marker='o', markersize=3,
+                     color=color, linewidth=1.0, label=f'{noise}')
+    axes[1].set_title('by stimulus noise (delay 0)', fontsize=6)
+    axes[1].legend(title='arrow noise', fontsize=4.5, title_fontsize=4.5,
+                   frameon=False, loc='lower center')
+
+    for ax in axes:
+        _mark_default(ax)
+        ax.set_xlabel('rt_threshold')
+        ax.set_ylabel(f'signatures matched (of {len(SIG_KEYS)})')
+        ax.set_ylim(0, len(SIG_KEYS) + 0.5)
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/fig_3_matched.pdf')
+
+
+def fig_effects_vs_threshold(df, out_dir, variant=None):
+    """
+    Every RT and accuracy signature against the threshold, each on its own scale.
+
+    Two rows because the two families answer H1 differently, and the difference is the
+    point: over 0.2–0.8 the RT effects move by more than their own size while the accuracy
+    effects barely stir. Reading down a column compares the same manipulation measured two
+    ways; reading across, related measures are adjacent — the two accuracy distance effects
+    in columns 2-3, the two RT post-error measures in columns 3-4.
+
+    Every y-axis states the contrast it plots rather than just its units, because these are
+    RAW differences. `fig_scorecard` multiplies each effect by its expected human sign so
+    that positive always means "matches humans"; this figure does not, so the two disagree
+    on the display sign of `dist_effect_acc_incong` — the one signature of the eight whose
+    human-matching direction is negative — while reporting identical numbers.
+
+    Effects are plotted in their own units rather than standardised: the whole point is
+    that the accuracy row's y-range is narrow, and normalising would hide it.
+    """
+    variant = variant or BASELINE_VARIANT
+    d = df[(df['mode'] == 'abs') & (df['variant'] == variant)]
+    families = [(RT_SIGNATURES, COL['incong']), (ACC_SIGNATURES, COL['cong'])]
+
+    fig, axes = plt.subplots(2, len(RT_SIGNATURES),
+                             figsize=FigSize.grid(2, len(RT_SIGNATURES),
+                                                  panel=FigSize.small))
+    for (keys, color), axrow in zip(families, axes):
+        for ax, key in zip(axrow, keys):
+            x, mu, sem = _seed_stats(d, key, 'threshold')
+            _line(ax, x, mu, sem, color, None)
+            ax.axhline(0, color='k', linewidth=0.6, alpha=0.6)
+            _mark_default(ax)
+            ax.set_title(SIG_LABEL[key], fontsize=5)
+            ax.set_ylabel(PANEL_FORMULA[key], fontsize=4.5)
+    for ax in axes[-1]:
+        ax.set_xlabel('rt_threshold')
+
+    fig.suptitle(f'{variant}: every signature against the analysis '
+                 'threshold — RT above, accuracy below', fontsize=6)
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/fig_4_effects_vs_threshold.pdf')
+
+
+def fig_amplitude(df, verdicts, out_dir):
+    """
+    H5: is one absolute threshold the same criterion at every target delay?
+
+    Left: where each rung's decision variable actually lives, summarised by the fraction
+    of trials whose max|output| never reaches 0.5. If the rungs differ there, a fixed
+    absolute cut scores them at different points of their own distributions and every
+    comparison across the ladder inherits that difference. They do differ, sharply: the
+    undecided rate runs ~4% at delay 0 to ~21% at delay 4, which is what makes this the
+    live question it was written for.
+
+    Right: the same signatures scored at a per-session *quantile* threshold instead, so
+    every session is held at one undecided rate. Verdicts that survive that swap are
+    about the model; verdicts that do not are about the criterion.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=FigSize.row(2))
+
+    d = df[(df['mode'] == 'abs') & np.isclose(df['threshold'], RT_THRESHOLD)]
+    rungs = [(v, x, c, DELAY_COLORS) for (v, x), c in zip(DELAY_LADDER, DELAY_COLORS)]
+    rungs = ([(v, f'delay {x}', c) for (v, x), c in zip(DELAY_LADDER, DELAY_COLORS)]
+             + [(v, f'noise {x}', c) for (v, x), c in zip(NOISE_LADDER, NOISE_COLORS)])
+    for i, (variant, label, color) in enumerate(rungs):
+        s = d[d['variant'] == variant]['amp_frac_below_0.5'].to_numpy()
+        if not len(s):
+            continue
+        axes[0].errorbar(i, s.mean(), yerr=s.std(ddof=1) / np.sqrt(len(s)),
+                         marker='o', markersize=2.5, color=color, capsize=1.5,
+                         linewidth=0.8)
+    axes[0].set_xticks(range(len(rungs)))
+    axes[0].set_xticklabels([lbl for _, lbl, _ in rungs], fontsize=4.5, rotation=45,
+                            ha='right')
+    axes[0].set_ylabel('P(max|output| < 0.5)')
+    axes[0].set_title('Where 0.5 sits on each rung', fontsize=6)
+
+    q = verdicts[verdicts['mode'] == 'quant']
+    for (variant, _), color in zip(DELAY_LADDER, DELAY_COLORS):
+        sub = q[(q['variant'] == variant) & (q['signature'] == 'peri')].sort_values('threshold')
+        if not len(sub):
+            continue
+        _line(axes[1], sub['threshold'].to_numpy(dtype=float), sub['d'].to_numpy(),
+              1.96 * sub['d_sem'].to_numpy(), color, DELAY_LABELS[variant])
+    n = float(q['n_seeds'].max()) if len(q) else float(SEEDS)
+    axes[1].axhspan(-1.96 / np.sqrt(n), 1.96 / np.sqrt(n), color=COL['null'],
+                    alpha=0.15, linewidth=0)
+    axes[1].axhline(0, color='k', linewidth=0.6, alpha=0.6)
+    axes[1].set_xlabel('undecided rate held per session')
+    axes[1].set_ylabel("PERI, Cohen's d")
+    axes[1].set_title('PERI at a matched undecided rate', fontsize=6)
+    axes[1].legend(fontsize=4.5, frameon=False)
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/fig_5_amplitude.pdf')
+
+
+# ── Tables printed to the console ─────────────────────────────────────────────
+
+def pilot_table(df):
+    """The pilot table: the baseline variant at the five thresholds the brief used."""
+    d = df[(df['variant'] == BASELINE_VARIANT)
+           & (df['mode'] == 'abs')]
+    v = score(d)
+    counts = matched_counts(v)
+    rows = []
+    for thr in sorted(d['threshold'].unique()):
+        s = d[np.isclose(d['threshold'], thr)]
+        c = counts[np.isclose(counts['threshold'], thr)]
+        rows.append({
+            'thr': thr,
+            'undecided': round(float(s['undecided_frac'].mean()), 3),
+            'matched': int(c['matched'].iloc[0]), 'opp': int(c['opp'].iloc[0]),
+            'cong_acc': round(float(s['cong_effect_acc'].mean()), 4),
+            'cong_rt': round(float(s['cong_effect_rt'].mean()), 4),
+            'pes_BI': round(float(s['pes_BI'].mean()), 4),
+            'pia_BI': round(float(s['pia_BI'].mean()), 4),
+            'peri': round(float(s['peri'].mean()), 4),
+        })
+    return pd.DataFrame(rows)
+
+
+def verdict_matrix(verdicts, variant=None, mode='abs'):
+    """Signature x threshold verdicts for one cell, as a readable table."""
+    variant = variant or BASELINE_VARIANT
+    v = verdicts[(verdicts['mode'] == mode)
+                 & (verdicts['variant'] == variant)]
+    return v.pivot_table(index='signature', columns='threshold', values='verdict',
+                         aggfunc='first').reindex(SIG_KEYS)
+
+
+# ── Entry points ──────────────────────────────────────────────────────────────
+
+def run_pilot():
+    """The baseline variant at the brief's five thresholds — the correctness check."""
+    os.makedirs(OUT_DIR, exist_ok=True)
+    df = sweep(ladders=[(BASELINE_VARIANT, 0, 'delay')],
+               thresholds=PILOT_THRESHOLDS, quantiles=())
+    print(f'\nPilot — {RUN_NAME}, {BASELINE_VARIANT}, {SEEDS} seeds\n')
+    print(pilot_table(df).to_string(index=False))
+    print('\nVerdicts (signature x threshold):\n')
+    print(verdict_matrix(score(df)).to_string())
+    return df
+
+
+def run_sweep():
+    """The full grid, cached to CSV so `report` can be re-run without re-reading pickles."""
+    os.makedirs(OUT_DIR, exist_ok=True)
+    print(f'Sweeping {len(LADDERS)} variants x {SEEDS} '
+          f'seeds x {len(THRESHOLDS)} absolute + {len(QUANTILES)} quantile thresholds')
+    df = sweep()
+    df.to_csv(EFFECTS_CSV, index=False)
+    print(f'\nWrote {EFFECTS_CSV}  ({len(df)} rows)')
+    return df
+
+
+def run_report(df=None):
+    """Score the cached sweep, write the tables and the figures, print the summary."""
+    os.makedirs(OUT_DIR, exist_ok=True)
+    if df is None:
+        df = pd.read_csv(EFFECTS_CSV)
+    v = score(df)
+    v_dec = score(df, keys=list(RT_SIGNATURES), suffix='__dec')
+    v_dec['signature'] = v_dec['signature'] + '__dec'
+    pd.concat([v, v_dec]).to_csv(VERDICTS_CSV, index=False)
+
+    flips = flip_table(v)
+    flips.to_csv(FLIPS_CSV, index=False)
+    counts = matched_counts(v)
+    counts.to_csv(f'{OUT_DIR}/matched_counts.csv', index=False)
+
+    print(f'\nWrote {VERDICTS_CSV} and {FLIPS_CSV}')
+    print(f'\nVerdict flips over {THRESHOLDS[0]}–{THRESHOLDS[-1]}: '
+          f'{len(flips)} of {len(v.groupby(["ladder", "variant", "signature"]))} '
+          f'(ladder, variant, signature) cells; {int(flips["reverses"].sum()) if len(flips) else 0} '
+          f'reverse sign (PASS <-> OPP).\n')
+    if len(flips):
+        print(flips[['ladder', 'variant', 'signature', 'at_default', 'verdicts']]
+              .to_string(index=False))
+
+    print('\nSignatures matched vs threshold (rows = ladder x variant):\n')
+    print(counts.pivot_table(index=['ladder', 'variant'], columns='threshold',
+                             values='matched').to_string())
+
+    fig_undecided(df, OUT_DIR)
+    fig_signatures(v, OUT_DIR)
+    fig_matched(counts, OUT_DIR)
+    fig_effects_vs_threshold(df, OUT_DIR)
+    fig_amplitude(df, v, OUT_DIR)
+    return df, v, flips, counts
+
+
+# ── The project's own figures, re-rendered at each threshold ──────────────────
+#
+# The figures above put the threshold on an axis. These do the opposite: they redraw the
+# figures the project already reads — the scorecard, the noise ladder, the regression
+# forest — once per threshold, into one folder, with the threshold in every filename. Sort
+# the folder by name and you can flip through the series.
+
+FIG_DIR = f'{OUT_DIR}/by_threshold'
+
+
+def _effects_by_threshold(ladders=LADDERS, thresholds=THRESHOLDS, seeds=None):
+    """
+    `{threshold: {variant: [per-seed effects]}}`, unpickling each result exactly once.
+
+    The whole cache is per-seed effect dicts, a few kB each, so every threshold x
+    variant x seed fits in memory comfortably and no pickle is read twice.
+    """
+    seeds = list(range(SEEDS)) if seeds is None else list(seeds)
+    cache = {t: {} for t in thresholds}
+    with flanker_sweep.use_run(RUN_NAME):
+        for variant, _, ladder in ladders:
+            per_thr = {t: [] for t in thresholds}
+            for seed in seeds:
+                res = flanker_sweep.load_result(seed, variant)
+                if res is None:
+                    continue
+                for t in thresholds:
+                    trials = extract_trials(res['train_logger'], res['config'],
+                                            rt_threshold=t)
+                    per_thr[t].append(session_effects(trials))
+            for t in thresholds:
+                cache[t][variant] = per_thr[t]
+            print(f'  {ladder:6s} {variant:9s} {len(per_thr[thresholds[0]]):2d} seeds')
+    return cache
+
+
+@contextlib.contextmanager
+def _figures_at(threshold, effects_by_variant):
+    """
+    Make `flanker_sweep_figures` draw at one threshold instead of the global default.
+
+    Two names are rebound for the duration. `collect_effects` is what `fig_noise_series`
+    calls internally, and it takes the threshold from `flanker_sweep_config.RT_THRESHOLD`
+    as a default bound at definition time — so serving it from the cache is the only way
+    to steer it without editing the config, which the brief rules out. `save` is wrapped
+    only to stamp the threshold in the corner, so a figure pulled out of the series still
+    says which one it is.
+    """
+    import flanker_sweep_figures as figs
+    original_save, original_collect = figs.save, figs.collect_effects
+
+    def stamped_save(fig, path, note=None):
+        fig.text(0.995, 0.005, f'rt_threshold = {threshold:.2f}', ha='right', va='bottom',
+                 fontsize=5, color=COL['neutral'])
+        return original_save(fig, path, note)
+
+    figs.save = stamped_save
+    figs.collect_effects = lambda variant, **kw: effects_by_variant.get(variant, [])
+    try:
+        yield
+    finally:
+        figs.save, figs.collect_effects = original_save, original_collect
+
+
+def run_figures(thresholds=THRESHOLDS, regression_variant=None):
+    """
+    Redraw the scorecard, both ladder figures and the regression forest at every
+    threshold, into one folder per threshold.
+
+    Writes to `exports/flanker_random/rt_threshold/by_threshold/rt<value>/`, never into
+    the run directories the canonical figures live in — so a threshold series can be
+    flipped through without any of it overwriting the analysis of record.
+
+    The regression is off by default: fitting is ~0.9 s per session per spec, so a full
+    series costs minutes for a figure the scorecard already summarises. Pass a variant
+    name to switch it on.
+    """
+    from flanker_sweep_figures import fig_delay_series, fig_noise_series, fig_scorecard
+
+    os.makedirs(FIG_DIR, exist_ok=True)
+    print(f'Building the effect cache for {RUN_NAME}:')
+    cache = _effects_by_threshold(thresholds=thresholds)
+
+    written = []
+    for thr in thresholds:
+        thr_dir = f'{FIG_DIR}/rt{thr:.2f}'
+        os.makedirs(thr_dir, exist_ok=True)
+        with _figures_at(thr, cache[thr]):
+            for variant, _, _ in LADDERS:
+                effects = cache[thr][variant]
+                if not effects:
+                    continue
+                path = fig_scorecard(effects, thr_dir,
+                                     f'{variant} · rt_threshold {thr:.2f}')
+                written.append(_rename(path, f'scorecard_{variant}.pdf'))
+            for builder, name in ((fig_noise_series, 'noise_series'),
+                                  (fig_delay_series, 'delay_series')):
+                path = builder(thr_dir)
+                if path:
+                    written.append(_rename(path, f'{name}.pdf'))
+
+    if regression_variant:
+        written += run_regression_series(regression_variant, thresholds)
+    print(f'\n{len(written)} figures in {FIG_DIR}')
+    return written
+
+
+def _rename(path, name):
+    """Move a figure the project's `save` just wrote to its threshold-tagged filename."""
+    final = os.path.join(os.path.dirname(path), name)
+    os.replace(path, final)
+    return final
+
+
+def run_regression_series(variant, thresholds=THRESHOLDS, specs=('M2', 'M3')):
+    """
+    The trial-history regression forest at each threshold, for one variant.
+
+    `flanker_regression.group_report` extracts trials at the default threshold and cannot
+    be told otherwise, so this reproduces its two steps — extract, then `fit_sessions` per
+    spec — with the threshold passed through, and hands the result to the same figure.
+    The RT signatures here are coefficients on log RT, so they inherit the threshold's
+    effect on RT directly; PERI is the `incong:prev_error` term.
+    """
+    import matplotlib.pyplot as plt
+    import flanker_regression as reg
+
+    os.makedirs(FIG_DIR, exist_ok=True)
+    with flanker_sweep.use_run(RUN_NAME):
+        results = [r for r in (flanker_sweep.load_result(s, variant)
+                               for s in range(SEEDS)) if r is not None]
+    if not results:
+        print(f'No sessions for {variant} — skipping the regression series.')
+        return []
+
+    written, tidy = [], []
+    for thr in thresholds:
+        trials = [extract_trials(r['train_logger'], r['config'], rt_threshold=thr)
+                  for r in results]
+        summaries = {}
+        for spec in specs:
+            _, summary = reg.fit_sessions(trials, spec=spec)
+            summaries[spec] = summary.set_index(['dv', 'term'])
+            tidy.append(summary.assign(threshold=thr, spec=spec, variant=variant))
+        os.makedirs(f'{FIG_DIR}/rt{thr:.2f}', exist_ok=True)
+        path = f'{FIG_DIR}/rt{thr:.2f}/regression_{variant}.pdf'
+        fig = reg.fig_group_coefficients(
+            summaries, path=path,
+            title=f'Trial-history regression — {variant} · '
+                  f'rt_threshold {thr:.2f}')
+        plt.close(fig)
+        written.append(path)
+
+    # The coefficients as a table too — seven forest plots are hard to read a trend off,
+    # and this is the regression's independent verdict on the same question the scorecard
+    # answers with cell contrasts.
+    coef_path = f'{OUT_DIR}/regression_coefficients.csv'
+    coefs = pd.concat(tidy, ignore_index=True)
+    coefs.to_csv(coef_path, index=False)
+    print(f'\nWrote {coef_path}')
+    key_terms = ['incong', 'incong:far', 'prev_error', 'incong:prev_error']
+    for dv in ('acc', 'rt'):
+        sub = coefs[(coefs['spec'] == specs[0]) & (coefs['dv'] == dv)
+                    & coefs['term'].isin(key_terms)]
+        if not len(sub):
+            continue
+        print(f'\n  t across sessions, {dv}, spec {specs[0]} '
+              f'(|t| > 1.96 is significant):')
+        print(sub.pivot_table(index='term', columns='threshold', values='t')
+              .reindex(key_terms).to_string(float_format=lambda x: f'{x: .2f}'))
+    return written
+
+
+def run_hypotheses(df=None):
+    """
+    The tables `docs/rt_threshold_findings.md` quotes, so its numbers stay re-derivable.
+
+    Six questions, in the order the brief asks them: is accuracy more robust than RT (H1),
+    is the RT dependence the undecided pile-up (H2), does PERI's verdict move and does the
+    the PERI conclusion move with it (H3), is 0.5 a maximum of the scorecard (H4), is
+    one absolute threshold the same criterion on every rung (H5), and where along the noise
+    ladder does the choice matter (H6).
+    """
+    from scipy import stats
+
+    if df is None:
+        df = pd.read_csv(EFFECTS_CSV)
+    v = pd.read_csv(VERDICTS_CSV)
+    A = df[df['mode'] == 'abs']
+    counts = pd.read_csv(f'{OUT_DIR}/matched_counts.csv')
+
+    def head(n, text):
+        print(f'\n{"=" * 78}\n{n} — {text}\n{"=" * 78}')
+
+    lo, hi = THRESHOLDS[0], THRESHOLDS[-1]
+    mid = min(THRESHOLDS, key=lambda t: abs(t - RT_THRESHOLD))
+    head('H1', f'accuracy robust, RT not: |v({hi}) - v({lo})| / |v({mid})|, median over cells')
+    rows = []
+    for key in SIG_KEYS:
+        at = {t: A[np.isclose(A['threshold'], t)].groupby(['ladder', 'variant'])[key].mean()
+              for t in (lo, mid, hi)}
+        rel = (at[hi] - at[lo]).abs() / at[mid].abs().replace(0, np.nan)
+        rows.append(dict(signature=key,
+                         kind='RT' if ('_rt' in key or key in ('pes_BI', 'peri')) else 'acc',
+                         v_lo=at[lo].mean(), v_mid=at[mid].mean(), v_hi=at[hi].mean(),
+                         rel_swing=float(rel.median())))
+    h1 = pd.DataFrame(rows).sort_values('rel_swing')
+    print(h1.to_string(index=False, float_format=lambda x: f'{x: .4f}'))
+    print('\nmedian relative swing by kind:')
+    print(h1.groupby('kind')['rel_swing'].median().to_string())
+
+    head('H2', 'how much of the RT threshold-dependence is the undecided pile-up?')
+    base = A[A['variant'] == BASELINE_VARIANT]
+    for key in RT_SIGNATURES:
+        a, d = (base.groupby('threshold')[c].mean() for c in (key, f'{key}__dec'))
+        sw_a, sw_d = a.loc[hi] - a.loc[lo], d.loc[hi] - d.loc[lo]
+        print(f'{key:24s} all {a.loc[lo]: .3f}->{a.loc[hi]: .3f}   '
+              f'decided-only {d.loc[THRESHOLDS[0]]: .3f}->{d.loc[THRESHOLDS[-1]]: .3f}   '
+              f'pile-up accounts for {1 - abs(sw_d) / abs(sw_a):.0%}')
+    print(f'\nDecided-only verdicts, {BASELINE_VARIANT}:')
+    vd = v[(v['mode'] == 'abs') & v['signature'].str.endswith('__dec')
+           & (v['variant'] == BASELINE_VARIANT)]
+    print(vd.pivot_table(index='signature', columns='threshold', values='verdict',
+                         aggfunc='first').to_string())
+
+    head('H3', 'PERI: the verdict, and the contrast across the delay ladder')
+    p = v[(v['mode'] == 'abs') & (v['signature'] == 'peri')]
+    print(p.pivot_table(index=['ladder', 'variant'], columns='threshold', values='verdict',
+                        aggfunc='first').to_string())
+    lo_v, hi_v = DELAY_LADDER[0][0], DELAY_LADDER[-1][0]
+    print(f"\nthe delay's effect on PERI ({lo_v} - {hi_v}), Welch t across seeds:")
+    rows = []
+    for thr in THRESHOLDS:
+        sel = np.isclose(A['threshold'], thr)
+        a = A[sel & (A['variant'] == lo_v)]['peri'].to_numpy()
+        b = A[sel & (A['variant'] == hi_v)]['peri'].to_numpy()
+        if not (len(a) and len(b)):
+            continue
+        _, pv = stats.ttest_ind(a, b, equal_var=False)
+        rows.append(dict(thr=thr, diff=a.mean() - b.mean(),
+                         sig='yes' if pv < 0.05 else 'no'))
+    h3 = pd.DataFrame(rows)
+    print(h3.to_string(index=False, float_format=lambda x: f'{x: .3f}'))
+
+    head('H4', f'is {RT_THRESHOLD} at a maximum of the scorecard?  '
+               f'(summed over all {len(LADDERS)} variants)')
+    print(counts.groupby('threshold')[['matched', 'opp']].sum().to_string())
+
+    head('H5', 'is a fixed absolute threshold the same criterion on every rung?')
+    at5 = A[np.isclose(A['threshold'], RT_THRESHOLD)]
+    print(f'undecided fraction at an absolute {RT_THRESHOLD}, and the threshold each rung')
+    print('would need for a 10% undecided rate:')
+    lhs = at5.groupby('variant')['undecided_frac'].mean().rename(f'undecided_at_{RT_THRESHOLD}')
+    rhs = (df[(df['mode'] == 'quant') & np.isclose(df['threshold'], 0.10)]
+           .groupby('variant')['thr_abs'].mean().rename('thr_for_10pct'))
+    print(pd.concat([lhs, rhs], axis=1).to_string(float_format=lambda x: f'{x: .3f}'))
+    print('\nPERI rescored at a per-session quantile threshold (matched undecided rate):')
+    pq = v[(v['mode'] == 'quant') & (v['signature'] == 'peri')]
+    print(pq.pivot_table(index=['ladder', 'variant'], columns='threshold', values='verdict',
+                         aggfunc='first').to_string())
+
+    head('H6', 'where along each ladder does the choice matter?')
+    flips = pd.read_csv(FLIPS_CSV)
+    order = [x for x, _, _ in LADDERS]
+    print(f'flips per variant (of {len(SIG_KEYS)} signatures each):')
+    print(flips.groupby('variant').size().reindex(order).fillna(0).astype(int).to_string())
+    print('\nflips per signature:')
+    print(flips.groupby('signature').size().sort_values(ascending=False).to_string())
+
+    head('CLAIMS', 'does the delay cost signatures, and is that robust to the threshold?')
+    piv = counts.pivot_table(index='variant', columns='threshold', values='matched')
+    dl = [x for x, _ in DELAY_LADDER]
+    base = piv.loc[dl[0]]
+    print(f'matched({dl[0]}) - matched(rung), per threshold '
+          f'(positive = the delay costs signatures):')
+    print(pd.DataFrame({r: base - piv.loc[r] for r in dl[1:]}).T.to_string())
+    print(f'\nbest cell over the whole grid:')
+    best = piv.stack()
+    top = best[best == best.max()]
+    print(f'  {best.max():.0f} signatures at: ' +
+          ', '.join(f'{v} @ {t}' for v, t in top.index))
+    return df
+
+
+def main(mode='all'):
+    if mode == 'pilot':
+        return run_pilot()
+    if mode == 'figures':
+        return run_figures()
+    df = run_sweep() if mode in ('sweep', 'all') else None
+    if mode in ('report', 'all'):
+        df = run_report(df)[0]
+    if mode in ('hypotheses', 'all'):
+        return run_hypotheses(df)
+    return df
+
+
+_MODES = ('all', 'pilot', 'sweep', 'report', 'hypotheses', 'figures')
+
+if __name__ == '__main__':
+    args = [a for a in sys.argv[1:] if not a.startswith('-')]
+    if len(args) > 1 or (args and args[0] not in _MODES):
+        raise SystemExit(f'Usage: python flanker_rt_threshold_sweep.py '
+                         f'[{" | ".join(_MODES)}]')
+    main(args[0] if args else 'all')
