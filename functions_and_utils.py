@@ -64,6 +64,23 @@ def _active_dims(arr, mask):
     return arr[:, idx]
 
 
+def _hier_switch_trials(ii, oi, config):
+    """Per-trial behaviour for the hierarchical switching task (hier_switch/).
+
+    decision = the response output averaged over the response window. rule_a is the
+    decision signed by vis x cue, the side context 0's rule picks: positive means the trial
+    followed context 0's rule, negative context 1's. Returns (centre_ts, decision, rule_a,
+    correct), with centre_ts the timestep at the middle of each trial.
+    """
+    L = config.trial_len
+    n = len(ii) // L
+    lab = ii[:n * L].reshape(n, L, -1)[:, -1]     # last frame: targets (vis/aud) are on there
+    decision = oi[:n * L].reshape(n, L, -1)[:, config.response_start_timestep:, -1].mean(axis=1)
+    rule_a = decision * lab[:, config.ch('vis')] * lab[:, config.ch('cue')]
+    correct = np.sign(decision) == lab[:, config.ch('correct')]
+    return np.arange(n) * L + L // 2, decision, rule_a, correct
+
+
 def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subplot_height=1.4, width=3, annotate_phases=None, rasterize=False, legends=False):
     # Panel layout, adjust based on panel_order length
     fig, axes = plt.subplot_mosaic(
@@ -100,6 +117,26 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
 
     # Helper functions to plot specific panels
     def plot_behavior(ax):
+        if config.dataset_name == 'hier_switch' and logger.predicted_outputs:
+            # One dot per trial: the response signed toward context 0's rule, so the dots
+            # sit near +1 while the model follows rule A and flip at a reversal once it has
+            # switched. Grey = error. The line is the rule actually in force.
+            import plot_style
+            ts, _, rule_a, correct = _hier_switch_trials(ii, oi, config)
+            sel = (ts >= x1) & (ts < x2)
+            x = ts[sel] - x1
+            truth = 1.0 - 2.0 * ii[ts[sel], config.ch('context')]
+            ax.plot(x, truth, color='k', linewidth=0.5, alpha=0.5, drawstyle='steps-mid')
+            ok = correct[sel]
+            y = np.clip(rule_a[sel], -1.5, 1.5)
+            ax.scatter(x[ok], y[ok], s=2, color=plot_style.get_model_color('NeuraGEM'),
+                       alpha=0.6, linewidths=0, rasterized=rasterize)
+            ax.scatter(x[~ok], y[~ok], s=2, color='tab:gray', alpha=0.8, linewidths=0,
+                       rasterized=rasterize)
+            ax.axhline(0, color='k', linewidth=0.4, linestyle=':', alpha=0.4)
+            ax.set_yticks([-1, 1])
+            ax.set_yticklabels(['rule B', 'rule A'])
+            return
         input_mask  = getattr(config, 'input_feed_mask',  None)
         output_mask = getattr(config, 'output_loss_mask', None)
         ii_plot = _active_dims(ii, input_mask)
@@ -165,6 +202,11 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
         ax.set_xlabel('Time step')
 
     def plot_gradients(ax):
+        if not logger.gradients_corrections:   # e.g. an oracle phase: Z never enters the loss
+            ax.text(0.5, 0.5, 'no Z gradients logged', ha='center', va='center',
+                    transform=ax.transAxes)
+            ax.set_ylabel(r'$\partial \epsilon/\partial Z$')
+            return
         gradients = np.stack(logger.gradients_corrections).squeeze()
         if gradients.shape[1] > 1: # stride is more than one
             gradients = gradients.reshape(-1, gradients.shape[-1])
@@ -342,6 +384,19 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             ax.set_ylabel('P(target)')
             ax.legend(loc='lower right', fontsize=6)
 
+        elif logger.predicted_outputs and config.dataset_name == 'hier_switch':
+            # Per-trial correctness (sign of the response-window output), causal MA(10),
+            # drawn at trial centres so it shares the timestep axis with the other panels.
+            ts, _, _, correct = _hier_switch_trials(ii, oi, config)
+            ma_window = 10
+            ma = np.convolve(correct.astype(float), np.ones(ma_window) / ma_window,
+                             mode='full')[:len(correct)]
+            sel = (ts >= x1) & (ts < x2)
+            ax.plot(ts[sel] - x1, ma[sel], color='k', linewidth=0.75, alpha=0.9)
+            ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.3)
+            ax.set_ylim(0.0, 1.05)
+            ax.set_ylabel(f'P(correct)\nMA({ma_window})')
+
         else:
             print('No corrects to plot for this dataset')
 
@@ -355,6 +410,8 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             else:
                 local_end = x2 - x1
             local_end = min(local_end, x2 - x1)
+            if local_end <= 0:  # phase ends before x1: nothing of it is on screen
+                continue
             phase_midpoint = (max(local_start, 0) + local_end) / 2
             phase_name = '\n'.join(phase_name.split())
 

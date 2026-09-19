@@ -11,5 +11,8 @@
   ],
   "reportMissingImports": "error",
   "reportMissingModuleSource": "none",
-  "reportUnusedExpression": "none"
+  "reportUnusedExpression": "none",
+  "extraPaths": [
+    "hier_switch"
+  ]
 }
