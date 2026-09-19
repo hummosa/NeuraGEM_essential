@@ -13,7 +13,7 @@ Code: `flanker_regression.py`. Interactively:
 
 or `python flanker_regression.py --variant noise10 [--run sweep_noise]`.
 Either way each session plays the role of one participant, as in the human analysis.
-`run_flanker.py` (Result 6 cell) fits a single session, which is one synthetic subject:
+`flanker_run_one_network.py` (Result 6 cell) fits a single session, which is one synthetic subject:
 useful for seeing shape and mechanism, not for evidence.
 
 Human scale for comparison: Fischer et al. have **1088 trials per participant**; the
@@ -165,7 +165,7 @@ reading a shrinkage result: above ~5 the two are too entangled to separate.
 
 ## 6. Reading the output
 
-**Two levels of detail.** `run_flanker.py` has a `regression_detail` flag near the top,
+**Two levels of detail.** `flanker_run_one_network.py` has a `regression_detail` flag near the top,
 and `report_session(reg, detail=...)` is the entry point behind it.
 
 - `False` (default) — the ~6 rows that are results: each human signature with its
@@ -190,7 +190,7 @@ one synthetic subject.
 
 ## 7. Why PIA and PERI fail — and what fixes them
 
-Figure: `group_7_noise_series.pdf`, built by `flanker_sweep_figures.fig_noise_series`.
+Figure: `group_8_noise_series.pdf`, built by `flanker_sweep_figures.fig_noise_series`.
 
 `arrow_noise_std` is the SD of the per-timestep noise on each arrow against a signal of
 1.0. When it is large the *target slot's own samples* frequently point the wrong way, so
@@ -201,7 +201,7 @@ lower the error. Locally correct, globally anti-adaptive.
 
 The noise sweep is the test, everything else held fixed. The table below is a snapshot —
 **regenerate it before quoting it**, with `python flanker_sweep_figures.py` (which writes
-`group_7_noise_series.pdf`) or `flanker_sweep_analysis.py` per level. What matters is the
+`group_8_noise_series.pdf`) or `flanker_sweep_analysis.py` per level. What matters is the
 *pattern*, which has been stable: every row moves monotonically with noise, and the
 mechanism row crosses zero where the behaviour does.
 

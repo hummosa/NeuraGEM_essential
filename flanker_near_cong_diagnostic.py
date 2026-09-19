@@ -1,7 +1,7 @@
 """
 flanker_near_cong_diagnostic.py — why is near-congruent WORSE than far-congruent?
 
-The anomaly (single session, run_flanker.py, arrow_noise_std = 0.4):
+The anomaly (single session, flanker_run_one_network.py, arrow_noise_std = 0.4):
 
     accuracy   near-cong  <  far-cong          (backwards: near flankers agree with the
     RT         near-cong  >  far-cong           target and are the ones the model was
@@ -128,7 +128,7 @@ that the near display leaves empty, and it is not a distance effect at all.
    As noise rises the gate stays on centre, the congruent-cell artefact melts away and the
    genuine flanker effect (near hurts more when incongruent) grows monotonically. Note
    RT|decided is negative at EVERY level: near-congruent trials that respond are never
-   slower. run_flanker.py currently runs at 0.4 — the lowest variant in
+   slower. flanker_run_one_network.py currently runs at 0.4 — the lowest variant in
    flanker_sweep_config.VARIANTS, labelled there "near-clean target". The sweep's own
    default variant is noise10.
 
@@ -253,7 +253,7 @@ RECOMMENDATION
 
 
 ALSO NOTED (unrelated to the above, but real)
-    - run_flanker.py:243 calls `update_config(config)` a second time where it means
+    - flanker_run_one_network.py:243 calls `update_config(config)` a second time where it means
       `update_config(test_config)`, so Stage 1 trains at bg_noise_std = 0 while Stage 2
       tests at the class default 0.1. Not the cause here (T11 "bg-zero" changes the gap by
       0.005) but the two stages should match.
@@ -297,14 +297,14 @@ NEAR_SLOTS, FAR_SLOTS, CENTRE = [1, 3], [0, 4], 2
 
 def build_configs(noise=0.4, bg_noise=0.0, seed=42, n_test=5000, match_bg=True,
                   p_corr=None, softmax_temp=None, display=None):
-    """Stage-1 and Stage-2 configs, mirroring run_flanker.py.
+    """Stage-1 and Stage-2 configs, mirroring flanker_run_one_network.py.
 
     `p_corr` and `softmax_temp` are the two knobs the fix tests vary. Both are properties
     of Stage 1 that Stage 2 has to inherit unchanged — p_corr because it is what the
     weights learned from, softmax_temp because it defines the gate the weights were fitted
     under and `mirror_to_model` does not patch it.
 
-    NOTE `match_bg`: run_flanker.py calls `update_config(config)` a second time where it
+    NOTE `match_bg`: flanker_run_one_network.py calls `update_config(config)` a second time where it
     means `update_config(test_config)`, so Stage 1 trains with bg_noise_std = 0 while
     Stage 2 tests with the class default 0.1. `match_bg=True` fixes that here; set it
     False to reproduce the script exactly.
@@ -360,7 +360,7 @@ def get_pretrained(cfg, retrain=False):
 
 
 def run_stage2(model, cfg, tcfg, z_reset_scale=0.2):
-    """One Stage-2 session, exactly as run_flanker.py does it."""
+    """One Stage-2 session, exactly as flanker_run_one_network.py does it."""
     sync_gating(tcfg, cfg)
     mirror_to_model(model, tcfg)
     reset_Z_uniform(model, scale=z_reset_scale, seed=tcfg.env_seed)
@@ -450,7 +450,7 @@ def forward_probe(model, obs, true_dir, z_raw, cfg, chunk=2000, z_seed=0):
 
 
 def summarise(output_traj, true_dir, cfg, rt_threshold=0.5):
-    """The same measures run_flanker.py reports, from a raw output trajectory."""
+    """The same measures flanker_run_one_network.py reports, from a raw output trajectory."""
     ad = cfg.arrows_duration
     search_from = int(getattr(cfg, 'response_start_timestep', 1))
     rt_interp, rt_int, decided, cross_idx = _interpolated_rt(output_traj, rt_threshold, search_from)
@@ -776,7 +776,7 @@ def main():
     ap.add_argument('--noise-sweep', type=str, default='',
                     help='comma-separated arrow_noise_std values; needs --seeds')
     ap.add_argument('--match-bg', type=int, default=0,
-                    help='0 = reproduce run_flanker.py exactly (test bg noise 0.1); '
+                    help='0 = reproduce flanker_run_one_network.py exactly (test bg noise 0.1); '
                          '1 = make Stage-2 bg noise match Stage 1')
     args = ap.parse_args()
     want = set(args.tests.split(','))

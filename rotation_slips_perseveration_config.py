@@ -269,6 +269,15 @@ CONDITION_INFO: Dict[str, ConditionInfo] = {
 # (the belief-trajectory panels and the slips-vs-noise curve).
 HEADLINE_CONDITIONS = ["RNN", ng_label(HEADLINE_Z_LR), "Oracle Z (one-hot)"]
 
+# ── Which conditions get a belief-trajectory panel (F1) ──────────────────────
+#
+# HEADLINE_CONDITIONS minus the Oracle. F1 plots the *reported* context against the true one,
+# and the oracle is handed the true context as Z by construction — its panel is a picture of
+# the task's ground truth, not of anything the model inferred, so it sets no ceiling the other
+# two panels can be read against. It stays in HEADLINE_CONDITIONS for F4/F5, where a
+# zero-by-construction reference line does carry information.
+F1_CONDITIONS = ["RNN", ng_label(HEADLINE_Z_LR)]
+
 # ── Which conditions appear in the perseveration/slips figure (F3) ────────────
 #
 # Deliberately fewer than CONDITIONS. Two omissions, both reported in the text instead:

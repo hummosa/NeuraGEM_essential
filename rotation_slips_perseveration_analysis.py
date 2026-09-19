@@ -50,7 +50,7 @@ from mean_prediction_analysis import (
 from rotation_decoding_analysis import _angular_error_deg
 from rotation_slips_perseveration_config import (
     CONDITION_INFO, CONTEXT_OUTPUT_ENCODING, ConditionInfo, EXPORT_ROOT,
-    F3_CONDITIONS, F3_CURVE_CONDITIONS,
+    F1_CONDITIONS, F3_CONDITIONS, F3_CURVE_CONDITIONS,
     HEADLINE_CONDITIONS, NOISE_LEVELS, TRAIN_ROTATIONS,
 )
 
@@ -60,6 +60,11 @@ plot_style.set_plot_style()
 # the network actually does, and summarize() marks them. 0.85 sits well clear of the models that
 # track (0.91-1.00 measured) and well above the ones that do not (0.75).
 AGREEMENT_FLOOR = 0.85
+
+# F3 is four panels of a figure that has to sit beside F1/F2 in a column. 0.7 in both dimensions
+# is a 51% cut in area, which is as far as it goes before the summary panels' alpha_z ticks
+# collide at 6 pt — the binding constraint is text, which does not shrink with the figure.
+F3_SIZE_SCALE = 0.7
 
 
 # ---------------------------------------------------------------------------
@@ -578,7 +583,7 @@ def _solo_info(name: str) -> ConditionInfo:
 
 
 def _dose_response_panel(ax, points, ylabel: str, params: AnalysisParams,
-                         gap: float = 2.2, label_every: int = 2) -> None:
+                         gap: float = 2.8, label_every: int = 2, scale: float = 1.0) -> None:
     """Summary-per-condition panel: a reference model, a gap, then the swept NeuraGEM family.
 
     The RNN is a different architecture, not the alpha_z -> 0 end of the sweep, so joining it to
@@ -588,11 +593,19 @@ def _dose_response_panel(ax, points, ylabel: str, params: AnalysisParams,
     Family ticks are the bare alpha_z values with the name in the axis label — spelling out
     "NG $\\alpha_z=0.15$" 15 times is what makes this panel unreadable at paper size.
 
+    `ylabel` is used verbatim: the panel sits beside a time course of the same quantity, which
+    already names it, so the caller passes what is new here ("mean over training") rather than
+    repeating the quantity.
+
     NOTE the family axis is *categorical*: conditions are evenly spaced in plot order, not
     positioned by alpha_z. It has to be, because _Z_LRS is denser at the top (0.5-0.9 spans only
     13% of the log range but holds a third of the points) and a true log axis piles those five
     on top of each other. The cost is that equal widths do not mean equal ratios — read the tick
     values, not the spacing.
+
+    `scale` shrinks the marks with the panel. Font sizes cannot follow a figure that gets
+    smaller — 6 pt is 6 pt on the page — so at a reduced size the markers and caps are the only
+    ink that can give the labels their room back.
     """
     if not points:
         return
@@ -600,16 +613,18 @@ def _dose_response_panel(ax, points, ylabel: str, params: AnalysisParams,
     ref = [p for p in points if not p[0].startswith('NG')]
 
     xs_ref = list(np.arange(len(ref)))
-    xs_fam = list(np.arange(len(fam)) + len(ref) - 1 + gap)
+    # The gap has to grow as the panel shrinks: it is measured in x slots, but what has to fit
+    # in it is the reference tick label at a fixed 6 pt.
+    xs_fam = list(np.arange(len(fam)) + len(ref) - 1 + gap / scale)
 
     # Connector through the swept family only.
     if len(fam) > 1:
-        ax.plot(xs_fam, [p[1] for p in fam], color='0.7', linewidth=0.8, zorder=1)
+        ax.plot(xs_fam, [p[1] for p in fam], color='0.7', linewidth=0.8 * scale, zorder=1)
 
     for xs, pts in ((xs_ref, ref), (xs_fam, fam)):
         for x, (cond, mean_val, sem_val) in zip(xs, pts):
             ax.errorbar(x, mean_val, yerr=sem_val, fmt='o', color=_info(cond).color,
-                        capsize=1.5, elinewidth=0.8, markersize=3.2,
+                        capsize=1.5 * scale, elinewidth=0.8 * scale, markersize=3.2 * scale,
                         markeredgewidth=0, zorder=3)
 
     ticks  = list(xs_ref) + list(xs_fam[::label_every])
@@ -622,8 +637,28 @@ def _dose_response_panel(ax, points, ylabel: str, params: AnalysisParams,
     # rotated tick block costs — the reason the family label lives in the axis label.
     ax.set_xticklabels(labels, rotation=0)
     ax.set_xlim(-0.9, xs_fam[-1] + 0.9)
-    ax.set_ylabel(f'{ylabel}\n(mean over training)')
+    ax.set_ylabel(ylabel)
     ax.set_xlabel(r'NeuraGEM  $\alpha_z$', labelpad=1)
+
+
+def _curve_legend_label(cond: str, first_family: str | None = None) -> str:
+    """Legend text for F3's time-course panels: the reference model by name, the swept family by
+    its bare alpha_z value, with the symbol carried once on `first_family`.
+
+    Spelling out "NG $\\alpha_z=0.05$" seven times costs two legend rows at paper size — as much
+    vertical space as a whole panel row of the shrunken figure. The bare values are the same
+    labels the summary panels put on their x ticks, so the two halves of the figure now read
+    with one convention instead of two.
+
+    `first_family` is passed in rather than read off F3_CURVE_CONDITIONS because the drawn set
+    can be overridden (AnalysisParams.curve_conditions); the symbol has to land on whichever
+    family entry is actually drawn first, or the legend shows bare numbers with nothing naming
+    them.
+    """
+    if not cond.startswith('NG'):
+        return _info(cond).label
+    value = cond.split('=')[-1].rstrip('$').lstrip('0')
+    return rf'$\alpha_z$ {value}' if cond == first_family else value
 
 
 def _draws_curve(cond: str, params: AnalysisParams) -> bool:
@@ -652,12 +687,14 @@ def _save(fig, export_dir: Path, name: str, params: AnalysisParams):
 
 def plot_belief_trajectory(cache, params: AnalysisParams, export_dir: Path,
                            n_blocks: int = 8, seed_idx: int = 0) -> plt.Figure:
-    """F1 — the reported belief, block by block, late in training.
+    """F1 — the reported context, block by block, late in training.
 
     One panel per model is the exception the style guide allows: these are per-trial point
-    clouds, which cannot be overlaid on shared axes without becoming unreadable.
+    clouds, which cannot be overlaid on shared axes without becoming unreadable. Which is also
+    why the panel list is F1_CONDITIONS rather than HEADLINE_CONDITIONS: every panel here costs
+    width, and the oracle's would spend it re-drawing the ground truth (see F1_CONDITIONS).
     """
-    conds = [c for c in HEADLINE_CONDITIONS if (c, params.headline_noise) in cache]
+    conds = [c for c in F1_CONDITIONS if (c, params.headline_noise) in cache]
     fig, axes = plt.subplots(1, len(conds), figsize=FigSize.row(len(conds), FigSize.small),
                              dpi=params.dpi, sharey=True, layout='constrained')
     axes = np.atleast_1d(axes)
@@ -689,7 +726,7 @@ def plot_belief_trajectory(cache, params: AnalysisParams, export_dir: Path,
         ax.set_xlabel('Trial')
         ax.set_title(_solo_info(cond).label)
 
-    axes[0].set_ylabel('Reported belief (deg)')
+    axes[0].set_ylabel('Reported context (deg)')
     axes[0].set_ylim(rots.min() - 45, rots.max() + 45)
     _save(fig, export_dir, 'F1_belief_trajectory.pdf', params)
     return fig
@@ -741,7 +778,8 @@ def plot_context_correct(cache, params: AnalysisParams, export_dir: Path) -> plt
 
 
 def plot_perseveration_and_slips(cache, params: AnalysisParams, export_dir: Path,
-                                 width_scale: float = 1.0) -> plt.Figure:
+                                 width_scale: float = 1.0,
+                                 size_scale: float = F3_SIZE_SCALE) -> plt.Figure:
     """F3 - perseveration errors and context slips per block, over training and summarised.
 
     Left: time courses for a readable subset (F3_CURVE_CONDITIONS).
@@ -751,18 +789,34 @@ def plot_perseveration_and_slips(cache, params: AnalysisParams, export_dir: Path
     config for why, and state both in the caption rather than plotting them.
 
     width_scale widens the figure if the family outgrows the panel; the defaults are tuned for
-    ~15 alpha_z values at paper size.
+    ~15 alpha_z values at paper size. size_scale shrinks the whole thing (see F3_SIZE_SCALE) —
+    and note the two are not interchangeable: width_scale buys x room for the family, size_scale
+    trades page area against everything.
+
+    Text does not scale with the figure, so shrinking is not a matter of the figsize alone. The
+    space comes back from three places instead: sharex within each column (the two rows repeated
+    an identical x axis and its label), line/mark weights scaled with the panel, and a legend
+    whose family entries are bare alpha_z values, matching the summary panels' tick labels.
     """
     pw, ph = FigSize.wide
     rw = pw * 1.1                       # the summary panel carries ~16 x positions, so it needs
                                         # more width than the FigSize.small slot it used to get
-    fig = plt.figure(figsize=((pw + rw) * width_scale, ph * 2),
+    fig = plt.figure(figsize=((pw + rw) * width_scale * size_scale, ph * 2 * size_scale),
                      dpi=params.dpi, layout='constrained')
+    # Constrained layout's default pads are a fixed fraction of the figure, so at 0.7 they are
+    # not smaller in absolute terms — they are the same white gutters around 51% of the area.
+    fig.get_layout_engine().set(h_pad=0.02, w_pad=0.02, hspace=0.03, wspace=0.03)
     gs = gridspec.GridSpec(2, 2, width_ratios=[pw, rw], figure=fig)
-    ax_p, ax_s   = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[1, 0])
-    ax_ap, ax_as = fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 1])
+    ax_p = fig.add_subplot(gs[0, 0])
+    ax_s = fig.add_subplot(gs[1, 0], sharex=ax_p)
+    ax_ap = fig.add_subplot(gs[0, 1])
+    ax_as = fig.add_subplot(gs[1, 1], sharex=ax_ap)
+    for ax in (ax_p, ax_ap):
+        ax.tick_params(labelbottom=False)
 
     curve_conds = params.curve_conditions or F3_CURVE_CONDITIONS
+    first_family = next((c for c in F3_CONDITIONS
+                         if c.startswith('NG') and c in curve_conds), None)
     summ_p, summ_s = [], []
 
     for cond in F3_CONDITIONS:
@@ -778,24 +832,31 @@ def plot_perseveration_and_slips(cache, params: AnalysisParams, export_dir: Path
             store.append((cond, *_whole_curve(mean_c, sem_c, params)))
             if cond not in curve_conds:
                 continue
-            ax.plot(x, mean_c, color=info.color, linewidth=params.linewidth,
-                    alpha=params.alpha, label=info.label)
+            ax.plot(x, mean_c, color=info.color, linewidth=params.linewidth * size_scale,
+                    alpha=params.alpha, label=_curve_legend_label(cond, first_family))
             ax.fill_between(x, mean_c - sem_c, mean_c + sem_c,
                             color=info.color, alpha=params.band_alpha, linewidth=0)
 
-    x_label = f'Block group (x{params.aggregate_blocks})'
-    ax_p.set_ylabel('Perseveration errors / block')
-    ax_p.set_xlabel(x_label)
-    ax_s.set_ylabel('Context slips / block')
-    ax_s.set_xlabel(x_label)
+    ax_s.set_xlabel(f'Block group (x{params.aggregate_blocks})')   # shared with ax_p
+    # Two lines apiece: at size_scale=0.7 a panel is ~0.75 in tall and a one-line
+    # "Perseveration errors / block" at 6 pt is longer than that.
+    ax_p.set_ylabel('Perseveration\nerrors / block')
+    ax_s.set_ylabel('Context slips\n/ block')
 
-    _dose_response_panel(ax_ap, summ_p, 'Perseveration errors', params)
-    _dose_response_panel(ax_as, summ_s, 'Context slips', params)
+    # label_every=3 at the reduced width: the tick text stays 6 pt while the panel narrows, so
+    # every-other-value labels start to touch.
+    label_every = 2 if size_scale > 0.85 else 3
+    # The row's left-hand panel already names the quantity; these say only what is new.
+    _dose_response_panel(ax_ap, summ_p, 'Mean over\ntraining', params,
+                         label_every=label_every, scale=size_scale)
+    _dose_response_panel(ax_as, summ_s, 'Mean over\ntraining', params,
+                         label_every=label_every, scale=size_scale)
+    ax_ap.set_xlabel('')                                           # shared with ax_as
 
     handles, labels = ax_p.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='outside upper center', ncols=min(len(handles), 4),
-               fontsize='small', frameon=False, handlelength=1.2,
-               columnspacing=1.0, handletextpad=0.4)
+    fig.legend(handles, labels, loc='outside upper center', ncols=len(handles),
+               fontsize='small', frameon=False, handlelength=1.0,
+               columnspacing=0.8, handletextpad=0.35, borderpad=0.1)
 
     _save(fig, export_dir, 'F3_perseveration_and_slips.pdf', params)
     return fig

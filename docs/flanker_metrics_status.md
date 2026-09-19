@@ -7,7 +7,7 @@ state instead:
 
 ```bash
 python flanker_sweep_analysis.py                    # across-seed tables
-python flanker_sweep_figures.py --variant noise10   # group_6_scorecard.pdf and the rest
+python flanker_sweep_figures.py --variant noise10   # group_7_scorecard.pdf and the rest
 python flanker_regression.py --variant noise10      # the same signatures as GLM coefficients
 ```
 

@@ -32,6 +32,8 @@ should take — the single source of truth for the scorecard figure and any pass
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from flanker_analyses import lagged_factors
@@ -50,6 +52,25 @@ def _mean(vals, mask):
     v = vals[mask]
     v = v[~np.isnan(v)]
     return v.mean() if len(v) else np.nan
+
+
+def _axis_varies(level, reference, mask, ratio=1e-3):
+    """
+    Whether `level` is a real axis, judged against `reference`'s spread — scale-free.
+
+    Under a softmaxed latent the activated gate is a simplex, so anything measured as a
+    LEVEL over slots (the gate's gain, or an update's change in gain) is constant to float
+    residue, about 1e-8. An absolute threshold waves that through; a ratio against a
+    DIFFERENCE measured on the same gate does not. The two regimes differ by seven orders
+    of magnitude — 7e-8 under softmax, 0.6 under raw Z, measured on ad10_delay/delay1 — so
+    nothing sits near the boundary.
+
+    Factored out so `control_axes` (the inherited state) and `control_effects` (the update)
+    cannot disagree about which regime a session is in.
+    """
+    lsd = float(np.nanstd(level[mask])) if mask.any() else 0.0
+    rsd = float(np.nanstd(reference[mask])) if mask.any() else 0.0
+    return bool(rsd > 0 and lsd / rsd > ratio)
 
 
 def _frac(mask, within):
@@ -273,25 +294,65 @@ def post_conflict_effects(trials, m):
 
 # ── Block 5: post-error adaptation ────────────────────────────────────────────
 
+#: Trial A's congruency, a FACTOR rather than a restriction. 'AI' is what the legacy
+#: `pes_BI` / `pia_BI` / `peri` names have always meant; 'AC' is the control that says
+#: whether post-error adaptation is specific to errors made under conflict.
+A_LEVELS = (('AI', 'p_incong'), ('AC', 'p_cong'))
+B_LEVELS = (('BI', 'incong'),   ('BC', 'cong'))
+
+
 def post_error_effects(trials, m):
-    """Post-error slowing and accuracy, with trial A restricted to incongruent trials."""
+    """
+    Post-error slowing and accuracy, over trial A's congruency x trial B's congruency.
+
+    Both factors are crossed rather than pooled, and for the same reason in each case:
+
+      * Trial B — a target-focused state helps an incongruent B and hurts a congruent one,
+        so pooling B averages an effect against its own opposite. This is why PIA has no
+        single sign: it is +0.05 into an incongruent B and -0.14 into a congruent one, and
+        the figure has to show both or the number means nothing.
+      * Trial A — A used to be pinned to incongruent, because pooling A makes the
+        post-correct baseline a mixture dominated by congruent-correct trials. Crossing A
+        keeps that confound out (each cell has its own matched baseline) AND answers the
+        question the restriction hid: is this adaptation to an error, or to conflict?
+
+    Every returned contrast is post-error MINUS post-correct within one (A, B) cell, so a
+    positive `pes` is slower after an error and a positive `pia` is more accurate after one.
+
+    The unsuffixed legacy names (`pes_BI`, `pia_BI`, `peri`, ...) are kept as aliases of the
+    A-incongruent cells. They are what SIGNATURES scores, what the noise and delay ladders
+    plot, and what flanker_rt_threshold_sweep recomputes, so their meaning must not move.
+    They are ASSIGNED from the loop's own output below, never recomputed, so the two
+    spellings cannot drift apart.
+    """
     acc, rt, foc_in = (trials['correct_at_decision'].astype(float),
                        trials['rt_interp'], trials['focus_in'])
     e = {}
-    # Trial B split by congruency: a target-focused state helps incongruent B and hurts
-    # congruent B, so pooling them averages an effect against its own opposite.
-    for bn, bm in [('I', m['incong']), ('C', m['cong'])]:
-        after_err  = m['valid'] & m['p_incong'] & m['perr'] & bm
-        after_corr = m['valid'] & m['p_incong'] & m['pc']   & bm
-        e[f'pia_B{bn}'] = _mean(acc, after_err) - _mean(acc, after_corr)
-        e[f'pes_B{bn}'] = _mean(rt,  after_err) - _mean(rt,  after_corr)
-        e[f'focus_in_diff_B{bn}'] = _mean(foc_in, after_err) - _mean(foc_in, after_corr)
+    for an, ak in A_LEVELS:
+        for bn, bk in B_LEVELS:
+            after_err  = m['valid'] & m[ak] & m['perr'] & m[bk]
+            after_corr = m['valid'] & m[ak] & m['pc']   & m[bk]
+            e[f'pia_{an}_{bn}'] = _mean(acc, after_err) - _mean(acc, after_corr)
+            e[f'pes_{an}_{bn}'] = _mean(rt,  after_err) - _mean(rt,  after_corr)
+            e[f'focus_in_diff_{an}_{bn}'] = (_mean(foc_in, after_err)
+                                             - _mean(foc_in, after_corr))
+        # The congruency effect on RT after an error vs after a correct trial, within this
+        # A cell. Positive = an error shrinks interference.
+        base_err, base_corr = m['valid'] & m[ak] & m['perr'], m['valid'] & m[ak] & m['pc']
+        ce_err  = _mean(rt, base_err  & m['incong']) - _mean(rt, base_err  & m['cong'])
+        ce_corr = _mean(rt, base_corr & m['incong']) - _mean(rt, base_corr & m['cong'])
+        e[f'peri_{an}'] = ce_corr - ce_err
 
-    ce_err  = (_mean(rt, m['valid'] & m['p_incong'] & m['perr'] & m['incong'])
-               - _mean(rt, m['valid'] & m['p_incong'] & m['perr'] & m['cong']))
-    ce_corr = (_mean(rt, m['valid'] & m['p_incong'] & m['pc'] & m['incong'])
-               - _mean(rt, m['valid'] & m['p_incong'] & m['pc'] & m['cong']))
-    e['peri'] = ce_corr - ce_err          # post-error reduction of interference
+    # Is the adaptation conflict-specific? Not in SIGNATURES — no direction has been
+    # committed to for it — but it is the contrast crossing A now makes available.
+    e['pes_AI_minus_AC_BI'] = e['pes_AI_BI'] - e['pes_AC_BI']
+    e['pia_AI_minus_AC_BI'] = e['pia_AI_BI'] - e['pia_AC_BI']
+
+    e.update({'pes_BI': e['pes_AI_BI'], 'pes_BC': e['pes_AI_BC'],
+              'pia_BI': e['pia_AI_BI'], 'pia_BC': e['pia_AI_BC'],
+              'focus_in_diff_BI': e['focus_in_diff_AI_BI'],
+              'focus_in_diff_BC': e['focus_in_diff_AI_BC'],
+              'peri': e['peri_AI']})
     return e
 
 
@@ -349,6 +410,28 @@ def control_effects(trials, m):
     for cn in CONGRUENCY:
         e[f'dfocus_{cn}'] = _mean(dfoc, m[cn])
     e['dfocus_cong_effect'] = e['dfocus_incong'] - e['dfocus_cong']
+
+    # The same update read as a LEVEL rather than as a direction. `delta_focus` is centre
+    # minus flankers, so it cannot see whether the whole gate rose or fell — the exact
+    # blindness `control_axes` finds in `focus_in`, here applied to the update. The two
+    # together are what a Z panel has to show since the two control axes were separated:
+    # focus says where the update points the gate, gain says how hard it gates at all.
+    #
+    # Plain .mean, not nanmean: a delta_z row is all-finite or all-NaN (trial 0 inherited
+    # nothing), so the NaN propagates and _mean drops the trial, where nanmean would warn
+    # on the empty slice and invent a value. Same convention as z_slot_effects.
+    dgain = trials['delta_z'].mean(axis=1)
+    for name, mask in _cells(m):
+        e[f'dgain_{name}'] = _mean(dgain, mask)
+        for on, om in (('corr', m['corr']), ('err', m['err'])):
+            e[f'dgain_{name}_{on}'] = _mean(dgain, mask & om)
+    for cn in CONGRUENCY:
+        e[f'dgain_{cn}'] = _mean(dgain, m[cn])
+    e['dgain_cong_effect'] = e['dgain_incong'] - e['dgain_cong']
+    # Under a softmaxed latent delta_z sums to ~0 across slots, so dgain is identically
+    # zero and a Δ gain panel would be a row of float residue. Stored as a float because
+    # every value in this flat per-seed dict is one; the figures read it through _flag.
+    e['dgain_varies'] = float(_axis_varies(dgain, dfoc, np.isfinite(dgain)))
     e['focus_in_after_near_err'] = _mean(foc_in, m['valid'] & m['p_incong'] & m['p_near'] & m['perr'])
     e['focus_in_after_far_err']  = _mean(foc_in, m['valid'] & m['p_incong'] & m['p_far']  & m['perr'])
     return e
@@ -549,6 +632,103 @@ def event_locked(trials, lags=EVENT_LAGS, n_bins=8):
     return out
 
 
+# ── Block 9b: the two axes of the inherited gate ──────────────────────────────
+
+def control_axes(trials, n_bins=8):
+    """
+    Split the inherited gate into SELECTIVITY and GAIN, and price each separately.
+
+        focus = z_in[centre] - mean(z_in[flankers])   where the gate points
+        gain  = mean(z_in over all slots)             how hard it gates at all
+
+    `focus` is a difference and `gain` is a level, so `focus` is blind to the gate's
+    overall magnitude. That blindness is why the post-error contrasts looked
+    contradictory: after an error EVERY slot's weight falls, and reading only `focus`
+    predicts post-error accuracy should DROP when it rises.
+
+    The two turn out to be nearly uncorrelated and to have different signatures:
+
+        focus up  ->  more accurate AND faster     (no trade-off)
+        gain  up  ->  less accurate but faster     (a real trade-off)
+
+    So the model has two independent knobs, and moving on both is how a post-error state
+    can be slower *and* more accurate at once — the focus term and the gain term push
+    accuracy in opposite directions while both push RT the same way.
+
+    **This decomposition only exists when `latent_activation` is not a softmax.** A
+    softmaxed gate is a simplex, so `gain` is exactly 1/n_slots on every trial with zero
+    variance and `focus` really is the whole state. `gain_varies` reports which regime a
+    session is in; a caller that draws the gain panels should check it rather than plot a
+    constant.
+
+    Everything is measured on INCONGRUENT trials, matching the exchange panels in
+    `flanker_sweep_figures.fig_z_update` (group_9): on a congruent trial the flankers agree with the
+    target, so there is nothing for selectivity to protect against.
+    """
+    m   = condition_masks(trials)
+    zin = trials['z_in']
+    focus = trials['focus_in']
+    # z_in[0] is all-NaN by construction (the first trial inherited nothing), so nanmean
+    # warns on that one empty slice. The mask below drops it either way.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        gain = np.nanmean(zin, axis=1)
+    acc = trials['correct_at_decision'].astype(float)
+    rt  = trials['rt_interp']
+
+    inc = m['incong'] & ~np.isnan(focus) & ~np.isnan(gain)
+    # Is the gain axis real, or is this a simplex? See _axis_varies — the check is a ratio
+    # against the focus axis's own spread, not an absolute threshold, because under softmax
+    # gain's only spread is float residue.
+    out = {'gain_varies': _axis_varies(gain, focus, inc)}
+    if inc.sum() < 4 * n_bins:
+        return {**out, 'ok': False}
+    out['ok'] = True
+
+    fo, ga, ac, rr = focus[inc], gain[inc], acc[inc], rt[inc]
+    out['r_focus_gain'] = float(np.corrcoef(fo, ga)[0, 1]) if out['gain_varies'] else np.nan
+
+    # Exchange curves: one per axis per measure, on that axis's own quantile bins.
+    for name, v in (('focus', fo), ('gain', ga)):
+        edges = np.nanquantile(v, np.linspace(0, 1, n_bins + 1))
+        cx, ca, cr = [], [], []
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            sel = (v >= lo) & (v < hi)
+            if sel.sum() > 20:
+                cx.append(np.nanmean(v[sel]))
+                ca.append(np.nanmean(ac[sel]))
+                cr.append(np.nanmean(rr[sel]))
+        out[f'curve_{name}_x']   = np.array(cx)
+        out[f'curve_{name}_acc'] = np.array(ca)
+        out[f'curve_{name}_rt']  = np.array(cr)
+
+    # Partial slopes: both axes in one regression, so each is the effect holding the other
+    # fixed. The marginal curves above cannot do this, and with two correlated axes the
+    # marginal and partial answers need not agree — here they nearly do, because the two
+    # are close to orthogonal.
+    X = np.column_stack([np.ones(inc.sum()), fo, ga])
+    for key, y in (('acc', ac), ('rt', rr)):
+        try:
+            b, *_ = np.linalg.lstsq(X, y, rcond=None)
+        except np.linalg.LinAlgError:
+            b = [np.nan] * 3
+        out[f'b_focus_{key}'], out[f'b_gain_{key}'] = float(b[1]), float(b[2])
+
+    # Where the post-error and post-correct states actually sit in that plane — the
+    # displacement whose two components the slopes above then price.
+    for tag, mk in (('err', m['valid'] & m['p_incong'] & m['perr'] & m['incong']),
+                    ('corr', m['valid'] & m['p_incong'] & m['pc']   & m['incong'])):
+        out[f'focus_{tag}'] = _mean(focus, mk)
+        out[f'gain_{tag}']  = _mean(gain,  mk)
+        out[f'acc_{tag}']   = _mean(acc,   mk)
+        out[f'rt_{tag}']    = _mean(rt,    mk)
+
+    # Raw per-trial values, so a caller pooling across sessions can bin the plane on
+    # common edges rather than averaging incompatible per-session grids.
+    out['focus'], out['gain'], out['acc'], out['rt'] = fo, ga, ac, rr
+    return out
+
+
 # ── Composition ───────────────────────────────────────────────────────────────
 
 def session_effects(trials):
@@ -568,30 +748,36 @@ def session_effects(trials):
 # human dataset shows, so a scorecard can flip every effect to "positive = matches
 # humans" and put them on one axis. Keep this list as the single source of truth —
 # a figure that hard-codes its own list will drift from the tables.
+#
+# Each label carries the contrast on its second line, written AS PLOTTED — i.e. already
+# multiplied by `sign`. So `dist_effect_acc_incong` (sign -1, raw arithmetic near minus
+# far) reads "far - near", and every row on the scorecard means the same thing: positive
+# is the human direction. Naming the quantity is the point; a scorecard of acronyms tells
+# a reader which effects passed but not what any of them measured.
 
 SIGNATURES = [
-    ('cong_effect_acc',        'Congruency effect (accuracy)',      +1, 'Eriksen & Eriksen 1974'),
-    ('cong_effect_rt',         'Congruency effect (RT)',            +1, 'Eriksen & Eriksen 1974'),
-    ('dist_effect_acc_incong', 'Distance: accuracy, incongruent',   -1, 'flanker proximity'),
-    ('dist_effect_acc_cong',   'Distance: accuracy, congruent',     +1, 'flanker proximity'),
-    ('dist_effect_rt_incong',  'Distance: RT, incongruent',         +1, 'flanker proximity'),
+    ('cong_effect_acc',        'Congruency effect\nacc: cong − incong',              +1, 'Eriksen & Eriksen 1974'),
+    ('cong_effect_rt',         'Congruency effect\nRT: incong − cong',               +1, 'Eriksen & Eriksen 1974'),
+    ('dist_effect_acc_incong', 'Distance, incongruent\nacc: far − near',             -1, 'flanker proximity'),
+    ('dist_effect_acc_cong',   'Distance, congruent\nacc: near − far',               +1, 'flanker proximity'),
+    ('dist_effect_rt_incong',  'Distance, incongruent\nRT: near − far',              +1, 'flanker proximity'),
     # Errors on incongruent trials are flanker-driven, so they beat the target to
     # threshold: positive `fasterr` = errors faster than correct responses. Scored on the
     # decided-only version, because the rt_interp one is dominated by the higher
     # non-response rate on errors rather than by speed. `fasterr_cong_decided` at -1 —
     # congruent errors as slow lapses — is a defensible fourth row and is deliberately
     # left out until someone commits to that prediction; the key is computed either way.
-    ('fasterr_incong_decided', 'Errors faster than correct (inc.)', +1, 'flanker fast errors'),
-    ('pes_BI',                 'Post-error slowing (B incong)',     +1, 'Rabbitt 1966'),
-    ('pia_BI',                 'Post-error accuracy (B incong)',    +1, 'post-error improvement'),
+    ('fasterr_incong_decided', 'Fast errors, incongruent\nRT: correct − error',      +1, 'flanker fast errors'),
+    ('pes_BI',                 'PES  (A, B incongruent)\nRT: after error − after correct',  +1, 'Rabbitt 1966'),
+    ('pia_BI',                 'PIA  (A, B incongruent)\nacc: after error − after correct', +1, 'post-error improvement'),
     # The conflict-triggered twin of the two rows above, post-correct A only. Positive is
     # slower AND more accurate after an incongruent trial — a control-recruitment account,
     # which is the reading Collins & Nassar put on the human data. `pcs_BC` / `pca_BC` are
     # computed and plotted but not scored: no direction was committed to for them.
-    ('pcs_BI',                 'Post-incong. slowing (B incong)',   +1, 'conflict adaptation'),
-    ('pca_BI',                 'Post-incong. accuracy (B incong)',  +1, 'conflict adaptation'),
-    ('peri',                   'PERI (interference drops)',         +1, 'Ridderinkhof 2002'),
-    ('sce_acc_repeat',         'Gratton, response repeats',         +1, 'Gratton 1992'),
-    ('sce_acc_switch',         'Gratton, response switches',        +1, 'Mayr, Awh & Laurey 2003'),
-    ('lag2_contrast_acc',      'Lag-2 history contrast',            +1, 'model prediction'),
+    ('pcs_BI',                 'PCS  (A correct, B incongruent)\nRT: after incong − after cong',  +1, 'conflict adaptation'),
+    ('pca_BI',                 'PCA  (A correct, B incongruent)\nacc: after incong − after cong', +1, 'conflict adaptation'),
+    ('peri',                   'PERI  (A incongruent)\ncong. effect: after correct − after error', +1, 'Ridderinkhof 2002'),
+    ('sce_acc_repeat',         'Gratton, response repeats\nacc cong. effect: after cong − after incong',  +1, 'Gratton 1992'),
+    ('sce_acc_switch',         'Gratton, response switches\nacc cong. effect: after cong − after incong', +1, 'Mayr, Awh & Laurey 2003'),
+    ('lag2_contrast_acc',      'Lag-2 history (incong trials)\nacc: t−2 incong − t−2 cong',   +1, 'model prediction'),
 ]

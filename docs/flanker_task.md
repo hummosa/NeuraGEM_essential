@@ -11,14 +11,14 @@ Human dataset: Fischer et al. 2018 / Kirschner et al. 2024 flanker EEG (N ≈ 13
 |---|---|
 | `configs.py` | `FlankerTaskConfig` (training), `FlankerRandomTrialsConfig` (test) |
 | `datasets.py` | `FlankerTaskDataset`, `FlankerRandomTrialsDataset` + `DATASET_REGISTRY` |
-| `run_flanker.py` | Main experiment script (`#%%` cells) — two stages plus all analyses |
+| `flanker_run_one_network.py` | Main experiment script (`#%%` cells) — two stages plus all analyses |
 | `flanker_analyses.py` | Trial extraction, factor construction, plotting, config/model helpers |
 | `flanker_metrics.py` | Every per-seed scalar effect, grouped by question; `SIGNATURES` registry |
 | `flanker_regression.py` | Trial-level GLM on accuracy and RT, mirroring the human analysis — see `flanker_regression.md` |
 | `flanker_sweep.py` / `flanker_sweep_config.py` | Seeds × stimulus-noise sweep; `flanker_sweep_config.py` holds every setting |
 | `flanker_sweep_analysis.py` | Across-subject statistics: one-sample t-tests on the per-seed effects |
 | `flanker_figure_utils.py` | Panel primitives (`bars_with_seeds`, `band`, `series`) and variant-aware loading |
-| `flanker_sweep_figures.py` | The seven group figures, in the order the story is told |
+| `flanker_sweep_figures.py` | The numbered group figures, in the order the story is told |
 | `train_and_infer_functions.py` | `train_model()` training loop |
 | `functions_and_utils.py` | `plot_logger_panels()`, `Logger` class |
 | `archive/run_flanker_blocked.py` | Retired blocked Stage 2/3 — see "Why blocks were dropped" |
@@ -198,7 +198,7 @@ timestep at which the target can reach the output — `target_delay + 1`, becaus
 `predict_first_frame=True` means the model at timestep t has been fed frames 0..t-1. The
 marker is a reading aid only; no measure is referenced to it.
 
-`group_2_within_trial.pdf` and `run_flanker.py` Result 2 are where the mechanism shows:
+`group_2_within_trial.pdf` and `flanker_run_one_network.py` Result 2 are where the mechanism shows:
 everything left of that line is flanker-driven, so congruent traces climbing and
 incongruent traces heading the wrong way *before* onset is the effect itself.
 
@@ -308,7 +308,7 @@ of it.
 
 ### Confirmed at 20 seeds, and it downgrades the case for jitter
 
-Every number in the table above was measured with `bg_noise_std = 0.1`. `run_flanker.py`
+Every number in the table above was measured with `bg_noise_std = 0.1`. `flanker_run_one_network.py`
 sets it to 0, and that turns out to do jitter's main job for it. A 2×2 over
 `oracle_gate_jitter` × `p_corr_by_distance[2]`, 20 seeds per cell across the whole noise
 ladder (`exports/flanker_random/factorial_corr_jitter`), at `arrow_noise_std` 0.9:
@@ -402,8 +402,9 @@ Incongruent trials fail more often, so "after an incongruent trial" is also "aft
 error" unless trial A's outcome is held fixed. Without the restriction, post-incongruent
 slowing and post-error slowing are the same measure with two names.
 `history_effects` and `post_conflict_effects` both apply it (`m['valid'] & m['pc']`); the
-post-error block holds the mirror-image factor fixed instead, restricting trial A to
-incongruent trials and splitting on outcome.
+post-error block holds the mirror-image factor fixed instead, splitting on trial A's
+outcome and crossing trial A's congruency rather than restricting it (see the confound
+note below).
 
 **5. An RT contrast between correct and error responses gets a `_decided` companion.**
 `rt_interp` gives a trial that never crossed the trial end (convention 1), and errors are
@@ -524,7 +525,7 @@ observations and the hidden true direction survive into `logger.inputs`, and
 
 Slot roles are read from the labels, with one exception: in Stage 1 the companion slot is
 drawn per trial and never logged, so it is recovered as the non-target slot with the
-largest |mean| over the trial. That is exact at `bg_noise_std = 0` (what `run_flanker.py`
+largest |mean| over the trial. That is exact at `bg_noise_std = 0` (what `flanker_run_one_network.py`
 and the sweep run) and right on 99.5% / 98.1% of trials at `arrow_noise_std` 0.9 / 1.3
 with `bg_noise_std = 0.1`.
 
@@ -544,7 +545,7 @@ reset_Z_uniform(model, scale=0.2, seed=None)   # re-seed Z, shared across timest
 
 ---
 
-## Analyses in `run_flanker.py`
+## Analyses in `flanker_run_one_network.py`
 
 | Figure | Question |
 |---|---|
@@ -578,26 +579,75 @@ reset_Z_uniform(model, scale=0.2, seed=None)   # re-seed Z, shared across timest
   response repetitions, and repetition priming produces a Gratton-shaped pattern with no
   control adjustment (Mayr, Awh & Laurey 2003). A sequential effect that only exists when
   repetitions are pooled in is priming, not control.
-- **Post-error trial A is restricted to incongruent trials**, and trial B is split by
-  congruency. Pooling A made the "post-correct" baseline a mixture dominated by
-  congruent-correct trials; pooling B averaged an effect against its own opposite
-  (a target-focused state helps incongruent B and hurts congruent B).
+- **Post-error trial A and trial B are both split by congruency** — a 2x2, not a pooled
+  contrast. Pooling A makes the "post-correct" baseline a mixture dominated by
+  congruent-correct trials; pooling B averages an effect against its own opposite
+  (a target-focused state helps incongruent B and hurts congruent B). Trial A used to be
+  *restricted* to incongruent, which avoided the first confound but hid the question:
+  crossing it keeps each cell's baseline matched AND says whether the adaptation follows
+  an error or follows conflict. On `ad10_delay/delay1`, PIA's sign tracks **B**, not A
+  (+0.046 / +0.031 into an incongruent B after an incongruent / congruent error, versus
+  −0.167 / −0.065 into a congruent B), while PES is about twice as large after a congruent
+  error, 20/20 seeds. The A-incongruent cells are what `pes_BI` / `pia_BI` / `peri` name —
+  those keys are now aliases of `pes_AI_BI` / `pia_AI_BI` / `peri_AI`, unchanged in value,
+  so the scorecard and the ladder figures score exactly what they always did.
 - **Near vs far is only compared within incongruent trials**, where flanker distance can
   matter at all.
 - **Cell counts are printed for every panel.**
 
 ---
 
-## Sweep: seeds × stimulus noise
+## Sweep: seeds × two ladders
 
 `flanker_sweep.py` treats each seed as a synthetic subject with its own Stage-1
 pretraining, cached to disk, and runs one test session per (seed, variant).
 
 ```bash
+python flanker_sweep.py parity          # assert it runs what flanker_run_one_network.py runs
 python flanker_sweep.py pretrain        # populate the model cache first
 python flanker_sweep.py                 # sequential, resumable
 SLURM_ARRAY_TASK_ID=7 python flanker_sweep.py   # one array element
+./run_flanker_sweep.sh check            # parity + job counts, submits nothing
+./run_flanker_sweep.sh submit           # SLURM: pretrain array -> test array
 ```
+
+An unrecognised argument is an error. It used to fall through to a full sweep of every
+seed × variant, so a typo launched the whole thing.
+
+### The parity rule
+
+**The sweep must run the same simulation as `flanker_run_one_network.py`.** The workbench is where
+parameters get tuned by eye; the sweep is where the same model is run across seeds for
+statistics. If they drift, the group figures stop describing the sessions the workbench
+figures show.
+
+Parity is kept by *inheriting* the class defaults in `FlankerTaskConfig` rather than
+restating them in the sweep config. The sweep pins only what `flanker_run_one_network.py` also pins
+explicitly — `oracle_gate_jitter`, the session lengths, `arrows_duration`,
+`no_of_steps_in_latent_space` — plus the two ladder axes. Everything else
+(`p_corr_by_distance`, `arrow_noise_std`, `bg_noise_std`, `latent_activation`,
+`temporal_decay_factor`, the Z optimizer settings) comes from the class, so editing
+`configs.py` moves both scripts together.
+
+That reverses the old policy of restating every value in the sweep config. Reproducibility
+is preserved a better way: `stage1_fingerprint` writes the values a run actually used into
+a sidecar beside every cached model, `check_pretrain_fingerprint` refuses a cache trained
+under different settings, and `describe_runs()` reports what is on disk — all read from
+the real config, so they cannot go stale the way a duplicated constant can.
+
+`flanker_sweep.check_parity()` asserts it, and `./run_flanker_sweep.sh submit` refuses to
+submit without it. Run it after any edit to `configs.py` or `flanker_sweep_config.py`. It
+also catches two things that are easy to get wrong by hand: `training_noise_std` differing
+from `testing_noise_std` in the workbench (`arrow_noise_std` is a stimulus parameter and
+must match across stages), and the workbench's `rt_threshold` differing from the sweep's.
+
+**The retired 2×2.** Earlier sweeps crossed `oracle_gate_jitter` × `p_corr_by_distance[2]`
+into four arms selected by a `FLANKER_ARM` environment variable, under run names
+`factorial_*`. That is gone: its result is recorded (9 of 11 human signatures matched
+without jitter, 8 with), and it hard-coded a `p_corr` profile that no longer matches
+`configs.py` — exactly the drift the parity rule exists to prevent. The `factorial_*`
+pickles on disk are still readable; they are five-timestep trials and are not comparable
+with anything under `ad10_*`.
 
 Every setting lives in `flanker_sweep_config.py` — `SEEDS`, `N_TEST_TRIALS`,
 `P_CONGRUENT`, `VARIANTS`, and `RUN_NAME`. `RUN_NAME` is the single switch: it decides
@@ -618,10 +668,19 @@ the baseline pretrained models; `pretrain_overrides` change Stage 1 and get thei
 model cache, and are also applied to the test config, because stimulus parameters must
 match across stages. Adding a variant never invalidates existing results.
 
-The current axis is `arrow_noise_std`, because it is the parameter the model's one clear
-failure turns on — see `flanker_regression.md` §7 for the argument and the result. It is a
-stimulus parameter, so it must match across stages, which makes the comparison across
-noise *between*-subject rather than within.
+### The two ladders
+
+`NOISE_LADDER` varies `arrow_noise_std`, the parameter the model's one clear failure turns
+on — see `flanker_regression.md` §7. It is a stimulus parameter, so it must match across
+stages: every rung needs its own pretrained model per seed, and the comparison is
+*between*-subject.
+
+`DELAY_LADDER` varies `target_delay` — "flankers first". It is Stage-2 only, so every rung
+carries test-stage `overrides` and no `pretrain_overrides`, `pretrain_tag` resolves them
+all to `'shared'`, and **all four delays reuse one model set per seed at no extra
+pretraining cost**. The per-timestep target noise is drawn whether or not the target is
+present (see `FlankerRandomTrialsDataset`), so one seed presents the same trials and the
+same flanker noise at every delay — a within-seed comparison.
 
 `flanker_sweep_analysis.py` computes every effect within a seed and then one-sample
 t-tests it across seeds. `flanker_metrics.SIGNATURES` is the registry of human benchmark
@@ -647,15 +706,21 @@ seed; within-subject contrasts also get thin lines connecting each seed across c
 | `group_1_fingerprint.pdf` | Accuracy and RT in the four cells; congruency effect by distance; **distance effect decomposed within each congruency** |
 | `group_2_within_trial.pdf` | P(target) build-up, evidence accumulation, congruency cost over timesteps |
 | `group_3_rt.pdf` | Row 1: RT densities by congruency and by outcome, and the trials that never decide. Row 2: the same densities per cell for correct and for error, and the fast-error contrast |
-| `group_4_history.pdf` | Four history cells → I and → C; Gratton effect vs. response repetition |
-| `group_5_post_error.pdf` | Post-error slowing and accuracy, inherited Z focus, what drives the update |
+| `group_4_history.pdf` | Sequential effects: four history cells → I and → C; Gratton effect vs. response repetition |
+| `group_5_post_error.pdf` | PES / PIA / PERI over trial A's congruency × trial B's congruency, the inherited state, and what drives the update |
 | `group_6_circularity.pdf` | The control deficit precedes the error, so post-error state is circular |
-| `group_7_scorecard.pdf` | Every human signature on one axis, matched or not |
+| `group_7_scorecard.pdf` | Every human signature on one axis, matched or not, each row naming the contrast it scores |
 | `group_8_noise_series.pdf` | Each signature against `arrow_noise_std` — why the post-error failures happen |
-| `group_9_z_update.pdf` | Δ Z focus per cell, split correct vs. error; what a given inherited state buys in accuracy and in RT |
-| `group_10_post_conflict.pdf` | Post-incongruent slowing and accuracy — the conflict twin of `group_5`, trial A post-correct |
-| `group_11_z_slot_update.pdf` | The update per slot rather than as `focus`: fixed geometry, slot role, and the raw dL/dZ |
+| `group_9_z_update.pdf` | What a trial teaches the gate: Δ focus (where it points) and Δ gain (how hard it gates), four cells × correct/error |
 | `group_12_delay_series.pdf` | Each RT-relevant signature against `target_delay` — does a later target mean a later response? |
+| `group_13_control_axes.pdf` | The gate's two knobs — selectivity and gain — and the different price each puts on speed and accuracy |
+
+**Numbers 10 and 11 are retired**, and the gaps are deliberate — renumbering would make
+every figure already on disk ambiguous. `group_10_post_conflict` reduced to a single
+`II→I vs CC→I` bar a contrast `group_4` draws cell by cell, and `group_11_z_slot_update`
+is a per-slot mechanism view that belongs on the workbench, which still draws it as Result
+5b. Every measure behind them survives in `flanker_metrics` — `pcs_BI` and `pca_BI` are
+still scored on the scorecard — so what was dropped is duplicate figures, not evidence.
 
 Every per-variant figure lands in that variant's own folder; `group_8_noise_series.pdf` and
 `group_12_delay_series.pdf` span a ladder of variants and land one level up, beside the
@@ -664,9 +729,10 @@ variant folders. Both are built by `fig_ladder_series`, which takes a ladder of
 thin wrappers that supply `NOISE_PANELS` / `DELAY_PANELS` and their own axis label. A
 ladder figure needs at least two levels on disk and prints a skip message otherwise.
 
-`group_10` and `group_11`, and `group_3`'s second row, are built from the `spec_*`
-builders in `flanker_figure_utils.py`, which `run_flanker.py` Results 1c, 3c and 5b also
-draw from — one panel definition, two callers, so the workbench and the group view of a
+`group_5`, `group_9` and `group_3`'s second row are built from the `spec_*`
+builders in `flanker_figure_utils.py` (`spec_post_error`, `spec_control_update`,
+`spec_rt_by_outcome`), and `spec_post_conflict` / `spec_z_slot_update` remain there for
+`flanker_run_one_network.py` Results 3c and 5b, which still draw them — one panel definition, two callers, so the workbench and the group view of a
 measure cannot drift apart. `_as_replicates` is what absorbs the difference between them:
 a seed is the replicate at group level, the session is the replicate in the workbench. The
 cost is that a single-replicate panel has no error bar, so where the trial-level spread is
@@ -680,7 +746,19 @@ python flanker_sweep_figures.py --variant noise10
 Colours follow the shared flanker palette in `plot_style.FLANKER_COLORS` — hue for
 congruency, shade for distance, fill for outcome. See `figure_style.md`.
 
-### What the three new measures say (baseline arm, `noise13`, 20 seeds)
+Bar order for the four cells comes from `plot_style.FLANKER_CELLS` — congruency outer,
+distance inner — which puts the congruency effect side by side. The one exception is the
+RT-by-outcome panels (`group_3` row 2, `flanker_run_one_network.py` Result 1c), which use
+`FLANKER_CELLS_BY_DISTANCE` — distance outer, congruency inner — so they can be read
+bar-for-bar against the published human figure. Those panels also put correct and error
+in a single axes separated by a gap, with outcome named on a rule under the tick labels
+(`bars_with_seeds(group_spacing=..., super_labels=...)`), because bars split across a
+panel boundary cannot be compared by height. Keep an ordering consistent *within* a
+figure: `group_3` switched all four of its per-cell panels rather than carrying both.
+
+### What the three new measures say (retired factorial, baseline arm, `noise13`, 20 seeds)
+
+*Five-timestep trials, and the `factorial_*` arms described above. Kept as the record of what those runs showed; not comparable with any `ad10_*` run.*
 
 All three are 20/20 seeds and p < 0.001, so the directions below are not seed noise.
 
@@ -725,6 +803,77 @@ question is about direction.
 
 `flanker_sweep_analysis.py` and `flanker_sweep_figures.py` each carry their own default
 variant; keep them in step when comparing tables to figures.
+
+---
+
+## The gate has two axes, and `focus` is only one of them
+
+`focus = z_act[centre] − mean(z_act[flankers])` is a **difference**, so it says where the
+gate points and nothing about how hard it gates. The level it is blind to is
+
+```
+gain = mean(z_act over all five slots)
+```
+
+**This axis only exists when `latent_activation` is not a softmax.** A softmaxed gate is a
+simplex, so gain is exactly `1/n_slots` on every trial — measured SD 0.00000 on the
+five-timestep `factorial_*` runs — and `focus` genuinely is the whole state. Under
+`latent_activation = 'none'` the activated gate is raw Z, gain runs SD ≈ 0.11 over roughly
+[−0.57, +0.67], and the two axes are almost uncorrelated (r ≈ −0.02).
+
+`flanker_metrics.control_axes()` computes both and checks which regime a session is in
+(`gain_varies`); `group_13_control_axes.pdf` draws them. `control_effects` runs the same
+test on the *update* (`dgain_varies`, gating `group_9`'s Δ gain panel), and both call the
+shared `_axis_varies`, so the two cannot disagree about which regime a session is in. The
+check is a *ratio* against the
+focus axis's spread, not an absolute threshold — softmax leaves float residue around 1e-8,
+which a small absolute cutoff waves through and which then produces partial slopes in the
+hundreds of thousands.
+
+### The two axes price behaviour differently
+
+Partial slopes, both axes in one regression, incongruent trials, `ad10_delay/delay1`,
+20 seeds:
+
+| | d(accuracy) | d(RT) |
+|---|---|---|
+| focus ↑ | **+0.272** | −2.73 |
+| gain ↑ | **−0.609** | −1.66 |
+
+Sharper selectivity is free: more accurate *and* faster. Higher gain is a genuine
+speed-accuracy trade-off: faster but less accurate, because a larger gate amplifies the
+early flanker-driven surge on an incongruent trial along with everything else.
+
+### Why this matters: PES and PIA are not contradictory after all
+
+Reading the focus axis alone gives an apparent contradiction. After an error
+the inherited focus is **lower** (−0.0995, 0/20 seeds positive, p = 1e-9), and on the focus
+axis accuracy and speed move together — so a lower-focus state should be slower *and* less
+accurate, i.e. **negative** PIA. Measured PIA is positive, and the scorecard scores both
+PES and PIA as matching humans.
+
+The missing term is gain, which also falls after an error (−0.137). Decomposed:
+
+```
+  PIA:  focus term -0.0264  +  gain term +0.0837  =  +0.0573   (observed +0.0458)
+  PES:  focus term +0.2737  +  gain term +0.2154  =  +0.4891   (observed +0.3985)
+```
+
+Both signs and rough magnitudes recovered. The two contributions **cancel** on accuracy and
+**add** on RT, which is exactly how a state can end up slower and more accurate at once.
+Neither measure is wrong; a one-dimensional exchange curve simply cannot represent a
+displacement with two components.
+
+Two consequences. A one-axis reading of the update is incomplete rather than incorrect —
+it is the exchange rate *along one axis*. This is why `group_9` now draws Δ focus and
+Δ gain side by side rather than focus alone, and why its exchange panels were retired to
+`group_13`, where the two axes appear together. And the
+Step-0 argument in "Deferred work" below needs qualifying: it reasons from the focus axis
+only, and concludes that a better-focused post-error state predicts post-error *speeding*.
+That still holds of focus. But an error-gated learning rate scales Z's **magnitude**, which
+moves gain — and the gain axis delivers slowing together with an accuracy gain. Which axis
+the gate modulation actually lands on decides whether the mechanism can produce PES, so
+that has to be measured rather than assumed.
 
 ---
 
@@ -792,8 +941,9 @@ accuracy gains, and better overall accuracy — the last being the normative rat
 making the adjustment at all. Not implemented; this is the costed design.
 
 *Step 0, free, do it first.* `event_locked` already returns `curve_rt` — RT on incongruent
-trials against the inherited control state — and `group_9_z_update.pdf` panel 4 draws it
-across 20 seeds already on disk. Read its slope. If RT *falls* as inherited focus rises,
+trials against the inherited control state — and `group_13_control_axes.pdf` row 1,
+column 2 (focus → RT) draws that curve across 20 seeds already on disk, beside the gain
+row the argument below turns on. Read its slope. If RT *falls* as inherited focus rises,
 then anything that leaves the post-error state better focused predicts post-error
 **speeding**, and this mechanism cannot produce PES on its own. The post-incongruent
 result above says exactly that is the risk: the model already gets faster and more

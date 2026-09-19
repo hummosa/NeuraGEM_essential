@@ -52,7 +52,7 @@ from flanker_sweep_config import (
 SWEEP_RUNS = {
     'ad10_delay': 'CURRENT. 10-timestep trials (was 5), and the target-onset delay ladder '
                   '"flankers first" crossed with a four-rung noise ladder. Runs exactly '
-                  "what run_flanker.py runs — see flanker_sweep_config's parity rule and "
+                  "what flanker_run_one_network.py runs — see flanker_sweep_config's parity rule and "
                   'check_parity(). Not comparable with any factorial_* or sweep_* run '
                   'below: those are all five-timestep trials.',
     'factorial_nojit_pc52': 'FACTORIAL BASELINE: no oracle gate jitter, p_corr_by_distance[2] '
@@ -321,7 +321,7 @@ def build_pretrain_config(seed: int, tag: str = 'shared') -> FlankerTaskConfig:
 def build_test_config(seed: int, variant: str) -> FlankerRandomTrialsConfig:
     """The Stage-2 config for one (seed, variant), exactly as run_job runs it.
 
-    Factored out of run_job so that check_parity() can compare it against run_flanker.py
+    Factored out of run_job so that check_parity() can compare it against flanker_run_one_network.py
     without training anything. Gating and the Stage-1-only settings are NOT applied here —
     run_job copies those off the loaded model, which is the only place they are known.
     """
@@ -491,20 +491,20 @@ def load_condition(variant: str, seeds: Optional[List[int]] = None) -> List[Dict
 
 # ── The parity rule ───────────────────────────────────────────────────────────
 #
-# The sweep must run the same simulation as run_flanker.py. This asserts it two ways,
+# The sweep must run the same simulation as flanker_run_one_network.py. This asserts it two ways,
 # neither of which duplicates a value that could go stale:
 #
 #   1. The sweep's own configs may differ from the plain class defaults ONLY in the keys
 #      listed in _PARITY_ALLOWED. A new hidden override therefore fails the check rather
 #      than silently changing what the group figures describe.
-#   2. The handful of scalars run_flanker.py pins in its own source are read back out of
-#      that source and compared. Regex rather than import, because run_flanker.py is a
+#   2. The handful of scalars flanker_run_one_network.py pins in its own source are read back out of
+#      that source and compared. Regex rather than import, because flanker_run_one_network.py is a
 #      `#%%` cell script that trains a model on import.
 
 #: Keys the sweep is allowed to set away from the class default, with why.
 _PARITY_ALLOWED = {
-    'oracle_gate_jitter':          'pinned; run_flanker.py pins it too',
-    'no_of_steps_in_latent_space': 'pinned; run_flanker.py sets it on the test config',
+    'oracle_gate_jitter':          'pinned; flanker_run_one_network.py pins it too',
+    'no_of_steps_in_latent_space': 'pinned; flanker_run_one_network.py sets it on the test config',
     'arrow_noise_std':             'the noise ladder axis',
     'target_delay':                'the delay ladder axis',
     # session length and its derived block counts
@@ -520,11 +520,11 @@ _PARITY_ALLOWED = {
     'experiment_to_run': '', 'dataset_name': '',
 }
 
-_WORKBENCH = 'run_flanker.py'
+_WORKBENCH = 'flanker_run_one_network.py'
 
 
 def _workbench_scalars(path: str = _WORKBENCH) -> dict:
-    """Scalars run_flanker.py pins in its own source. Regex: importing it would train."""
+    """Scalars flanker_run_one_network.py pins in its own source. Regex: importing it would train."""
     import re
     text = open(path).read()
 
@@ -543,7 +543,7 @@ def _workbench_scalars(path: str = _WORKBENCH) -> dict:
 
 
 def check_parity(verbose: bool = True) -> bool:
-    """Assert the sweep runs what run_flanker.py runs. Returns True if it does."""
+    """Assert the sweep runs what flanker_run_one_network.py runs. Returns True if it does."""
     import numpy as np
 
     def same(a, b):
@@ -570,7 +570,7 @@ def check_parity(verbose: bool = True) -> bool:
                 problems.append(f'{stage}: {k} = {v!r} but configs.py default is '
                                 f'{vars(base)[k]!r} (not in _PARITY_ALLOWED)')
 
-    # 2. the scalars run_flanker.py pins in its source
+    # 2. the scalars flanker_run_one_network.py pins in its source
     try:
         wb = _workbench_scalars()
     except FileNotFoundError:

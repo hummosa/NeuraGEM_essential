@@ -6,13 +6,13 @@ export paths. The runner itself holds no settings.
 
 The parity rule
 ───────────────
-**This sweep must run the same simulation as run_flanker.py, the single-session
+**This sweep must run the same simulation as flanker_run_one_network.py, the single-session
 workbench.** That is the whole contract: the workbench is where parameters get tuned by
 eye, and the sweep is where the same model is run across seeds for statistics. If they
 drift, the group figures stop describing the sessions the workbench figures show.
 
 Parity is achieved by *inheriting* the class defaults in configs.FlankerTaskConfig rather
-than restating them here. Anything this file pins is something run_flanker.py also pins
+than restating them here. Anything this file pins is something flanker_run_one_network.py also pins
 explicitly; anything it stays silent about (`p_corr_by_distance`, `arrow_noise_std`,
 `bg_noise_std`, `latent_activation`, `temporal_decay_factor`, the Z optimizer settings)
 comes from the class, so editing configs.py moves both scripts together.
@@ -101,7 +101,7 @@ GATING = 'post'             # 'pre' or 'post' multiplicative gating
 Z_INIT_SCALE = 0.2          # Z re-seed before the test session
 
 # Redraws the sharpness of the Stage-1 oracle gate every training trial. Pinned here
-# because run_flanker.py pins it too (and to the same value) — it is one of the few
+# because flanker_run_one_network.py pins it too (and to the same value) — it is one of the few
 # settings the workbench sets explicitly rather than inheriting.
 #
 # NOTE, and worth revisiting: the case for jitter was built when `latent_activation` was
@@ -123,7 +123,7 @@ ORACLE_GATE_JITTER = (0.5, 1.5)
 # real working point off the scorecard once the ladder has run.
 # ── What the sweep pins, and what it inherits ─────────────────────────────────
 #
-# Only `oracle_gate_jitter`, because run_flanker.py pins that one explicitly too. Every
+# Only `oracle_gate_jitter`, because flanker_run_one_network.py pins that one explicitly too. Every
 # other stimulus and model parameter — p_corr_by_distance, arrow_noise_std, bg_noise_std,
 # latent_activation, temporal_decay_factor, the Z optimizer settings — is inherited from
 # configs.FlankerTaskConfig so that editing configs.py moves the workbench and the sweep
@@ -133,7 +133,7 @@ PRETRAIN_OVERRIDES = {                      # every variant's Stage 1
     'oracle_gate_jitter': ORACLE_GATE_JITTER,
 }
 TEST_OVERRIDES = {
-    # run_flanker.py sets this on its test config explicitly; the class default is also 1,
+    # flanker_run_one_network.py sets this on its test config explicitly; the class default is also 1,
     # but the workbench states it, so the sweep does too.
     'no_of_steps_in_latent_space': 1,
 }
@@ -174,12 +174,12 @@ NOISE_LADDER = [('noise19', 1.9), ('noise135', 1.35), ('noise10', 1.0), ('noise0
 # quadruple the pretraining bill for identical Stage-1 stimuli.
 #
 # The 'shared' set trains at the class default `arrow_noise_std`, so the delay ladder runs
-# at whatever run_flanker.py runs at — parity again.
+# at whatever flanker_run_one_network.py runs at — parity again.
 #
 # Nothing here touches response_start_timestep or temporal_loss_weights. Speed pressure is
 # identical at every rung and RT is measured from trial start, so a delayed response shows
 # up as a larger RT rather than being defined away. See FlankerTaskConfig.target_delay.
-DELAY_LEVELS = [0, 1, 2, 4]     # 1 is what run_flanker.py currently runs; 9 response
+DELAY_LEVELS = [0, 1, 2, 4]     # 1 is what flanker_run_one_network.py currently runs; 9 response
                                 # steps, so even 4 leaves 5 post-onset
 
 VARIANTS.update({
@@ -204,7 +204,7 @@ DELAY_LADDER = [(f'delay{d}', d) for d in DELAY_LEVELS]
 RUN_NAME      = 'ad10_delay'
 
 #: The variant every entry point reads when none is named. 'delay1' is the rung
-#: run_flanker.py currently runs, so the workbench figures and a no-argument group run
+#: flanker_run_one_network.py currently runs, so the workbench figures and a no-argument group run
 #: describe the same condition. Without this the two disagreed: the figure script had its
 #: own DEFAULT_VARIANT while the analysis script fell through to next(iter(VARIANTS)),
 #: which is whichever rung happens to be declared first.
@@ -213,7 +213,7 @@ EXPORT_ROOT   = './exports/flanker_random/sweeps'
 SKIP_EXISTING = True        # resume: skip jobs whose result pickle already exists
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
-# Matches run_flanker.py's extract_trials(rt_threshold=0.5) — parity applies to how
+# Matches flanker_run_one_network.py's extract_trials(rt_threshold=0.5) — parity applies to how
 # sessions are READ as well as how they are run, since the threshold sets
 # correct_at_decision and therefore every one of the 11 signatures.
 #

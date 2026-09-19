@@ -4,7 +4,7 @@
 # both defined in flanker_sweep_config.py. This replaced run_flanker_factorial.sh, which
 # submitted four arms of a 2x2 over oracle gate jitter x p_corr_by_distance[2]; that
 # factorial is retired (its result is recorded in the config's docstring) and the sweep
-# now runs a single configuration — the one run_flanker.py runs.
+# now runs a single configuration — the one flanker_run_one_network.py runs.
 #
 #   ./run_flanker_sweep.sh check     # parity + job counts, submits nothing
 #   ./run_flanker_sweep.sh submit    # pretrain array -> test array (dependency wired)
@@ -30,7 +30,7 @@ PY
 
 case "$MODE" in
 check)
-    # Parity first: a sweep that has drifted from run_flanker.py is not worth submitting.
+    # Parity first: a sweep that has drifted from flanker_run_one_network.py is not worth submitting.
     $PYTHON flanker_sweep.py parity
     echo
     echo "run: $RUN"

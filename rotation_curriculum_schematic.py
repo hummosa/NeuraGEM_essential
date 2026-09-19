@@ -65,11 +65,15 @@ _NODE_R = 0.13
 # Row 1: blocked-context bar
 # ---------------------------------------------------------------------------
 
-def _draw_block_bar(ax, n_blocks: int, color1, color2, *, active_index: int | None = None) -> None:
+def draw_block_bar(ax, n_blocks: int, color1, color2, *, active_index: int | None = None) -> None:
     """Alternating context-A/context-B blocks. `n_blocks` is a small illustrative count, not the
     real nominal block count. `active_index`, if given, outlines that block in black to mark it
     as the "current" block — used only for S2, so the cue arrow below has something to visually
     sync with.
+
+    Public because `rotation_task_schematic` draws the same strip: the blocked alternation is one
+    fact about the task, and two schematics that sit in the same figure must not drift apart in
+    block width, spacing or alpha.
     """
     block_width, block_height, spacing, y_base = 0.7, 0.33, 0.08, 0.13
     for i in range(n_blocks):
@@ -225,7 +229,7 @@ def plot_curriculum_schematic(export_dir: Path = EXPORT_ROOT / 'figures', save_p
 
     bar_specs = ((S1_N_BLOCKS, None), (S2_N_BLOCKS, s2_active_idx), (S3_N_BLOCKS, None))
     for col, (n_blocks, active_idx) in enumerate(bar_specs):
-        _draw_block_bar(axes[0, col], n_blocks, cs.contextA, cs.contextB, active_index=active_idx)
+        draw_block_bar(axes[0, col], n_blocks, cs.contextA, cs.contextB, active_index=active_idx)
         axes[0, col].set_title(COLUMN_TITLES[col], fontsize=6)
 
     _draw_self_infer_pair(axes[1, 0], filled=False)

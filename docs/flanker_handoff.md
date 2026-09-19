@@ -25,7 +25,7 @@ lateralisation (BPL) is the within-trial neural proxy.
 
 ## 2. What the model is and how it runs
 
-Two stages, in `run_flanker.py`:
+Two stages, in `flanker_run_one_network.py`:
 
 - **Stage 1 (training).** Oracle Z: the target slot is handed to the model as a one-hot
   latent. Weights are plastic. Target slot rotates across short blocks.
@@ -93,7 +93,7 @@ used on the human data.
 the near/far interaction, PERI, and a near-vs-far difference in the Z update all looked
 clear; none survived across seeds, and one — which repetition condition carries the
 accuracy sequential effect — reversed sign. Never report an effect from one seed.
-`run_flanker.py` is a workbench for mechanism and shape; `flanker_sweep_analysis.py` is
+`flanker_run_one_network.py` is a workbench for mechanism and shape; `flanker_sweep_analysis.py` is
 the evidence.
 
 **Report sign consistency, not just the group mean.** Effects here can have a respectable
@@ -263,7 +263,7 @@ timestep) and is large. If that becomes a problem, store per-trial summaries ins
 | `flanker_sweep_analysis.py` | across-seed statistics and the printed tables |
 | `flanker_figure_utils.py` | panel primitives and variant-aware loading; `session_curves` builds learning curves, RT densities, within-trial dynamics |
 | `flanker_sweep_figures.py` | the numbered group figures, in the order the story is told |
-| `run_flanker.py` | the single-session workbench — what each figure shows and how the condition masks are built |
+| `flanker_run_one_network.py` | the single-session workbench — what each figure shows and how the condition masks are built |
 | `docs/figure_style.md` | figure sizing and the shared flanker palette (hue = congruency, shade = distance, fill = outcome) |
 | `configs.py` | `FlankerTaskConfig` (Stage 1, including the note on why `p_corr_by_distance` is delicately balanced) and `FlankerRandomTrialsConfig` (Stage 2) |
 | `datasets.py` | how trials are actually generated |

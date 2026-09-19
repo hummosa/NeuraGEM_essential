@@ -12,7 +12,7 @@ than in any one figure script:
 Figure scripts import from here:
 
     flanker_sweep_figures.py   the group figures, in the order the story is told
-    run_flanker.py             the single-session workbench, for the panels they share
+    flanker_run_one_network.py             the single-session workbench, for the panels they share
 
 One panel, two callers
 ──────────────────────
@@ -46,8 +46,8 @@ import matplotlib.pyplot as plt
 
 import plot_style
 plot_style.set_plot_style()
-from plot_style import (FLANKER_CELLS, FLANKER_COLORS, FigSize, flanker_color,
-                        outcome_style)
+from plot_style import (FLANKER_CELLS, FLANKER_CELLS_BY_DISTANCE, FLANKER_COLORS,
+                        FigSize, flanker_color, outcome_style)
 
 from flanker_analyses import extract_trials, lagged_factors
 from flanker_metrics import session_effects
@@ -64,6 +64,8 @@ from flanker_sweep_config import RT_THRESHOLD, SEEDS, VARIANTS
 
 COL   = FLANKER_COLORS
 CELLS = FLANKER_CELLS
+#: Cell order matching the human paper's figure — distance outer, congruency inner.
+CELLS_BY_DISTANCE = FLANKER_CELLS_BY_DISTANCE
 
 
 # ── Loading ───────────────────────────────────────────────────────────────────
@@ -165,6 +167,17 @@ def _has(effects, key):
     return key in probe
 
 
+def _flag(effects, key):
+    """A regime flag across replicates — True only when every replicate agrees.
+
+    The flags (`dgain_varies`) are stored as floats because the per-seed effects dict is
+    flat and numeric. Unanimity is the right rule: a mixed sweep would mean seeds were run
+    under different latent activations, which is a configuration error, not a figure to
+    draw half of.
+    """
+    return bool(np.all(_as_replicates(effects, key) > 0.5))
+
+
 # ── Per-session curves ────────────────────────────────────────────────────────
 
 def session_curves(trials, n_bins=20, rt_bin_width=0.25):
@@ -233,8 +246,24 @@ def session_curves(trials, n_bins=20, rt_bin_width=0.25):
 
 # ── Panels ────────────────────────────────────────────────────────────────────
 
+#: Extra x gap, in bar widths, inserted at each `group_spacing` index.
+_BAR_GAP = 0.75
+
+
+def _bar_positions(n, group_spacing=None):
+    """Bar x positions, with an extra gap before each index in `group_spacing`."""
+    gaps, x, pos = set(group_spacing or []), [], 0.0
+    for i in range(n):
+        if i and i in gaps:
+            pos += _BAR_GAP
+        x.append(pos)
+        pos += 1.0
+    return np.array(x)
+
+
 def bars_with_seeds(ax, groups, ylabel, baseline=None, connect=False, rotation=0,
-                    title=None, hollow=None, ylim=None):
+                    title=None, hollow=None, ylim=None, group_spacing=None,
+                    super_labels=None):
     """
     Bar chart of across-seed means with SEM, overlaid with one dot per seed.
 
@@ -248,8 +277,17 @@ def bars_with_seeds(ax, groups, ylabel, baseline=None, connect=False, rotation=0
               and 0.98 spends two thirds of its height on empty space and the contrast
               the panel exists to show reads as flat. Clipping the axis is the fix, and
               `baseline` then marks where chance is so the truncation stays honest.
+    group_spacing : optional list of indices; an extra gap is inserted before each, the
+              same idiom `flanker_analyses.plot_scalar_bars` uses. Use it to block a
+              panel into two comparable halves rather than splitting it into two axes —
+              bars separated by a panel boundary cannot be read against each other by
+              height, which is the whole job of a level panel.
+    super_labels : optional list of (label, first_index, last_index). Draws a rule under
+              the tick labels spanning those bars with `label` beneath it, so a panel can
+              carry two levels of grouping on one axis — the per-bar condition on the
+              tick labels and the block on the rule. Follows the human paper's figure.
     """
-    x      = np.arange(len(groups))
+    x      = _bar_positions(len(groups), group_spacing)
     means  = [np.nanmean(v) for v, _, _ in groups]
     # ddof=1 is NaN for a single replicate (one session rather than a sweep), so fall
     # back to no whisker instead of a NaN that matplotlib silently drops.
@@ -287,6 +325,25 @@ def bars_with_seeds(ax, groups, ylabel, baseline=None, connect=False, rotation=0
         ax.set_title(title)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+
+    # The second level of grouping, drawn below the tick labels. x is in data coordinates
+    # so the rule tracks the bars, y is a fixed offset in POINTS below the axis — not an
+    # axes fraction, which would have to guess how tall the tick labels are and lands the
+    # rule through them the moment the panel height or the font size changes.
+    if super_labels:
+        from matplotlib.transforms import offset_copy
+        fs      = float(plt.rcParams['xtick.labelsize'])
+        n_lines = max(len(str(lbl).split('\n')) for _, lbl, _ in groups)
+        drop    = float(ax.xaxis.get_tick_padding()) + 1.35 * fs * n_lines + 2.0
+        tr      = ax.get_xaxis_transform()
+        rule_tr = offset_copy(tr, fig=ax.figure, y=-drop, units='points')
+        text_tr = offset_copy(tr, fig=ax.figure, y=-(drop + 2.0), units='points')
+        for lbl, i0, i1 in super_labels:
+            ax.plot([x[i0] - 0.45, x[i1] + 0.45], [0, 0], transform=rule_tr,
+                    color='k', linewidth=0.8, clip_on=False, zorder=6)
+            ax.text(0.5 * (x[i0] + x[i1]), 0, lbl, transform=text_tr,
+                    ha='center', va='top', clip_on=False)
+
     # Last, so it wins over the autoscaling that the bars and seed dots just triggered.
     if ylim is not None:
         ax.set_ylim(*ylim)
@@ -302,10 +359,21 @@ def _label_width(label):
     return 0.62 * pt * longest / 72 + 0.06        # mean advance of sans-serif + a gap
 
 
-def bar_panel_width(groups, margin=0.55, min_slot=0.28):
-    """Paper-ready width for one bar panel: enough for the tick labels it has to carry."""
+def bar_panel_width(groups, margin=0.55, min_slot=0.28, group_spacing=None,
+                    super_labels=None):
+    """Paper-ready width for one bar panel: enough for the labels it has to carry.
+
+    Tick labels set the slot width, but a `super_labels` rule spans a block of bars and can
+    be wider than the block, so it has to widen the slot too — a two-bar block under
+    "after an incongruent error" is the case that overflows. Dividing the label by its
+    block length is what makes this a no-op for a panel whose super label already fits
+    (`spec_rt_by_outcome`'s "Correct" over four bars), so no existing figure changes size.
+    """
     slot = max(min_slot, max(_label_width(lbl) for _, lbl, _ in groups))
-    return margin + slot * len(groups)
+    for lbl, i0, i1 in (super_labels or []):
+        slot = max(slot, _label_width(lbl) / (i1 - i0 + 1))
+    n_gaps = len(set(group_spacing or []) - {0})
+    return margin + slot * (len(groups) + _BAR_GAP * n_gaps)
 
 
 def bar_row(panels, height=2.0):
@@ -321,7 +389,9 @@ def bar_row(panels, height=2.0):
     figure ends up far wider than the ink in it. Widths come from the labels instead, via
     `FigSize.custom`, so the dev/paper switch keeps working.
     """
-    widths = [bar_panel_width(groups) for groups, _ in panels]
+    widths = [bar_panel_width(groups, group_spacing=kw.get('group_spacing'),
+                              super_labels=kw.get('super_labels'))
+              for groups, kw in panels]
     fig, axes = plt.subplots(1, len(panels), figsize=FigSize.custom(sum(widths), height),
                              gridspec_kw={'width_ratios': widths})
     axes = np.atleast_1d(axes)
@@ -342,8 +412,9 @@ def bar_grid(rows, height=2.0):
     blank-framed.
     """
     ncol   = max(len(row) for row in rows)
-    widths = [max(bar_panel_width(groups)
-                  for row in rows for j, (groups, _) in enumerate(row) if j == i)
+    widths = [max(bar_panel_width(groups, group_spacing=kw.get('group_spacing'),
+                                  super_labels=kw.get('super_labels'))
+                  for row in rows for j, (groups, kw) in enumerate(row) if j == i)
               for i in range(ncol)]
     fig, axes = plt.subplots(len(rows), ncol, squeeze=False,
                              figsize=FigSize.custom(sum(widths), height * len(rows)),
@@ -473,7 +544,7 @@ def exchange_panel(ax, curves_x, curves_y, ylabel, marks=(), n_grid=8, title=Non
             gap can be read off the curve as a cost rather than left as a number.
 
     Both curve arguments are sequences *over replicates*, never a single curve: a caller
-    with one session has to wrap it, `[ev['curve_x']]`, the way run_flanker.py's Result 4c
+    with one session has to wrap it, `[ev['curve_x']]`, the way flanker_run_one_network.py's Result 4c
     already does for `curve_x` and `curve_y`. It does not wrap `curve_rt`, which rides
     along unused there, so an RT panel added to that call site needs the same wrapping —
     passing the bare array iterates its scalars and fails in `len(cy)`.
@@ -504,7 +575,13 @@ def exchange_panel(ax, curves_x, curves_y, ylabel, marks=(), n_grid=8, title=Non
 
 def plot_circularity(axes, ev, replicate='seeds'):
     """
-    Why an error does not improve the next trial, in five panels.
+    Why an error does not improve the next trial, in five panels — or six.
+
+    Pass a sixth axis to get the RT companion to panel 5: the same exchange curve read in
+    RT instead of accuracy. It is opt-in so that `fig_circularity` (group_6) keeps its
+    five-panel layout, while a caller that wants the pair in one figure can ask for it.
+    A six-axis caller must also wrap `curve_rt` over replicates, exactly as it wraps
+    `curve_x` and `curve_y` — see `exchange_panel`.
 
     `ev` holds event-locked traces stacked over replicates — sessions at group level,
     single events within one session. Each trace is (n_replicates, n_lags); the scalar
@@ -587,21 +664,196 @@ def plot_circularity(axes, ev, replicate='seeds'):
     axes[3].set_title('4. So the next trial is worse (PIA)')
 
     # 5. The exchange rate between control and accuracy, with both landing points marked.
-    #    Drawn by `exchange_panel`, which flanker_sweep_figures.fig_z_update calls again
-    #    for the RT version of the same curve.
+    #    Drawn by `exchange_panel`, which flanker_sweep_figures.fig_control_axes uses for
+    #    the same curve along each of the two control axes.
+    marks = landing_marks(ev)
     exchange_panel(axes[4], ev['curve_x'], ev['curve_y'],
                    'Accuracy, incongruent trials',
-                   marks=landing_marks(ev), title='5. What the gap costs')
-    for ax in (axes[0], axes[3], axes[4]):
+                   marks=marks, title='5. What the gap costs')
+    styled = [axes[0], axes[3], axes[4]]
+
+    # 6. The same exchange rate in RT. A control account says the gap has to be paid for in
+    #    speed as well as in accuracy, so the two panels are only informative together: a
+    #    model that charges for control in one currency and not the other is not
+    #    reproducing the human trade-off. Drawn only when a sixth axis is supplied, and
+    #    only when the caller wrapped `curve_rt` over replicates the way exchange_panel
+    #    requires — group_13's first row draws this same pair across seeds.
+    if len(axes) > 5 and 'curve_rt' in ev:
+        exchange_panel(axes[5], ev['curve_x'], ev['curve_rt'],
+                       'RT (timesteps), incongruent trials',
+                       marks=marks, title='6. And what it costs in RT')
+        styled.append(axes[5])
+
+    for ax in styled:
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
     return axes
 
 
+def control_plane(ax, per_session, measure='acc', n_bins=7, cmap=None, label=None):
+    """
+    The (focus, gain) plane of the inherited gate, with behaviour as the landscape.
+
+    `per_session` is a list of `flanker_metrics.control_axes` dicts — one per replicate.
+    Trials are pooled across replicates to bin the plane, because per-session quantile
+    grids are not comparable cell for cell; the landing points and the arrow are averaged
+    across replicates instead, so the summary that carries the argument stays across-seed.
+
+    The arrow runs from the state a trial after a CORRECT trial inherited to the state a
+    trial after an ERROR inherited. Reading the arrow against the landscape is the whole
+    point of the panel: its two components are priced differently, and on the accuracy
+    map they push in opposite directions while on the RT map they add. A one-dimensional
+    exchange curve cannot show that, which is how the post-error contrasts came to look
+    self-contradictory.
+
+    Bins are quantile edges on the pooled data, so cells hold comparable numbers of trials
+    rather than comparable areas; cells with too few trials are left blank.
+    """
+    ok = [s for s in per_session if s.get('ok')]
+    if not ok:
+        ax.set_visible(False)
+        return None
+    fo = np.concatenate([s['focus'] for s in ok])
+    ga = np.concatenate([s['gain'] for s in ok])
+    zz = np.concatenate([s[measure] for s in ok])
+
+    fe = np.nanquantile(fo, np.linspace(0.02, 0.98, n_bins + 1))
+    ge = np.nanquantile(ga, np.linspace(0.02, 0.98, n_bins + 1))
+    grid = np.full((n_bins, n_bins), np.nan)
+    for i in range(n_bins):
+        for j in range(n_bins):
+            sel = ((fo >= fe[i]) & (fo < fe[i + 1])
+                   & (ga >= ge[j]) & (ga < ge[j + 1]))
+            if sel.sum() >= 25:
+                grid[j, i] = np.nanmean(zz[sel])
+    mesh = ax.pcolormesh(fe, ge, grid, cmap=cmap or ('viridis' if measure == 'acc' else 'magma_r'),
+                         shading='flat', rasterized=True)
+    cb = ax.figure.colorbar(mesh, ax=ax, fraction=0.046, pad=0.03)
+    cb.ax.tick_params(labelsize=4.5)
+    cb.set_label(label or ('Accuracy' if measure == 'acc' else 'RT (timesteps)'), fontsize=5)
+
+    fc = float(np.nanmean([s['focus_corr'] for s in ok]))
+    gc = float(np.nanmean([s['gain_corr'] for s in ok]))
+    fer = float(np.nanmean([s['focus_err'] for s in ok]))
+    ger = float(np.nanmean([s['gain_err'] for s in ok]))
+    # White halo under the arrow and markers: the landscape runs to near-black at the slow
+    # corner of the RT map, where a plain black arrow disappears.
+    ax.annotate('', xy=(fer, ger), xytext=(fc, gc),
+                arrowprops=dict(arrowstyle='-|>', linewidth=2.6, color='w',
+                                shrinkA=0, shrinkB=0, alpha=0.9))
+    ax.annotate('', xy=(fer, ger), xytext=(fc, gc),
+                arrowprops=dict(arrowstyle='-|>', linewidth=1.1, color='k',
+                                shrinkA=0, shrinkB=0))
+    for x, y, colour, lbl in ((fc, gc, COL['cong'], 'after correct'),
+                              (fer, ger, COL['incong'], 'after error')):
+        ax.plot([x], [y], 'o', ms=4.2, color=colour, zorder=5, label=lbl,
+                markeredgecolor='w', markeredgewidth=0.7)
+
+    # What the displacement actually costs, so the arrow ties back to the scorecard row it
+    # explains rather than being read as a direction only.
+    delta = float(np.nanmean([s[f'{measure}_err'] - s[f'{measure}_corr'] for s in ok]))
+    name = 'PIA' if measure == 'acc' else 'PES'
+    ax.text(0.03, 0.03, f'{name} = {delta:+.3f}', transform=ax.transAxes, fontsize=5,
+            va='bottom', ha='left',
+            bbox=dict(boxstyle='round,pad=0.2', fc='w', ec='none', alpha=0.75))
+
+    ax.set_xlabel('focus_in  (centre − flankers)')
+    ax.set_ylabel('gain  (mean gate weight)')
+    compact_legend(ax, loc='upper left')
+    return mesh
+
+
 # ── Shared panel specs ────────────────────────────────────────────────────────
 #
 # Each returns a list of (groups, kwargs) that `bar_row` or `bar_grid` draws. Both the
-# group figures and run_flanker.py build from these, so the two never drift.
+# group figures and flanker_run_one_network.py build from these, so the two never drift.
+
+def spec_post_error(effects):
+    """
+    Post-error effects, with trial A's congruency as a visible factor.
+
+    Every bar is post-error MINUS post-correct within one (A, B) cell, so a positive PES
+    bar is slower after an error and a positive PIA bar is more accurate after one. The
+    ylabels say the subtraction rather than naming the acronym, because "PIA" alone does
+    not tell a reader which way is which.
+
+    Two factors, two visual channels: trial B's congruency is the hue (the house code —
+    blue congruent, red incongruent) and trial A's congruency is the rule beneath the tick
+    labels. A has no hue of its own to spend: hue is congruency, shade is distance and fill
+    is outcome already, so `super_labels` is where a third grouping goes.
+
+    Why both factors are crossed rather than pooled is in
+    `flanker_metrics.post_error_effects`: pooling B averages an effect against its own
+    opposite, and pooling A makes the post-correct baseline a mixture. The A-incongruent
+    column is what the scorecard scores as `pes_BI` / `pia_BI` / `peri`.
+    """
+    def g(key, label, color):
+        return (_as_replicates(effects, key), label, color)
+
+    def ab(stem):
+        return [g(f'{stem}_AI_BI', 'B incong', COL['incong']),
+                g(f'{stem}_AI_BC', 'B cong',   COL['cong']),
+                g(f'{stem}_AC_BI', 'B incong', COL['incong']),
+                g(f'{stem}_AC_BC', 'B cong',   COL['cong'])]
+
+    blocks = dict(group_spacing=[2],
+                  super_labels=[('after an\nincongruent error', 0, 1),
+                                ('after a\ncongruent error',    2, 3)])
+    return [
+        (ab('pes'), dict(ylabel='RT: after error − after correct', baseline=0.0,
+                         title='PES  (+ = slower after an error)', **blocks)),
+        (ab('pia'), dict(ylabel='Accuracy: after error − after correct', baseline=0.0,
+                         title='PIA  (+ = more accurate after an error)', **blocks)),
+        ([g('peri_AI', 'A incong', COL['incong']),
+          g('peri_AC', 'A cong',   COL['cong'])],
+         dict(ylabel='Congruency effect on RT:\nafter correct − after error', baseline=0.0,
+              title='PERI  (+ = interference drops)')),
+        (ab('focus_in_diff'),
+         dict(ylabel='Inherited Z focus:\nafter error − after correct', baseline=0.0,
+              title='the state behind it', **blocks)),
+    ]
+
+
+#: The two axes of the control update, and what each one is blind to. Mirrors the
+#: focus/gain split `control_axes` applies to the inherited state — see
+#: `flanker_metrics.control_effects`.
+CONTROL_UPDATE = {
+    'dfocus': ('Δ focus this trial\n(centre − flankers)', 'where the update points the gate'),
+    'dgain':  ('Δ gain this trial\n(mean over all slots)', 'how hard the update gates'),
+}
+
+
+def spec_control_update(effects, measure='dfocus'):
+    """
+    What one trial teaches the gate, by condition cell and outcome.
+
+    Returns ONE panel, so callers compose: `spec_control_update(e, 'dfocus') +
+    spec_control_update(e, 'dgain')` is the two-panel figure, and a caller in the softmax
+    regime simply omits the gain half (there `delta_z` sums to ~0 across slots, so Δ gain
+    is identically zero — `dgain_varies` reports it).
+
+    Correct and error share one axis here, deliberately. They used to be two panels on
+    separate scales, on the argument that an error's update is several times a correct
+    trial's and would flatten it; measured, the ratio is ~3-4x, so the correct bars land at
+    roughly a quarter height — readable, and now comparable by height with the errors,
+    which two panels could never be. Errors are hollow, the house convention for an error
+    cell, so outcome costs no hue.
+
+    Grouped in `CELLS` order (congruency first), because the contrast this panel exists for
+    is congruent-vs-incongruent, not the bar-for-bar read against the human figure that
+    `CELLS_BY_DISTANCE` serves.
+    """
+    ylabel, title = CONTROL_UPDATE[measure]
+    n = len(CELLS)
+    bars = ([(_as_replicates(effects, f'{measure}_{k}_corr'), lbl, COL[k])
+             for k, lbl in CELLS]
+            + [(_as_replicates(effects, f'{measure}_{k}_err'), lbl, COL[k])
+               for k, lbl in CELLS])
+    return [(bars, dict(ylabel=ylabel, title=title, baseline=0.0,
+                        hollow=[False] * n + [True] * n,
+                        group_spacing=[n],
+                        super_labels=[('Correct', 0, n - 1), ('Error', n, 2 * n - 1)]))]
+
 
 def spec_post_conflict(effects):
     """
@@ -654,23 +906,37 @@ def spec_rt_by_outcome(effects, decided=True):
     responses — so the pooled contrast reports censoring as much as speed. Pass
     `decided=False` for the uncensored version and read the two together.
 
-    Three panels: the RT levels for correct trials, the same for errors, and the contrast.
-    The two level panels are drawn on one shared y scale by the caller (they are the same
-    quantity), which the contrast panel is not part of.
+    **Laid out to be read bar-for-bar against the human figure.** Two things follow from
+    that and neither is the house default elsewhere. The cells run in
+    `CELLS_BY_DISTANCE` order — distance outer, congruency inner — rather than the
+    congruency-first `CELLS` order the rest of the panels use, because that is the order
+    the published figure plots. And correct and error sit in one axes separated by a gap
+    rather than in two panels: bars split across a panel boundary cannot be compared by
+    height, which is the only thing a level panel is for. Outcome is named on the rule
+    beneath the tick labels, and still rides on fill as well (hollow = error, the house
+    convention) so the two halves stay separable if the figure is cropped.
+
+    Two panels: the eight RT levels, and the contrast that SIGNATURES scores. They are
+    different quantities, so they do not share a y scale.
     """
     suffix = '_decided' if decided else ''
     note   = ' (decided)' if decided else ''
+    cells  = CELLS_BY_DISTANCE
 
     def g(key, label, color):
         return (_as_replicates(effects, key), label, color)
 
+    levels = ([g(f'rt_{k}_corr{suffix}', lbl, COL[k]) for k, lbl in cells]
+              + [g(f'rt_{k}_err{suffix}', lbl, COL[k]) for k, lbl in cells])
+    n = len(cells)
+
     return [
-        ([g(f'rt_{k}_corr{suffix}', lbl, COL[k]) for k, lbl in CELLS],
-         dict(ylabel=f'RT (timesteps){note}', title='correct')),
-        ([g(f'rt_{k}_err{suffix}', lbl, COL[k]) for k, lbl in CELLS],
-         dict(ylabel=f'RT (timesteps){note}', title='errors',
-              hollow=[True] * len(CELLS))),
-        ([g(f'fasterr_{k}{suffix}', lbl, COL[k]) for k, lbl in CELLS],
+        (levels,
+         dict(ylabel=f'RT (timesteps){note}',
+              hollow=[False] * n + [True] * n,
+              group_spacing=[n],
+              super_labels=[('Correct', 0, n - 1), ('Error', n, 2 * n - 1)])),
+        ([g(f'fasterr_{k}{suffix}', lbl, COL[k]) for k, lbl in cells],
          dict(ylabel='RT correct − RT error', baseline=0.0,
               title='+ = errors are faster')),
     ]
@@ -709,9 +975,11 @@ def spec_z_slot_update(effects, grouping='geometry', measure='dz'):
     line is for. `measure='zgrad'` is the aggregated dL/dZ that drove the update, under no
     such constraint, and exists only when the run logged gradients.
 
-    The two panels are deliberately not on a shared y scale, for the reason
-    `fig_z_update` gives: an error's update is several times a correct trial's, so sharing
-    flattens the correct panel onto its baseline and hides what it is there to show.
+    The two panels are deliberately not on a shared y scale: an error's update is several
+    times a correct trial's, so sharing flattens the correct panel onto its baseline and
+    hides what it is there to show. (`spec_control_update`, which does share an axis across
+    outcome, is measuring a coarser quantity — one number per trial, not five — where the
+    3-4x ratio still leaves the correct bars readable.)
     """
     groups = SLOT_GROUPINGS[grouping]
     ylabel = ('Δ Z per slot (softmax gate)' if measure == 'dz'

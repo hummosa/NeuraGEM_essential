@@ -1,5 +1,5 @@
 """
-run_flanker.py — Flanker task: training, then one randomly interleaved test session.
+flanker_run_one_network.py — Flanker task: training, then one randomly interleaved test session.
 
 Stage 1 — Training. Oracle Z: the identity of the target slot is supplied to the
           model as a one-hot latent, and the weights learn to use it. The target
@@ -544,7 +544,6 @@ export_fig(fig1c, 'flanker_session_and_rt_by_outcome.pdf', test_config, caption=
 sess_eff = session_effects(trials)
 
 fig1d, axes1d = bar_row(spec_rt_by_outcome(sess_eff, decided=True))
-share_ylim(axes1d[0], axes1d[1])        # the two level panels are the same quantity
 fig1d.suptitle('RT by outcome, per cell (decided trials only)', fontsize=7)
 fig1d.tight_layout()
 export_fig(fig1d, 'flanker_rt_by_outcome.pdf', test_config, caption=(
@@ -715,8 +714,9 @@ export_fig(fig3c, 'flanker_post_conflict.pdf', test_config, caption=(
     "contrast II->I against CC->I, in the same unit as the lag-1 measure beside it. "
     "Panel 2 is the decided-only RT companion: a large gap from panel 1 means the "
     "contrast is carrying non-responses rather than speed. Panel 4 is the inherited "
-    "control state behind the behaviour. One session; the across-seed version is "
-    "flanker_sweep_figures group_10."))
+    "control state behind the behaviour. One session; there is no across-seed twin any "
+    "more — the group figure was retired because group_4 draws these same history cells "
+    "individually, and the scored measures (pcs_BI, pca_BI) are on the scorecard."))
 
 #%%
 # ── Result 4: post-error effects ──────────────────────────────────────────────
@@ -822,6 +822,15 @@ export_fig(fig6, 'flanker_post_error_near_far.pdf', test_config, caption=(
 # measures. Replicates here are individual error events within this one session, so the
 # error bars are trial-level; the group version (one dot per seed) is
 # flanker_sweep_figures.fig_circularity.
+#
+# Panels 5 and 6 are the exchange rate — what a given INHERITED control state (focus_in)
+# buys, in accuracy and in RT. Read them together: a control account says the control gap
+# has to be paid for in speed as well as accuracy, so a model that charges for it in only
+# one currency is not reproducing the human trade-off. Panel 6's slope is also the cheap
+# test of whether an error-gated learning rate could ever produce post-error SLOWING: if RT
+# falls as inherited focus rises, then anything that leaves the post-error state better
+# focused predicts post-error speeding instead. The across-seed version of this pair is
+# flanker_sweep_figures group_9 panels 3 and 4.
 
 from flanker_metrics import event_locked
 from flanker_figure_utils import plot_circularity
@@ -832,10 +841,10 @@ for key in ('start_gap', 'upd_err', 'upd_corr',
             'frac_err_noisy', 'frac_err_clean',
             'dfocus_err_noisy', 'dfocus_err_clean'):    # scalars -> one replicate
     ev_plot[key] = np.array([ev[key]])
-for key in ('curve_x', 'curve_y'):
+for key in ('curve_x', 'curve_y', 'curve_rt'):    # curve_rt feeds the new panel 6
     ev_plot[key] = [ev[key]]
 
-fig4c, axes4c = plt.subplots(1, 5, figsize=(FigSize.large[0] * 5, FigSize.large[1]))
+fig4c, axes4c = plt.subplots(1, 6, figsize=(FigSize.large[0] * 6, FigSize.large[1]))
 plot_circularity(axes4c, ev_plot)
 fig4c.suptitle('Post-error control — the deficit precedes the error', fontsize=7)
 fig4c.tight_layout()
@@ -849,8 +858,43 @@ export_fig(fig4c, 'flanker_pia_circularity.pdf', test_config, caption=(
     "flankers just won. Panel 3 shows each kind's own delta_focus update against a "
     "correct trial's; the two kinds teach Z in opposite directions, which is why the "
     "pooled correction in panel (1)'s gap does not reliably close it. (4-5) The "
-    "behavioural cost: accuracy after an error vs. after a correct trial, and the "
-    "exchange rate between inherited control and accuracy."))
+    "behavioural cost: accuracy after an error vs. after a correct trial. (5-6) The "
+    "exchange rate between the inherited control state and behaviour, in accuracy and in "
+    "RT, with the states the trial after an error and after a correct trial actually "
+    "inherited marked on both. The pair is the point: a control account has to charge for "
+    "the gap in speed as well as in accuracy. Panel 6's slope also says whether a "
+    "better-focused post-error state would predict post-error slowing or speeding. The "
+    "across-seed version is flanker_sweep_figures group_13, row 1 — the same two curves "
+    "along the focus axis, beside the gain axis they have to be read against."))
+
+#%%
+# ── Result 4d: the two control axes ───────────────────────────────────────────
+#
+# Result 4c panels 5-6 price the inherited state along ONE axis, `focus_in` = centre minus
+# the mean of the flankers. That is a difference, so it is blind to the gate's overall
+# level — and the post-error state moves on both.
+#
+# Why it matters. On the focus axis accuracy and speed improve together, so a post-error
+# state that is LOWER in focus should be slower AND less accurate, i.e. negative PIA.
+# Measured PIA is positive. The missing term is gain, the mean weight over all five slots:
+# after an error every slot's weight falls, and a lower gain damps the early
+# flanker-driven surge on an incongruent trial — slower, but more accurate among the
+# trials that decide. Put both terms in and PES and PIA come out positive together, which
+# is what the scorecard reports.
+#
+#     focus up  ->  more accurate AND faster    (no trade-off)
+#     gain  up  ->  less accurate but faster    (the trade-off lives here)
+#
+# The gain axis exists only because `latent_activation` is not a softmax. A softmaxed gate
+# is a simplex, so gain is exactly 1/n_slots on every trial with zero variance and focus
+# really is the whole state. The figure checks and says so rather than plotting a constant.
+#
+# Across-seed version: flanker_sweep_figures group_13.
+
+from flanker_sweep_figures import fig_control_axes
+
+fig4d_path = fig_control_axes([trials], test_config.export_path.rstrip('/'),
+                              f'session seed {test_config.env_seed}')
 
 #%%
 # ── Result 5: what drives the control update ──────────────────────────────────
@@ -929,7 +973,8 @@ export_fig(fig7b, 'flanker_z_slot_update.pdf', test_config, caption=(
     "gradient carries no such constraint. The gradient's sign is inverted relative to "
     "the update, since the step descends it. Correct and error panels are deliberately "
     "not on a shared y scale — an error's update is several times a correct trial's. One "
-    "session; the across-seed version is flanker_sweep_figures group_11."))
+    "session only: the group-level twin was retired, since the across-seed Z figure now "
+    "carries the two control axes (focus and gain) rather than the five slots."))
 
 #%%
 # ── Result 6: trial-history regression ────────────────────────────────────────

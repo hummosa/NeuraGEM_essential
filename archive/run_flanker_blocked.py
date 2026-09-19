@@ -11,13 +11,13 @@ Why they were retired
 Blocked presentation confounds condition with time-in-block and with
 adaptation-to-switch, so effects measured this way are not comparable to the human
 data, which is randomly interleaved. Every effect these stages measured is now
-obtained by masking the single random session produced by run_flanker.py Stage 2.
+obtained by masking the single random session produced by flanker_run_one_network.py Stage 2.
 If a blocked result is ever needed, read asymptotic within-block behaviour only —
 not the trials right after a switch.
 
 How to run
 ──────────
-Execute the Stage 1 cell of run_flanker.py first, so `config` and `model` exist,
+Execute the Stage 1 cell of flanker_run_one_network.py first, so `config` and `model` exist,
 then run the cells below in order.
 
 Two behavioural notes vs. the original script:

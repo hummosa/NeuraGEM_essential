@@ -740,7 +740,8 @@ class FlankerTaskConfig(Config):
         # p_corr_by_distance[d] = probability companion matches target at distance d
         # self.p_corr_by_distance = [1.0, 0.65, 0.55, 0.25, 0.1]
         # this steeper corr significantly improved model's capture int the flanker_sweep setup.
-        self.p_corr_by_distance = [1.0, 0.75, 0.52, 0.51, 0.5]
+        self.p_corr_by_distance = [1.0, 0.62, 0.55, 0.52, 0.5]
+        # self.p_corr_by_distance = [1.0, 0.75, 0.52, 0.51, 0.5]
         
         # This is a tight balance. 
         # Increasing the corr increases congruent trials n and lowers incongruent. 
@@ -759,18 +760,19 @@ class FlankerTaskConfig(Config):
 
 
 
-        self.arrow_noise_std    = .9
-        # run_flanker.py and flanker_sweep_config both override this to 0, and that matters:
+        self.arrow_noise_std    = 1.35
+        # flanker_run_one_network.py and flanker_sweep_config both override this to 0, and that matters:
         # at 0.1 the slots holding no arrow still carry noise the model reads as evidence,
         # and setting it to 0 removes the near-congruent-worse-than-far-congruent artifact
         # on its own, without oracle gate jitter (20 seeds, arrow_noise_std 0.9).
-        self.bg_noise_std       = 0.1
+        self.bg_noise_std       = 0.
         self.signal_strength    = 1.0
 
         # ── Latent / oracle mode ──────────────────────────────────────────────
         # 'context_ids': oracle — target slot integer from hlcids fed as one-hot Z (no LU needed)
         # 'self'  : model learns Z through LU (blind to slot identity at training time)
         self.what_latent_to_use = 'context_ids'
+        self.latent_activation   = 'none' # important to get ii->i be slower..makes the Z jitter not necessary I think. the jitter was needed int he softmax case.
         self.latent_dims        = [5]   # Z_dim=5 matches n_slots; softmax → one-hot over slots
         self.latent_chunks      = 1
         self.exponential_increase_steepness = [2]

@@ -54,7 +54,7 @@ From a shell:
     python flanker_regression.py --variant noise10 [--run sweep_noise]
 
 Both fit every session in one sweep condition and t-test each coefficient across
-sessions. `run_flanker.py` fits a single session, which is one synthetic subject and
+sessions. `flanker_run_one_network.py` fits a single session, which is one synthetic subject and
 should not be read as evidence on its own.
 """
 

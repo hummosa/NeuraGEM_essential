@@ -1,6 +1,6 @@
 """
 flanker_analyses.py — Reusable trial extraction, selection, and plotting utilities
-for the flanker task. Import in run_flanker.py or analysis notebooks.
+for the flanker task. Import in flanker_run_one_network.py or analysis notebooks.
 
 Three conventions worth knowing before reading any Z result
 ───────────────────────────────────────────────────────────
@@ -904,7 +904,7 @@ def trial_slot_roles(trials, config, trial):
     logged — it is recovered as the non-target slot whose observations carry a signal.
     That recovery picks the non-target slot with the largest |mean| over the trial's
     timesteps, and it is the only guess in the figure. It is exact whenever
-    `bg_noise_std = 0` (what run_flanker.py and the sweep both run), since an empty slot
+    `bg_noise_std = 0` (what flanker_run_one_network.py and the sweep both run), since an empty slot
     is then identically zero. At the class default `bg_noise_std = 0.1` it is right on
     99.5% of trials at `arrow_noise_std = 0.9` and 98.1% at 1.3 (200k simulated trials) —
     it fails only when a companion's own noise happens to cancel its signal, which is a
@@ -1129,6 +1129,10 @@ def plot_trial(trials, config, trial=0, show_gate=True, show_loss_weights=True,
         ax_out.plot([rt], [np.sign(trials['resp_at_decision'][trial]) * thr],
                     marker='o', markersize=3.5, color='#1f4e79', zorder=4)
     ax_out.set_xlim(-0.5, ad - 0.5)
+    # set y lim to the max of either negative or positive values so that the plot is symmetric around 0
+    y_max = max(abs(out_full[:, -1].min()), abs(out_full[:, -1].max()), thr) * 1.15
+    ax_out.set_ylim(-y_max, y_max)
+    
     ax_out.set_xticks(t_axis)
     ax_out.set_xlabel('Timestep within trial')
     ax_out.set_ylabel('decision\nvariable', rotation=0, ha='right', va='center', labelpad=4)

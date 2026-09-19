@@ -200,6 +200,14 @@ FLANKER_COLORS = {
 FLANKER_CELLS = [('near_cong', 'near\ncong'), ('far_cong', 'far\ncong'),
                  ('near_incong', 'near\nincong'), ('far_incong', 'far\nincong')]
 
+#: The same four cells in the order the human paper plots them — distance outer,
+#: congruency inner (close-congr, close-incongr, far-congr, far-incongr). Use this
+#: wherever a panel is meant to be read bar-for-bar against the published figure;
+#: FLANKER_CELLS stays the default everywhere else, because grouping by congruency puts
+#: the congruency effect side by side and that is what most of our panels are about.
+FLANKER_CELLS_BY_DISTANCE = [('near_cong', 'near\ncong'), ('near_incong', 'near\nincong'),
+                             ('far_cong', 'far\ncong'), ('far_incong', 'far\nincong')]
+
 
 def flanker_color(cong, near=None):
     """

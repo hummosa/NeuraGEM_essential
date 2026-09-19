@@ -20,7 +20,7 @@ ones included.
 |---|------|-----|
 | 1 | `flanker_analyses.py` lines 90–130, `_interpolated_rt` | **The most important read.** Documents the crossing rule and the two conventions that were tried and rejected. A trial that never crosses is given `rt = arrows_duration` rather than dropped — that pile-up is the mechanism you are testing. |
 | 2 | `flanker_analyses.py` lines 158–200, `extract_trials` | What the threshold produces: `correct_at_decision`, `rt_interp`, `decided`, `cross_idx`. |
-| 3 | `run_flanker.py` lines 17–36 (docstring) | The three analysis conventions, stated as project policy. |
+| 3 | `flanker_run_one_network.py` lines 17–36 (docstring) | The three analysis conventions, stated as project policy. |
 | 4 | `flanker_metrics.py` — `condition_masks`, `session_effects`, `SIGNATURES` | The 11 signatures and the sign each should take to match humans. `SIGNATURES` is the scorecard. |
 | 5 | `flanker_figure_utils.py` lines 69–90 | `collect_sessions(variant, rt_threshold=...)` and `collect_effects(...)` **already take the threshold as an argument.** Use it. |
 | 6 | `flanker_sweep_config.py` | `RT_THRESHOLD = 0.5`, the four `ARMS`, the 5-level `NOISE_LADDER`. |
