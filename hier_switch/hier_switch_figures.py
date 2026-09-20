@@ -884,6 +884,74 @@ def spec_trace(groups, key='z_evidence', ylabel='Z on the true context'):
     return panel
 
 
+#: The manipulations, as (condition prefix, its control's prefix, short label). Kept here
+#: so the panels, the group table and the captions all name them the same way.
+MANIPULATIONS = (('softmax_lu0', 'softmax', 'update off'),
+                 ('softmax_lu3', 'softmax', 'update ×3'),
+                 ('softmax_lu10', 'softmax', 'update ×10'),
+                 ('softmax_blast', 'softmax', 'Z→(1,1)'),
+                 ('sigmoid_blast', 'sigmoid', 'Z→(1,1), sigmoid'))
+
+
+def _manip_pairs(by_condition, manipulations=MANIPULATIONS, criterion='dec_switch'):
+    """[(label, split, perturbed per seed, control per seed)] for what is on disk."""
+    out = []
+    for name, base, label in manipulations:
+        for split in ('low', 'high'):
+            pert = by_condition.get(f'{name}_rc_{split}')
+            ctrl = by_condition.get(f'{base}_rc_{split}')
+            if not pert or not ctrl:
+                continue
+            key = f'behaviour.switch.all.{criterion}'
+            out.append((label, split, stack(pert, key), stack(ctrl, key)))
+    return out
+
+
+def spec_manipulation_switch(by_condition, criterion='dec_switch'):
+    """Trials to switch under each manipulation, beside its own unperturbed control.
+
+    One cluster per manipulation × early-conflict level; within a cluster the control comes
+    first and the perturbed session second, so the comparison the panel is about is the
+    adjacent pair. Shade is the early conflict, as everywhere.
+    """
+    def panel(ax):
+        pairs = _manip_pairs(by_condition, criterion=criterion)
+        if not pairs:
+            ax.axis('off')
+            return
+        groups, clusters, gaps = [], [], []
+        for label, split, pert, ctrl in pairs:
+            col = split_style('NeuraGEM', split)[0]
+            i = len(groups)
+            groups += [(ctrl, '', shade(col, 0.75)), (pert, '', col)]
+            clusters.append((f'{label}\n{split}', i, i + 1))
+            gaps.append(i + 1)
+        bars(ax, groups, ylabel='Trials to switch', connect=False, clusters=clusters,
+             gap_after=gaps[:-1], rotation=45)
+        ax.tick_params(axis='x', length=0)
+    return panel
+
+
+def spec_manipulation_cost(by_condition, criterion='dec_switch'):
+    """Each manipulation as one number: trials to switch minus its own control, within seed.
+
+    Positive = slower to switch. Silencing the latent update is predicted to slow switching
+    (the paper's ACC→MD result); driving the latent is predicted to speed it up.
+    """
+    def panel(ax):
+        pairs = _manip_pairs(by_condition, criterion=criterion)
+        if not pairs:
+            ax.axis('off')
+            return
+        groups = [(np.asarray(pert) - np.asarray(ctrl), f'{label}\n{split}',
+                   split_style('NeuraGEM', split)[0])
+                  for label, split, pert, ctrl in pairs]
+        bars(ax, groups, ylabel='Extra trials to switch\nvs the same session unperturbed',
+             baseline=0.0, connect=False, rotation=45)
+        ax.tick_params(axis='x', length=0)
+    return panel
+
+
 def figure(panels, path, ncol=None, panel=None, letters=False):
     """Draw a list of panel callables into one row/grid and save it.
 
@@ -1036,6 +1104,22 @@ def story_figure(out_dir=None):
             nolegend(spec_trace({'sigmoid at test': sig} if sig else {'NeuraGEM': ng}, 'gain',
                                 'Z gain (mean of the units)'))]),
     ]
+    # Row 6, the manipulations, appears only once those sessions exist (run_manipulations.sh);
+    # until then the story figure is the five rows above. by_condition carries every NG
+    # condition on disk, so the row builds itself as soon as the data lands.
+    by_condition = {cond: [d[s] for s in sorted(d)]
+                    for (model, cond), d in data.items() if model == 'NG'}
+    if _manip_pairs(by_condition):
+        mom = {f'momentum {mu}': pick(('NG', f'softmax_mom{mu}_rc_none')) for mu in ('0.5', '0.9')}
+        mom = {k: v for k, v in mom.items() if v}
+        traces = {'no momentum': ng, **mom}
+        rows.append(('story_6_manipulations', [
+            rotate_xticks(spec_manipulation_switch(by_condition)),
+            rotate_xticks(spec_manipulation_cost(by_condition)),
+            relegend(spec_trace(traces, 'step', 'ΔZ toward the true context\n(|update|)'),
+                     loc='upper right'),
+            nolegend(spec_trace(traces, 'grad', '|dL/dZ| on the context axis'))]))
+
     panel = FigSize.custom(1.7, 1.35)
     for name, panels in rows:
         figure(panels, os.path.join(out_dir, f'{name}.pdf'), ncol=4, panel=panel,
