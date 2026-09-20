@@ -302,11 +302,13 @@ that offset over every reversal of the session.
 **Plotted.** *(m)* Undecided rate, *(n)* RT, *(o)* integration index and *(p)* cue velocity,
 from 5 trials before a reversal to 15 after.
 
-**See.** The behavioural signature of the transition is clear: the undecided rate roughly
-triples over the first few trials after a reversal and recovers by trial 6, and RT is
-**non-monotonic** — trial 1 is fast, because the network is confidently applying the old
-rule, then RT peaks two to three trials later where the latent is most uncertain, then
-recovers. **The paper's population signature is at best weakly present.** The integration
+**See.** The behavioural signature of the transition is clear. The undecided rate rises
+from 0.12 at baseline to 0.26 after a low-conflict start and 0.34 after a high-conflict one,
+peaking at trial 3 and back to baseline by trial 6 or 7 — the network passes through a
+period of not committing, and dwells there longer when the evidence for switching was
+ambiguous. RT is **non-monotonic**: trial 1 is *fast* (19.4 of a 25-step trial), because the
+network is confidently applying the old rule, then RT peaks at trial 3 (20.5) where the
+latent is most uncertain, and recovers by trial 6 (19.5). **The paper's population signature is at best weakly present.** The integration
 index is lower in the first five trials than in the steady state, but only by 0.079 ± 0.025
 (5/6 networks), and the cue velocity does not move at all (+0.001 ± 0.011, 4/6) where the
 paper has it rise. Row 3 says why that is coherent rather than contradictory: cue velocity
