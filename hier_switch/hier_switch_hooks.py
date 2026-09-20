@@ -167,7 +167,7 @@ def _self_test():
     Needs a saved model; skips with a message if none is on disk.
     """
     import copy
-    from hier_switch_analyses import extract_trials
+    from hier_switch_analyses import extract_trials, recover_grad, session_arrays
     from hier_switch_train import load_model, run_test
 
     path = os.path.join(_ROOT, 'exports', 'hier_switch', 'tune_v15', 'NG_s0', 'model.pt')
@@ -176,15 +176,35 @@ def _self_test():
     model, cfg = load_model(path)
     N = 200
 
+    kept = {}
+
     def go(**kw):
         m = copy.deepcopy(model)
         logger, _, tcfg = run_test(m, copy.deepcopy(cfg), run_name='scratch/hook_test',
                                    n_trials=N, **kw)
         tr = extract_trials(logger, tcfg)
+        kept['logger'], kept['cfg'] = logger, tcfg
         hook = getattr(tcfg, 'trial_hook', None)
         return tr, (hook.arrays(tr['n']) if hook is not None else None)
 
     base, _ = go()
+
+    # The recorder takes the gradient from the logger rather than from Δz, so that it
+    # survives a zeroed update. Two things have to hold for that: the pooled gradient is
+    # broadcast to every timestep of the trial (so row 0 is the whole story), and on an
+    # unperturbed trial the logged route agrees with the Δz route.
+    tcfg0 = kept['cfg']
+    gc = np.concatenate(kept['logger'].gradients_corrections, axis=0)
+    gc = gc.reshape(base['n'], tcfg0.trial_len, -1)
+    spread = float(np.nanmax(np.abs(gc - gc[:, :1, :])))
+    logged = session_arrays(kept['logger'], tcfg0)['grad_logged']
+    rec = recover_grad(base['z'], base['z_in'], tcfg0.Z_lr, tcfg0.Z_decay)
+    fin = np.isfinite(rec).all(axis=1)
+    diff = float(np.abs((logged - tcfg0.Z_decay * base['z_in'])[fin] - rec[fin]).max())
+    ok = spread < 1e-12 and diff < 1e-10
+    print(f"{'OK ' if ok else 'FAIL'} logged gradient: identical across the trial's "
+          f"{tcfg0.trial_len} rows (spread {spread:.1e}) and agrees with the Δz route "
+          f"(max diff {diff:.1e})")
     same, _ = go(perturb=dict(kind='lu_scale', k=1.0, trials=[1, 4]))
     ok = np.allclose(base['z'], same['z'], rtol=0, atol=0)
     print(f"{'OK ' if ok else 'FAIL'} lu_scale k=1 is bit-identical to no hook "
