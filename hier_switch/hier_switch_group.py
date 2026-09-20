@@ -375,6 +375,8 @@ def _encoding_rows(ng_none):
         seeds, v = _per_seed(ng_none, None, lambda r, s=src, x=var: (
             r['hidden']['encoding']['decoding'][s][x]
             - r['hidden']['encoding']['decoding_null'][s][x]))
+        if expect == 0:
+            note = (note + '; ' if note else '') + 'expected at chance: report the size'
         rows.append(_sign_row(f'Encoding: {var} from {src} (above its shuffle null)',
                               seeds, v, expect, note))
     # Mixed against demixed: how many variables a unit of each signal carries.

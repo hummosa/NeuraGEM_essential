@@ -194,15 +194,177 @@ significance tests are used.
 
 ---
 
+## The story figure (`story.pdf`)
+
+One figure, five rows of four panels, lettered a–t, with each row also written on its own
+(`story_1_behaviour.pdf` … `story_5_latent.pdf`) so a row can be reworked without rebuilding
+the rest. It is larger than a single panel preset on purpose: it is the whole argument, and
+`docs/figure_style.md` allows that for a figure that summarises this much, provided the
+reason is stated. Six networks throughout; the seed is the unit, every mean carries its SEM
+across seeds and one faint line or dot per seed. A legend appears only where it says
+something the caption cannot — elsewhere, light solid is a low-conflict start and dark
+dashed a high-conflict one, in every panel that makes the split.
+
+### Row 1 — Behaviour (`story_1_behaviour.pdf`), against Fig 1e–f
+
+**Ran.** Unforced test sessions for a and b; the paired forced-conflict triplet for c and d.
+
+**Plotted.** *(a)* Steady-state accuracy against cue conflict, one curve per context, with
+the ideal observer's cue accuracy as the ceiling and the RNN baseline in green.
+*(b)* Trials to switch against the conflict of the block's first five trials, reversals
+split into three equal-count bins per seed. *(c)* Trials to switch on the forced low/high
+pairs, under the decided-only and latent criteria, with the observer. *(d)* Reversal-aligned
+accuracy.
+
+**See.** Accuracy falls from 0.98 to 0.68 as the cue becomes ambiguous, tracking the
+observer's ceiling (1.00 → 0.70) just below it. **The two contexts are close but not
+identical**: the context the network saw last in training is better at every conflict level,
+by 0.042 on average — small, and in the same direction in every seed, so it is a real
+residue of training rather than noise, and it is why every per-context split here is
+relative to training rather than to the raw label. Panel b is **the paper's Fig 1f on
+reversals nobody controlled**: the more ambiguous the first five trials happened to be, the
+longer the network stays on the old rule — 4.6, 5.3 and 6.1 trials across the three bins,
+with every one of the six networks slower in the most ambiguous bin than in the least. The
+ideal observer pays the same cost on the same trials (2.6, 2.9, 3.5). The raw behavioural
+criterion does *not* show it (4.1, 4.6, 4.3), which is the hedging problem: the sign of a
+near-zero output is a coin flip that can satisfy a "first correct trial" rule by luck, and
+it is why the decided-only criterion is the one plotted.
+
+### Row 2 — What is encoded where (`story_2_encoding.pdf`), against Fig 2k–l and 4b
+
+**Ran.** Unforced sessions, all trials of the test phase. Decoders are 5-fold
+cross-validated, each with its own shuffled-label null; the variance decomposition fits all
+seven variables jointly and credits each only with what it uniquely explains.
+
+**Plotted.** *(e)* Decoding accuracy for cue, rule, context and conflict from the hidden
+state, from the hidden state cut to two principal components (hollow), from the latent Z,
+and from the error gradient on Z. *(f)* Cue and rule decoding from the hidden state per
+timestep, steady state against the first five trials after a reversal. *(g)* The size of the
+gradient on Z against cue conflict, correct trials against errors. *(h)* The variance
+decomposition, one stacked bar per signal.
+
+**See.** **The hidden state mixes and the latent does not.** The hidden state decodes all
+four variables well above its null (cue +0.42, rule +0.33, context +0.40, conflict +0.35;
+6/6 networks each), and a hidden unit is tuned to 4.5 of the seven variables on average.
+The latent decodes **context and nothing else** — +0.41 above null for context in every
+network, and −0.02 and −0.01, i.e. flat, for cue and conflict. In panel h that is one tall
+segment against several: context alone accounts for 0.65 more of Z's variance than the best
+other variable does, in 6/6. This is the paper's cortex-mixed / thalamus-demixed
+dissociation, arrived at without being asked for.
+
+**The dimension-matched control is what makes that readable.** A 64-unit signal will
+out-decode a 2-unit one by having more dimensions, so the hidden state reduced to its own
+top two principal components is plotted beside it. Those two components carry cue and rule
+as well as the full hidden state does — and carry **context barely at all** (+0.085 ± 0.060,
+and not in every network). So the hidden state's near-ceiling context decoding is not a
+dimensionality artefact, and it is also not something the network computes for itself:
+context reaches the hidden state only because Z gates it, and it lives outside the
+directions that dominate that state's variance.
+
+The gradient is the error signal. It carries the outcome (+0.16) and which context was
+wrong (+0.14), both 6/6, and its size falls with conflict on error trials while staying flat
+and roughly ten times smaller on correct ones (g) — conflict-weighting with nothing in the
+model that is told about conflict. It carries the cue and the rule only weakly (+0.07,
++0.06, and not consistently across networks); along the context axis the gradient's sign is
+fixed by which context was wrong, so there is little room in it for the cue. Panel f is the
+reversal seen from the hidden state: the cue code is untouched in the first five trials
+after a reversal while the rule code drops to chance — the network still hears the cue and
+has lost what to do with it.
+
+### Row 3 — Holding the gate still (`story_3_gate.pdf`)
+
+**Ran.** Weights frozen *and* the latent update off, Z clamped at a fixed (gain, contrast)
+for a whole 1000-trial session: 4 gains × 5 contrasts × 6 networks, 120 sessions, sigmoid
+gate (the softmax has no gain direction to clamp). Accuracy is on the context the gate
+selects, read off behaviour; hidden-state measures pool both halves of the session, which
+see identical inputs.
+
+**Plotted.** *(i)* Accuracy, *(j)* RT, *(k)* integration index and *(l)* cue velocity
+against the clamped contrast, one line per clamped gain.
+
+**See.** **Gain and contrast do different jobs.** Opening the gate speeds the hidden state's
+integration of the cue — cue velocity 0.126 → 0.188 → 0.231 → 0.257 from gain −1 to +2,
+monotonically — and raises the integration index (1.09 → 1.61). Moving the contrast does not
+touch the cue velocity at all: 0.200 to 0.201 across the whole ladder. What the contrast
+sets is which context is applied and how decisive the answer is (accuracy 0.61 → 0.83,
+undecided 0.79 → 0.25). Accuracy is non-monotonic in gain and peaks near 0 to +1: too little
+and the network is undecided on nearly every trial, too much and both units saturate so the
+contrast between them stops meaning anything. **RT is the one measure both move** (24.5 →
+20.6 across gain, 23.9 → 20.2 across contrast), which is what it should do — a decision needs
+both a rule to apply and enough gain to apply it with.
+
+### Row 4 — Around a reversal (`story_4_reversal.pdf`), against Fig 3c
+
+**Ran.** The forced pair for m, unforced sessions for n–p. The integration index and cue
+velocity are population measures over a set of trials, so each point pools the trials at
+that offset over every reversal of the session.
+
+**Plotted.** *(m)* Undecided rate, *(n)* RT, *(o)* integration index and *(p)* cue velocity,
+from 5 trials before a reversal to 15 after.
+
+**See.** The behavioural signature of the transition is clear: the undecided rate roughly
+triples over the first few trials after a reversal and recovers by trial 6, and RT is
+**non-monotonic** — trial 1 is fast, because the network is confidently applying the old
+rule, then RT peaks two to three trials later where the latent is most uncertain, then
+recovers. **The paper's population signature is at best weakly present.** The integration
+index is lower in the first five trials than in the steady state, but only by 0.079 ± 0.025
+(5/6 networks), and the cue velocity does not move at all (+0.001 ± 0.011, 4/6) where the
+paper has it rise. Row 3 says why that is coherent rather than contradictory: cue velocity
+is set by the *gain*, and under the softmax the gain cannot move, so the one measure the
+paper uses to define the exploratory regime is the one measure this model's latent has no
+way to change. The RNN baseline sits at the trial end in n because it is undecided on
+99.9 % of trials, so its RT is not a response time.
+
+### Row 5 — The three latent signals (`story_5_latent.pdf`)
+
+**Ran.** Unforced sessions; t uses the sigmoid-at-test condition, the only one where the
+gain exists as an axis, and is labelled accordingly. It holds the context less well than the
+softmax (0.70 against 0.88 steady-state accuracy) — the point of the panel is the axis, not
+the performance.
+
+**Plotted.** All aligned on the reversal. *(q)* The latent's position on the context axis
+(+1 = the true context's prototype) with the ideal observer's belief. *(r)* The size of the
+trial's own latent update along that axis. *(s)* The size of the raw error gradient.
+*(t)* The gain, the mean of the two latent units.
+
+**See.** **The state is persistent and its update is transient**, which is this model's
+answer to a tension in the paper: there, the thalamic context signal is a brief switch
+response, while here the latent is the one thing that crosses trials and so cannot be brief.
+Panel q shows the state — sitting at +1.0, thrown to −0.99 on the first post-reversal trial,
+and climbing back over four to six trials, tracking the observer a little more slowly.
+Panels r and s show what moves it, and both are sharp: the update is 0.10 of the distance
+between the prototypes in the steady state, rises to 0.56 at trial 2 and is back near
+baseline by trial 8; the gradient does the same, 7.5e-6 → 4.4e-5 at trial 2 → 1.7e-5 by
+trial 6. **So the transient and the persistent signal are both here, as the derivative and
+the integral of one another** — not a correspondence the paper draws, and available only
+because the update and the state are separately measurable in a model. Panel t is the cost
+of the gain axis when it exists: after a reversal the burst of errors pushes the gain down
+(+0.03 before, −0.33 by trial 5) and the correct trials that follow do not restore it. Under
+the softmax this panel would be a flat line at zero, and that is the reason the softmax is
+used.
+
+---
+
 ## Figure captions
 
-Nine figures, in `exports/hier_switch/group/figures/`. An earlier `z_updates.pdf` (the
-per-trial update decomposed cell by cell) was retired as unreadable; the numbers behind it
-are still computed and live in `docs/hier_switch_handoff.md` §5b, and the builders
-(`spec_z_update`, `spec_tipped`, `spec_normative`) are still in `hier_switch_figures.py` if
-a panel is ever wanted again.
+
+The supplementary figures, in `exports/hier_switch/group/figures/`. These are the panels
+the story figure does not carry, kept because each says something it leaves out: all three
+switch criteria rather than two, the latent's uncertainty, the gain leak measured per trial,
+the unit classes, the softmax clamp ladder and the single-gain cut.
+
+**Two of them have been folded into the story figure.** `switching.pdf` is gone entirely —
+its reversal-aligned accuracy is story panel d and its Z-side curve is story panel q — and
+`behaviour.pdf` has lost its reversal-aligned RT panel, which is story panel n. Neither
+*builder* was deleted; the figures below describe what is still written. An earlier
+`z_updates.pdf` (the per-trial update decomposed cell by cell) was retired before that as
+unreadable; the numbers behind it are still computed and live in
+`docs/hier_switch_handoff.md` §5b, and its builders (`spec_z_update`, `spec_tipped`,
+`spec_normative`) remain in `hier_switch_figures.py` if a panel is ever wanted again.
 
 ### Fig. 1 — Behaviour (`behaviour.pdf`)
+
+*Its third panel, reversal-aligned RT, is now story panel n and is no longer written here.*
 
 **Ran.** The unforced test sessions: 6 NG seeds and 10 RNN seeds, frozen weights, 2000
 trials each, Z inferred (NG) or fixed (RNN).
@@ -221,7 +383,10 @@ network is confidently applying the old rule, RT peaks two to three trials later
 where Z is most uncertain, then recovers by trial 6. The RNN sits at 0.50 at every conflict
 level.
 
-### Fig. 2 — What a low- or high-conflict start does to a reversal (`switching.pdf`)
+### Fig. 2 — What a low- or high-conflict start does to a reversal (`switching.pdf`, retired)
+
+*Both panels are now in the story figure (d and q); this figure is no longer written. The
+caption is kept because the numbers in it are still the ones to quote.*
 
 **Ran.** The paired forced-conflict triplet per seed. The only difference between the two
 sessions plotted is the conflict of the first five trials of each block; everything else,

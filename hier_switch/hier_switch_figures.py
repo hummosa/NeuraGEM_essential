@@ -608,6 +608,53 @@ def spec_clamp_gain(cells, d=1.0, measure='cue_velocity', ylabel='Cue velocity')
 # The story figure's panels
 # ══════════════════════════════════════════════════════════════════════════════
 
+def nolegend(p):
+    """The same panel without its legend.
+
+    Twenty panels at paper size cannot each carry a key. The story figure keeps a legend
+    only where it says something a reader cannot get from the caption, and drops the rest —
+    shade and dash mean the same thing in every panel (light solid = low early conflict,
+    dark dashed = high), so repeating that key twenty times costs space and buys nothing.
+    """
+    def panel(ax):
+        p(ax)
+        lg = ax.get_legend()
+        if lg is not None:
+            lg.remove()
+    return panel
+
+
+def rotate_xticks(p, deg=30):
+    """The same panel with its x tick labels rotated — for a narrow panel whose cluster
+    labels would otherwise run into each other."""
+    def panel(ax):
+        p(ax)
+        for t in ax.get_xticklabels():
+            t.set_rotation(deg)
+            t.set_ha('right')
+    return panel
+
+
+def relegend(p, **kw):
+    """The same panel with its legend redrawn — a smaller font, or somewhere else."""
+    def panel(ax):
+        p(ax)
+        h, l = ax.get_legend_handles_labels()
+        lg = ax.get_legend()
+        if lg is not None:
+            h = h or lg.legend_handles
+            l = l or [t.get_text() for t in lg.get_texts()]
+            lg.remove()
+        if h:
+            kw.setdefault('frameon', False)
+            kw.setdefault('handlelength', 1.4)
+            kw.setdefault('borderpad', 0.15)
+            kw.setdefault('labelspacing', 0.2)
+            kw.setdefault('fontsize', 'small')
+            ax.legend(h, l, **kw)
+    return panel
+
+
 #: The signals a task variable can be decoded from, in the order every panel shows them.
 #: `hidden_pc2` is the dimension-matched control for `hidden_t16` and is drawn hollow, in
 #: the same hue, because it is the same signal with 62 dimensions taken away.
@@ -616,6 +663,10 @@ SOURCES = (('hidden_t16', 'hidden state', 'hidden state', False),
            ('z_in', 'latent z', 'Z', False),
            ('step', 'z update', 'ΔZ', False),
            ('grad', 'z gradient', 'dL/dZ', False))
+#: The subset the story figure's decoding panel shows — four bars per cluster is what fits.
+#: ΔZ is dropped there because the whole of row 5 is about it; it stays in the variance
+#: panel, in the json and in the single-session figure.
+STORY_SOURCES = tuple(x for x in SOURCES if x[0] != 'step')
 #: The variables each source is tested against, and how they are labelled on an axis.
 MATRIX_VARS = (('cue', 'cue'), ('rule', 'rule'), ('context', 'context'),
                ('conflict', 'conflict'))
@@ -704,7 +755,8 @@ def spec_decoding_matrix(reports, variables=MATRIX_VARS, sources=SOURCES):
             clusters.append((vlabel, first, i - 1))
             gaps.append(i - 1)
         bars(ax, groups, ylabel='Decoding accuracy\n(balanced, cross-validated)',
-             baseline=0.5, connect=False, clusters=clusters, gap_after=gaps[:-1])
+             baseline=0.5, connect=False, clusters=clusters, gap_after=gaps[:-1],
+             rotation=45)
         # Hollow the dimension-matched control, the way outcome is hollowed elsewhere.
         # bars() draws one patch per group, in order, so the indices line up.
         patches = [p for p in ax.patches]
@@ -722,8 +774,8 @@ def spec_decoding_matrix(reports, variables=MATRIX_VARS, sources=SOURCES):
                                  edgecolor=_source_color(k), label=l)
                            for k, _, l, h in sources],
                   frameon=False, handlelength=0.9, borderpad=0.2, labelspacing=0.2,
-                  columnspacing=0.8, ncol=3, loc='lower left',
-                  bbox_to_anchor=(0, 1.0, 1, 0.14), mode='expand', fontsize='small')
+                  columnspacing=0.8, ncol=2, loc='lower left',
+                  bbox_to_anchor=(0, 1.0, 1, 0.22), mode='expand', fontsize='small')
     return panel
 
 
@@ -949,33 +1001,37 @@ def story_figure(out_dir=None):
              if low and high else groups)
     cells = clamp_cells_on_disk('sigmoid')
 
+    # A legend is kept only where it carries something the caption cannot: which context,
+    # which signal, which variable, correct against error, the gain ladder, which model.
+    # Shade and dash mean low against high early conflict in every panel that has them.
     rows = [
         ('story_1_behaviour', [
-            spec_psychometric_ctx(groups),
-            spec_switch_vs_early_conflict({'NeuraGEM': ng}),
-            spec_switch(split, STORY_CRITERIA),
-            spec_reversal(split, 'acc', 'Accuracy')]),
+            relegend(spec_psychometric_ctx(groups), loc='lower left'),
+            relegend(spec_switch_vs_early_conflict({'NeuraGEM': ng}), loc='upper left'),
+            rotate_xticks(nolegend(spec_switch(split, STORY_CRITERIA))),
+            nolegend(spec_reversal(split, 'acc', 'Accuracy'))]),
         ('story_2_encoding', [
-            spec_decoding_matrix(ng),
-            spec_encoding_variance(ng),
-            spec_decoding_timecourse(ng),
-            spec_eps_cw(ng)]),
+            spec_decoding_matrix(ng, sources=STORY_SOURCES),
+            nolegend(spec_decoding_timecourse(ng)),
+            relegend(spec_eps_cw(ng), loc='upper right'),
+            spec_encoding_variance(ng)]),
         ('story_3_gate', [
-            spec_clamp_grid(cells, 'acc_match', 'Accuracy\n(gate matches context)'),
-            spec_clamp_grid(cells, 'rt', 'RT (timesteps)'),
-            spec_clamp_grid(cells, 'index', 'Integration index'),
-            spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity')]),
+            nolegend(spec_clamp_grid(cells, 'acc_match', 'Accuracy\n(gate matches context)')),
+            nolegend(spec_clamp_grid(cells, 'rt', 'RT (timesteps)')),
+            nolegend(spec_clamp_grid(cells, 'index', 'Integration index')),
+            relegend(spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity'),
+                     loc='center left', bbox_to_anchor=(1.02, 0.5))]),
         ('story_4_reversal', [
-            spec_reversal(split, 'undecided', 'Undecided rate'),
-            spec_rt_reversal(groups),
-            spec_integration_reversal({'NeuraGEM': ng}, 'index', 'Integration index'),
-            spec_integration_reversal({'NeuraGEM': ng}, 'cue_velocity', 'Cue velocity')]),
+            nolegend(spec_reversal(split, 'undecided', 'Undecided rate')),
+            relegend(spec_rt_reversal(groups), loc='upper right'),
+            nolegend(spec_integration_reversal({'NeuraGEM': ng}, 'index', 'Integration index')),
+            nolegend(spec_integration_reversal({'NeuraGEM': ng}, 'cue_velocity', 'Cue velocity'))]),
         ('story_5_latent', [
-            spec_z_belief({'NeuraGEM': ng}),
-            spec_trace({'NeuraGEM': ng}, 'step', 'ΔZ toward the true context\n(|update|)'),
-            spec_trace({'NeuraGEM': ng}, 'grad', '|dL/dZ| on the context axis'),
-            spec_trace({'sigmoid at test': sig} if sig else {'NeuraGEM': ng}, 'gain',
-                       'Z gain (mean of the units)')]),
+            relegend(spec_z_belief({'NeuraGEM': ng}), loc='lower right'),
+            nolegend(spec_trace({'NeuraGEM': ng}, 'step', 'ΔZ toward the true context\n(|update|)')),
+            nolegend(spec_trace({'NeuraGEM': ng}, 'grad', '|dL/dZ| on the context axis')),
+            nolegend(spec_trace({'sigmoid at test': sig} if sig else {'NeuraGEM': ng}, 'gain',
+                                'Z gain (mean of the units)'))]),
     ]
     panel = FigSize.custom(1.7, 1.35)
     for name, panels in rows:
