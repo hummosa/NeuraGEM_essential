@@ -261,6 +261,13 @@ dimensionality artefact, and it is also not something the network computes for i
 context reaches the hidden state only because Z gates it, and it lives outside the
 directions that dominate that state's variance.
 
+One column has to be read carefully: the decoders are linear, and the two uncertainties
+are magnitudes, which a signed two-unit signal cannot produce under a linear map. Z scoring
+near zero on rule uncertainty is therefore a fact about the read-out and not about Z — the
+same quantity measured directly, as the latent's distance from the midpoint of its context
+axis, does rise after a reversal and stays high longer when the start was ambiguous. The
+substantive comparison is the four sign-carrying variables.
+
 The gradient is the error signal. It carries the outcome (+0.16) and which context was
 wrong (+0.14), both 6/6, and its size falls with conflict on error trials while staying flat
 and roughly ten times smaller on correct ones (g) — conflict-weighting with nothing in the

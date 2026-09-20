@@ -261,6 +261,15 @@ its cue posterior.
    state there is also a per-unit count of how many variables a unit is tuned to against a
    permutation null — the paper's Fig 2k histogram.
 
+**One limit to state before reading the uncertainty columns.** Every decoder here is
+linear, and both uncertainties are *magnitudes* — rule uncertainty is `1 − |2b − 1|`, cue
+uncertainty is `1 − max(q, 1 − q)`. A signed two-unit source cannot produce a magnitude
+under a linear map, so Z scoring ~0 on rule uncertainty is a statement about the decoder,
+not about Z: the same quantity measured properly, as `1 − |z_evidence|`, does rise after a
+reversal and is wider after a high-conflict start (§6, B2). Read the uncertainty columns as
+"can a linear read-out of this signal recover it", and take the sign-carrying columns —
+cue, rule, context, outcome — as the substantive comparison.
+
 Run over **every** trial of the primary phase, not only the steady state: the trials right
 after a reversal are where the latent update and its gradient do their work, and a
 steady-state-only table would leave the error signal almost nothing to carry. The
