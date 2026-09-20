@@ -402,7 +402,7 @@ def spec_eps_cw(reports):
             series(ax, CONFLICT, stack(reports, f'latent.eps_cw.{key}'), label=name,
                    **outcome_line(correct))
         ax.set_xlabel('Cue conflict')
-        ax.set_ylabel('|dL/dZ| along the context axis')
+        ax.set_ylabel('|dL/dZ| (context axis)')
         legend(ax, loc='upper right')
     return panel
 
@@ -658,8 +658,8 @@ def relegend(p, **kw):
 #: The signals a task variable can be decoded from, in the order every panel shows them.
 #: `hidden_pc2` is the dimension-matched control for `hidden_t16` and is drawn hollow, in
 #: the same hue, because it is the same signal with 62 dimensions taken away.
-SOURCES = (('hidden_t16', 'hidden state', 'hidden state', False),
-           ('hidden_pc2', 'hidden state', 'hidden, 2 PCs', True),
+SOURCES = (('hidden_t16', 'hidden state', 'hidden', False),
+           ('hidden_pc2', 'hidden state', 'hidden 2PC', True),
            ('z_in', 'latent z', 'Z', False),
            ('step', 'z update', 'ΔZ', False),
            ('grad', 'z gradient', 'dL/dZ', False))
@@ -777,8 +777,8 @@ def spec_decoding_matrix(reports, variables=MATRIX_VARS, sources=SOURCES):
                                  edgecolor=_source_color(k), label=l)
                            for k, _, l, h in sources],
                   frameon=False, handlelength=0.9, borderpad=0.2, labelspacing=0.2,
-                  columnspacing=0.8, ncol=2, loc='lower left',
-                  bbox_to_anchor=(0, 1.0, 1, 0.22), mode='expand', fontsize='small')
+                  columnspacing=1.2, ncol=2, loc='lower left',
+                  bbox_to_anchor=(-0.02, 1.0), fontsize='small')
     return panel
 
 
@@ -886,11 +886,11 @@ def spec_trace(groups, key='z_evidence', ylabel='Z on the true context'):
 
 #: The manipulations, as (condition prefix, its control's prefix, short label). Kept here
 #: so the panels, the group table and the captions all name them the same way.
-MANIPULATIONS = (('softmax_lu0', 'softmax', 'update off'),
-                 ('softmax_lu3', 'softmax', 'update ×3'),
-                 ('softmax_lu10', 'softmax', 'update ×10'),
-                 ('softmax_blast', 'softmax', 'Z→(1,1)'),
-                 ('sigmoid_blast', 'sigmoid', 'Z→(1,1), sigmoid'))
+MANIPULATIONS = (('softmax_lu0', 'softmax', 'off'),
+                 ('softmax_lu3', 'softmax', '×3'),
+                 ('softmax_lu10', 'softmax', '×10'),
+                 ('softmax_blast', 'softmax', 'Z→1'),
+                 ('sigmoid_blast', 'sigmoid', 'sigmoid'))
 
 
 def _manip_pairs(by_condition, manipulations=MANIPULATIONS, criterion='dec_switch'):
@@ -936,19 +936,27 @@ def spec_manipulation_cost(by_condition, criterion='dec_switch'):
     """Each manipulation as one number: trials to switch minus its own control, within seed.
 
     Positive = slower to switch. Silencing the latent update is predicted to slow switching
-    (the paper's ACC→MD result); driving the latent is predicted to speed it up.
+    (the paper's ACC→MD result); driving the latent is predicted to speed it up. Each
+    manipulation is a low/high pair under one centred label — ten separate tick labels do
+    not fit a paper-sized panel, and the pair is the comparison anyway.
     """
     def panel(ax):
         pairs = _manip_pairs(by_condition, criterion=criterion)
         if not pairs:
             ax.axis('off')
             return
-        groups = [(np.asarray(pert) - np.asarray(ctrl), f'{label}\n{split}',
-                   split_style('NeuraGEM', split)[0])
-                  for label, split, pert, ctrl in pairs]
-        bars(ax, groups, ylabel='Extra trials to switch\nvs the same session unperturbed',
-             baseline=0.0, connect=False, rotation=45)
+        groups, clusters, gaps = [], [], []
+        for i, (label, split, pert, ctrl) in enumerate(pairs):
+            groups.append((np.asarray(pert) - np.asarray(ctrl), '',
+                           split_style('NeuraGEM', split)[0]))
+            if split == 'low':
+                clusters.append((label, i, i + 1))
+            else:
+                gaps.append(i)
+        bars(ax, groups, ylabel='Extra trials to switch\n(vs unperturbed)', baseline=0.0,
+             connect=False, clusters=clusters, gap_after=gaps[:-1])
         ax.tick_params(axis='x', length=0)
+        _split_legend(ax, loc='lower left')
     return panel
 
 
@@ -1034,6 +1042,12 @@ def group_figures(out_dir=None):
                 spec_clamp_gain(cells, 1.0, 'index', 'Integration index'),
                 spec_clamp_gain(cells, 1.0, 'acc_match', 'Accuracy\n(gate matches context)')],
                os.path.join(out_dir, 'clamp_sigmoid_gain.pdf'))
+    by_condition = {cond: [d[s] for s in sorted(d)]
+                    for (model, cond), d in data.items() if model == 'NG'}
+    if _manip_pairs(by_condition):
+        figure([spec_manipulation_switch(by_condition), spec_manipulation_cost(by_condition)],
+               os.path.join(out_dir, 'manipulations.pdf'), ncol=2,
+               panel=FigSize.custom(3.0, 1.6))
     story_figure(out_dir)
 
 
@@ -1100,7 +1114,7 @@ def story_figure(out_dir=None):
         ('story_5_latent', [
             relegend(spec_z_belief({'NeuraGEM': ng}), loc='lower right'),
             nolegend(spec_trace({'NeuraGEM': ng}, 'step', 'ΔZ toward the true context\n(|update|)')),
-            nolegend(spec_trace({'NeuraGEM': ng}, 'grad', '|dL/dZ| on the context axis')),
+            nolegend(spec_trace({'NeuraGEM': ng}, 'grad', '|dL/dZ| (context axis)')),
             nolegend(spec_trace({'sigmoid at test': sig} if sig else {'NeuraGEM': ng}, 'gain',
                                 'Z gain (mean of the units)'))]),
     ]
@@ -1113,12 +1127,20 @@ def story_figure(out_dir=None):
         mom = {f'momentum {mu}': pick(('NG', f'softmax_mom{mu}_rc_none')) for mu in ('0.5', '0.9')}
         mom = {k: v for k, v in mom.items() if v}
         traces = {'no momentum': ng, **mom}
+        # What the latent itself does under the two manipulations that move it most, on the
+        # low-conflict reversals. The raw-latency version of the cost panel is in
+        # manipulations.pdf, where it has the width for 20 bars.
+        mech = {k: v for k, v in (
+            ('control', pick(('NG', 'softmax_rc_low'))),
+            ('update off', pick(('NG', 'softmax_lu0_rc_low'))),
+            ('Z→(1,1)', pick(('NG', 'softmax_blast_rc_low')))) if v}
         rows.append(('story_6_manipulations', [
-            rotate_xticks(spec_manipulation_switch(by_condition)),
-            rotate_xticks(spec_manipulation_cost(by_condition)),
+            nolegend(spec_manipulation_cost(by_condition)),
+            relegend(spec_trace(mech, 'z_evidence', 'Z on the context axis'),
+                     loc='lower right'),
             relegend(spec_trace(traces, 'step', 'ΔZ toward the true context\n(|update|)'),
                      loc='upper right'),
-            nolegend(spec_trace(traces, 'grad', '|dL/dZ| on the context axis'))]))
+            nolegend(spec_trace(traces, 'grad', '|dL/dZ| (context axis)'))]))
 
     panel = FigSize.custom(1.7, 1.35)
     for name, panels in rows:
