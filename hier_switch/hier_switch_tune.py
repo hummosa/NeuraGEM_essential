@@ -204,6 +204,15 @@ GRIDS = {
     # should reproduce its v13 numbers.
     'v15': [dict(name=f'NG_s{sd}', model='NG', seed=sd, n_passive_trials=4000,
                  n_train_trials=5000, save_model=True) for sd in (0, 1, 3, 5, 6, 9)],
+    # v16: the backprop baseline for the phase-2 analyses. RNN (LU off, Z at the uniform gate)
+    # at v13's phase lengths, 10 seeds, saved. The RNN's test phase has plastic weights, so
+    # the model is saved *before* it (a `tests` entry turns train_model's own test off) and
+    # the test session runs on a copy. LU stays off at test: run_test would otherwise turn
+    # it on for a model trained without it.
+    'v16': [dict(name=f'RNN_s{sd}', model='RNN', seed=sd, n_passive_trials=4000,
+                 n_train_trials=5000, save_model=True,
+                 tests=[dict(label='test', test_no_of_steps_in_latent_space=0)])
+            for sd in range(10)],
 }
 _CURRICULUM_1 = [(3000, (3000, 3000)), (6000, (200, 300))]
 _LONG_BLOCKS = [(3000, (3000, 3000)), (10**9, (1000, 1000))]
@@ -224,7 +233,8 @@ COMMON = {'v1': dict(n_test_trials=1500, n_train_trials=8000),
           'v12': dict(n_test_trials=1000),
           'v13': dict(n_test_trials=1000),
           'v14': dict(n_test_trials=1000),
-          'v15': dict(n_test_trials=1000)}
+          'v15': dict(n_test_trials=1000),
+          'v16': dict(n_test_trials=1000)}
 
 
 def grid(tag):

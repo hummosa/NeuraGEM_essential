@@ -1,23 +1,27 @@
-# Hierarchical cue→rule reversal — handoff: from tuning to neural analyses
+# Hierarchical cue→rule reversal — handoff
 
-You are picking up a modelling project whose first phase (build the task, get NeuraGEM to
-learn it and to discover the contexts on its own) is done. The next phase is the one this
-document is for: **systematically build the analyses that compare the model's behaviour,
-latent and hidden-state activity to the paper.** Everything here was true on 2026-09-19;
-check the code before relying on a detail.
+Phase 1 (build the task, get NeuraGEM to learn it and to discover the contexts on its own)
+and phase 2 (the analyses that put the model next to the paper) are both built. The group
+results are in §5b. Everything here was true on 2026-09-19; check the code before relying
+on a detail.
 
 Read, in this order:
 1. this file;
-2. `docs/hier_switch_task.md` — the task, the model, the full tuning log (v1–v15) and the
+2. `docs/hier_switch_task.md` — the task, the model, the full tuning log (v1–v16) and the
    inference tests on a saved model;
-3. `hier_switch/hier_switch_config.py` — every knob, with the reason for its value;
-4. `hier_switch/hier_switch_train.py`, `hier_switch/hier_switch_analyses.py` and
+3. `docs/hier_switch_analyses.md` — **the phase-2 pipeline**: the session format, the trial
+   table, every analysis definition, and §9 **the toolbox** (every function a new analysis
+   can call, and the data already on disk);
+4. `docs/hier_switch_methods.md` — the same work written as a methods section, with one
+   caption per figure: what was run, what is plotted, what it shows;
+5. `hier_switch/hier_switch_config.py` — every knob, with the reason for its value;
+6. `hier_switch/hier_switch_train.py`, `hier_switch/hier_switch_analyses.py` and
    `hier_switch/hier_switch_test_inference.py`;
-5. `docs/figure_style.md`, and `docs/flanker_task.md` §"Five analysis conventions" — the
+7. `docs/figure_style.md`, and `docs/flanker_task.md` §"Five analysis conventions" — the
    flanker project is the house precedent for how analyses and figures are built here;
-6. `/oscar/AGENTS.md` — the cluster's site policy for agents (summarised in §10).
+8. `/oscar/AGENTS.md` — the cluster's site policy for agents (summarised in §10).
 
-**Start with §7a**, the per-trial Z-update analysis. It runs on data already on disk.
+**Start with §5b** (what the analyses found) and §7 (what is left).
 
 ---
 
@@ -79,10 +83,10 @@ forward. ✅ done · 🟡 partly · ⬜ not started.
 
 | | Experiment | Status |
 |---|---|---|
-| E1 | **Core session.** Train (passive, then active; discovery) → frozen-weight test on the paper's 30–60 blocks | ✅ 6/10 seeds discover (v13). Per-trial arrays are saved for every run; a trained model is saved for v15 seed 0, the other v15 seeds still to run (§7) |
-| E2 | **Z-clamp probe.** Freeze weights and the latent update; `set_Z` along p(A) from 1 → 0.5 → 0; run a fixed trial battery at every conflict level. Measure RT, accuracy, undecided rate, and the build-up rate of the cue and rule axes. This is the direct test of "does context uncertainty modulate integration and output speed" | ⬜ |
-| E3 | **Group sweep.** ≥ 10 seeds × {NG, RNN, Oracle → inference} plus the ideal observer; optionally a `pulse_noise_std` ladder | 🟡 `hier_switch_tune.py` can run seeds; no group analysis or figures yet |
-| E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); Z_lr ×k for the first 5 trials of high-conflict reversals (MD activation); forced errors (3 flipped-feedback trials mid-block), with and without a Z_lr boost | ⬜ Needs a per-trial Z_lr / LU-on-off schedule hook in `train_and_infer_functions.predictive_learning`, default-off. The flanker "error-gated Z_lr" deferred design (`docs/flanker_task.md`) is the same hook |
+| E1 | **Core session.** Train (passive, then active; discovery) → frozen-weight test on the paper's 30–60 blocks | ✅ 6/10 seeds discover (v13); all six retrained and saved as `tune_v15/NG_s*/model.pt`, each reproducing its v13 numbers exactly |
+| E2 | **Z-clamp probe.** Freeze weights and the latent update; hold Z at a grid of gates; measure RT, accuracy, undecided rate, the integration index and the cue/rule build-up | ✅ `hier_switch_perturb.clamp_grid`: softmax contrast ladder and a sigmoid gain × contrast grid, per seed |
+| E3 | **Group sweep.** ≥ 10 seeds × {NG, RNN} plus the ideal observer | ✅ 6 NG (the discoverers) × 6 conditions and 10 RNN × 3 conditions, all recorded and analysed; `hier_switch_group.py aggregate` prints the prediction table. Oracle → inference not repeated at group level |
+| E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); Z_lr ×k for the first 5 trials of high-conflict reversals (MD activation); forced errors | ⬜ **The one stage not built.** Needs a per-trial Z_lr / LU-on-off schedule hook in `train_and_infer_functions.predictive_learning`, default-off; the design is in the plan file §6 and the flanker "error-gated Z_lr" deferred design is the same hook. The static version (Z clamped for a whole session) is E2 and is done |
 
 ### Predictions
 
@@ -107,22 +111,25 @@ forward. ✅ done · 🟡 partly · ⬜ not started.
 
 ### Analyses
 
-| | Analysis | Status |
+Every analysis below is built; the definitions live in `docs/hier_switch_analyses.md` and
+the numbers in §5b. ✅ = built and run on the group.
+
+| | Analysis | Where |
 |---|---|---|
-| A1 | Psychometric curve: accuracy by conflict × context | 🟡 `summarize()` → `acc_conf` (numbers, no figure) |
-| A2 | Reversal-aligned accuracy (−5…+15 trials), split by early-reversal conflict (median split of the first 3–5 trials' conflict) | 🟡 `acc_since` bins only; no split |
-| A3 | Perseverative errors, trials-to-criterion, switch trial | 🟡 `cross_trial` (first trial whose 3-trial mean reaches chance). Reuse `mean_prediction_analysis._find_criterion` for criterion-based measures |
-| A4 | RT and undecided rate by conflict and reversal-aligned; fast-error check with a `_decided` companion | ⬜ Reuse `flanker_analyses._interpolated_rt` with `search_from = config.response_start_timestep` (19) |
-| B1 | Z belief against the ideal-observer posterior around reversals | ⬜ |
-| B2 | Z-entropy peak height and width, split by early-reversal conflict | ⬜ |
-| B3 | Update rule: regress ΔZ toward the true context on error × cue strength | ⬜ |
-| B4 | \|dL/dZ\| against ε_CW | ⬜ |
-| **B5** | **How each trial moves Z**: the trial's update along the context axis (toward the other context or not, and whether it tips Z across) and along the gain axis, by conflict × outcome × context × whether Z held the true context. Full spec in §7a | ⬜ **Build this first**; it needs no new training |
-| C1 | Per-timestep cross-validated decoding of cue and rule from the hidden state; build-up rate = integration speed; split by conflict and by inherited Z entropy | ⬜ Needs per-timestep hidden states (§5, step 2) |
-| C2 | Per-unit CueS / CueL / Rule classification; PCA dimensionality of Z against the hidden state | ⬜ |
-| C3 | Rule and cue axis magnitude reversal-aligned | ⬜ |
-| D | Z clamp (E2), perturbations (E4) | ⬜ |
-| E | Ideal observer (numpy). Cue posterior from the noisy pulse frames (a frame-wise likelihood reaches 0.923 at `pulse_noise_std` 0.5; a plain HP−LP count gets 0.890); feedback likelihood; hazard step 1/45; report the *predictive* belief. Precedent: `rotation_slips_perseveration_analysis.ideal_observer_trials` | 🟡 The accuracy ceiling was computed ad hoc; there is no observer module |
+| A1 | Psychometric: accuracy / RT / undecided by conflict × context, against the observer's ceiling | ✅ `behaviour()` |
+| A2 | Reversal-aligned accuracy, Z side, \|decision\|, RT and undecided (−5…+15), split by early-reversal conflict — forced (the paper's design) or a median split | ✅ `behaviour()`, `reversal_aligned()` |
+| A3 | Perseverative errors, trials to criterion, three switch criteria | ✅ `_switch_stats` |
+| A4 | RT and undecided rate; fast-error check with a decided-only companion | ✅ `behaviour()['rt']` |
+| B1 | Z belief against the ideal-observer posterior around reversals | ✅ `latent()['belief']` |
+| B2 | Z-uncertainty peak height, position and width, split by early-reversal conflict; Fig 1m | ✅ `latent()['uncertainty']` |
+| B3 | Update rule: what explains the move along the context axis | ✅ `latent()['update_rule']` |
+| B4 | \|dL/dZ\| against ε_CW, per trial and over the paper's 5-trial window | ✅ `latent()['eps_cw']` |
+| **B5** | **How each trial moves Z**: the update along the context axis and along the gain axis, by conflict × outcome × context × whether Z held the true context, against the observer's normative update | ✅ `z_updates`, `z_update_table`, `normative_table`; definitions in `docs/hier_switch_analyses.md` §4 |
+| C1 | Per-timestep cross-validated decoding of cue, rule, context and conflict from the hidden state | ✅ `hier_switch_hidden.decode` |
+| C2 | Per-unit CueS / CueL / Rule classification against a permutation null | ✅ `unit_classes` |
+| C3 | Cue and rule axis magnitude reversal-aligned; the paper's integration index and cue velocity | ✅ `hidden_report`, `integration` |
+| D | Z clamp (E2) ✅ `hier_switch_perturb`; dynamic perturbations (E4) ⬜ |
+| E | Ideal observer (numpy): frame-wise cue posterior, hazard-1/45 context filter, its own choice and switch latency | ✅ `hier_switch_observer.py` (0.93 cue accuracy at σ 0.5, as the tuning log had it) |
 
 ### Design choices already settled, which the analyses must respect
 
@@ -207,6 +214,7 @@ untested alternative.
 | contrast | (z₁ − z₂)/2, the only thing the softmax sees; for two units it *is* the context axis |
 | steady-state accuracy | trials 11+ into a block |
 | `cross_trial` | first trial after a reversal whose 3-trial mean accuracy reaches 0.5 |
+| `s`, `tipped`, `z_evidence`, ε_CW | the phase-2 per-trial quantities; defined in `docs/hier_switch_analyses.md` §3–§4 |
 | Z d′ | separation of the two contexts along the axis between their mean `z_in` |
 | discovered | test steady-state ≥ 0.8 **and** Z d′ > 1.5 (`hier_switch_tune.py arms`) |
 | passive ok | the passive phase's last block ends ≥ 0.75: the task itself was learned |
@@ -249,15 +257,116 @@ vanishes, and Z sits at the middle. `show_blocks.py <tag>` shows it block by blo
 
 ---
 
+## 5b. What the phase-2 analyses found
+
+**The group.** Six NG seeds (the v13 discoverers, retrained and saved as v15) and ten RNN
+baselines (v16), each tested on the paper's 30–60-trial blocks with frozen weights. The NG
+seeds also ran the paper's *controlled reversals*: paired sessions in which the first five
+trials of every block are forced to low (7:2)  or high (6:3) conflict and every other trial
+is identical, so the low/high comparison is within-seed and within-trial-stream. Every row
+below is a difference or a slope whose sign a prediction fixes, with the count of seeds
+carrying that sign; the full table is `exports/hier_switch/group/group.json`, the nine
+figures are in `exports/hier_switch/group/figures/` with a caption each in
+`docs/hier_switch_methods.md`, and the definitions are in `docs/hier_switch_analyses.md`.
+
+**Held up (6/6 seeds unless noted).**
+
+| Prediction | Result |
+|---|---|
+| **P1** accuracy falls with conflict | 0.32 from conflict 0 to 0.8; steady accuracy 0.878 ± 0.014 against the observer's ceiling of 0.924 with the context given. The two contexts differ by 0.036 |
+| **P2** switching is slower after high-conflict reversals | Z-side latency +0.61 ± 0.08 trials (6/6), decided-and-correct +0.66 ± 0.09 (6/6), the raw behavioural criterion +0.21 ± 0.13 (4/6). The ideal observer's own cost is +1.07, so **the model shows about 60 % of the normative effect** |
+| **P3** Z uncertainty rises after a reversal | +0.27 ± 0.03 over baseline, peaking at trial 3 in every seed, and it lasts 1.2 ± 0.3 trials longer after high-conflict reversals (5/6) |
+| **P4** the gradient is the ACC-like conflict-weighted error | The 5-trial mean \|dL/dZ\| tracks ε_CW at r = 0.58 ± 0.02; ε_CW itself averages 1.10 in the steady state, as the paper's does. On error trials \|dL/dZ\| falls from 3.4e-5 at conflict 0 to 2.0e-5 at 0.8; on correct trials it is flat and ~5× smaller |
+| **B5** the update is conflict-weighted by construction | The model's mean move per cell tracks the observer's log-odds update at r = 0.84 ± 0.02. In the regression `s ~ err + err × conflict` the interaction is −0.17 ± 0.04 (6/6) and adds R² (6/6). The stale-error slope against conflict is −0.09 ± 0.05 (5/6) |
+| **P5** the rule code collapses after a reversal, the cue code does not | Rule decoding from the hidden state drops 0.39 ± 0.02 between steady state and the first 5 trials (6/6) while cue decoding drops 0.013 ± 0.012. The cue axis agrees across contexts (cos 0.67 ± 0.02) while the rule axis flips |
+| **P6** RT (a new prediction: the paper reports none) | RT rises 1.7 ± 0.3 timesteps from conflict 0 to 0.8 (6/6); reversal-aligned RT is non-monotonic — fast perseverative errors on trials 1–2, a peak 1.3 ± 0.1 later at the trials where Z is most uncertain, then recovery (6/6); errors early after a reversal are 1.9 ± 0.3 timesteps faster than steady-state errors (6/6) |
+| **B1** Z tracks the observer | r = 0.63 ± 0.04 at lag 0 in every seed. The model's belief recovers a little more slowly than the observer's |
+| **P7 / E2** the gate is a gain on integration, not on the cue | Clamping Z for a whole session (weights frozen, latent update off), 6 seeds. At the uniform gate the output collapses: \|decision\| 0.18, undecided 0.85, RT 24.3 of a 25-step trial, integration index 1.33; what little sign is left follows a seed-specific default context (0.67–0.91 against 0.08–0.33 in four of six seeds, near chance in the other two) rather than the block's. At any committed gate the model is 0.89–0.91 on the context that gate selects and 0.10 on the other, \|decision\| up to 0.83, undecided 0.10, RT 19.1, index 1.44–1.58. **The cue velocity does not move at all** across the ladder (0.188–0.193), and rule decoding never reaches criterion in any clamped cell — the gate scales the rule-driven integration and the decision, and leaves the cue build-up alone |
+| **Gain** (sigmoid at test, where the axis exists) | Errors push the gain down (−0.15 to −0.24 per trial) and correct trials push it back up (+0.02 to +0.06), at every rung of the decay ladder (5/6, 5/6, 6/6) — the "gain leak" the phase-1 inference tests saw, now measured per trial, and it costs 0.18 of steady-state accuracy against the softmax on the same weights. Under the softmax Δgain is identically 0 (max 1.9e-7): the sum-to-one constraint is what keeps the latent a context code rather than a volume knob. Figure: `gain.pdf` |
+
+**Gain and contrast do different jobs — a clean double dissociation** (the sigmoid clamp
+grid, 4 gains × 5 contrasts × 6 seeds, 120 sessions). Averaging over the other axis:
+
+| clamped gain m | cue velocity | integration index | accuracy (matching context) | \|decision\| | undecided |
+|---|---|---|---|---|---|
+| −1 | 0.126 ± 0.004 | 1.09 ± 0.02 | 0.61 | 0.16 | 0.92 |
+| 0 | 0.188 ± 0.003 | 1.42 ± 0.03 | 0.83 | 0.45 | 0.46 |
+| +1 | 0.231 ± 0.006 | 1.61 ± 0.05 | 0.76 | 0.64 | 0.28 |
+| +2 | 0.257 ± 0.008 | 1.54 ± 0.05 | 0.69 | 0.53 | 0.41 |
+
+| clamped contrast d | cue velocity | integration index | accuracy (matching context) | \|decision\| | undecided |
+|---|---|---|---|---|---|
+| 0 | 0.200 ± 0.014 | 1.38 | 0.62 | 0.26 | 0.79 |
+| 0.5 | 0.200 ± 0.013 | 1.38 | 0.69 | 0.34 | 0.64 |
+| 1 | 0.201 ± 0.012 | 1.39 | 0.76 | 0.48 | 0.44 |
+| 2 | 0.201 ± 0.008 | 1.49 | 0.83 | 0.68 | 0.25 |
+
+**The gain sets how fast the hidden state integrates the cue** — cue velocity rises
+monotonically with it in 6 of 6 seeds — **and the contrast sets which context is applied and
+how decisive the output is**, leaving the cue velocity untouched to three decimal places
+across the whole ladder. Accuracy is non-monotonic in gain (best at 0 to +1: too much gain
+saturates the gate and the two units stop differing). This is the direct answer to "does Z's
+gain modulate cue integration": yes, and it is the *only* thing that does.
+
+**Did not hold, or is weaker than the paper's.**
+
+- **Fig 1m** (rule uncertainty and cue uncertainty anticorrelated early in a transition) is
+  **not** reproduced: the peak of Z uncertainty against the block's early conflict is
+  +0.06 ± 0.06, and the per-trial version is ~0. In this model Z carries the *past* trials'
+  conflict, not the current trial's, so the paper's within-trial version has no analogue.
+- **The exploration regime signatures are weak.** The integration index is lower in the
+  first five trials after a reversal (0.03 ± 0.02, 4/6) and the cue velocity is higher
+  (0.007 ± 0.013, 4/6) — both in the paper's direction, neither convincing.
+- **P(tipped | error) is not monotonic** in conflict (2/6 for the endpoint contrast): it
+  peaks at conflict 0.29. The size of the update falls with conflict, but whether that
+  update crosses the midpoint also depends on how far Z already was.
+- **CueS is nearly absent in NG**: 3 % of tuned units, against 64 % CueL and 33 % Rule. The
+  paper's three classes are all substantial in PFC.
+
+**NeuraGEM against the backprop RNN** (10 seeds, same task, same test):
+
+| | NG | RNN |
+|---|---|---|
+| steady-state accuracy | 0.878 | 0.502 |
+| undecided rate (\|decision\| < 0.5) | 0.15 | **0.999** |
+| context separation in Z (d′) | 6.08 | 0 (Z never moves) |
+| rule decoding from the hidden state | 0.906 | 0.511 |
+| cue decoding from the hidden state | 0.916 | 0.788 |
+| context decoding from the hidden state | 0.997 | 0.549 |
+| unit classes (fraction of tuned units) | CueS .03 / CueL .64 / Rule .33 | CueS .41 / CueL .58 / Rule .01 |
+| integration index | 1.80 | 1.09 |
+
+This is Brabeeba's table, and it comes out as he framed it: with plastic weights but no
+latent, the RNN still reads the **cue** out of the pulses, but it has no rule code, no
+context code and no way to switch — on 30–60-trial blocks it hedges on essentially every
+trial (undecided 0.999), so its "accuracy 0.50" and its switch latency are coin flips on a
+near-zero output and should never be quoted as behaviour. NG's context decoding from the
+hidden state is near 1.0 for the trivial reason that Z gates that hidden state.
+
+**Caveats to carry.** Every NG number is over the six seeds that discovered the contexts —
+4 of 10 seeds are excluded, three because they never learned the task at all. The
+behavioural switch criterion is contaminated by hedging, which is why the Z-side and
+decided-correct criteria are reported beside it. The RNN never saw the sigmoid or clamp
+conditions, and the Oracle was not re-run at group level.
+
 ## 6. How to run things
 
 ```bash
 .venv/bin/python hier_switch/hier_switch_dataset.py            # generator self-check
 .venv/bin/python hier_switch/hier_switch_train.py NG 0         # train + test + panels, seed 0
-./hier_switch/run_tune.sh <tag>                                # SLURM array from GRIDS[tag]
+./hier_switch/run_tune.sh <tag> [range]                        # SLURM array from GRIDS[tag]
 .venv/bin/python hier_switch/hier_switch_tune.py arms <tag>    # seeds grouped by setting
 .venv/bin/python hier_switch/hier_switch_tune.py collect <tag>  # one row per run
 .venv/bin/python hier_switch/show_blocks.py <tag> [run ...]    # per-block convergence
+
+# phase 2 (docs/hier_switch_analyses.md)
+.venv/bin/python hier_switch/hier_switch_analyses.py           # synthetic self-test
+.venv/bin/python hier_switch/hier_switch_observer.py           # observer self-check
+.venv/bin/python hier_switch/hier_switch_test_inference.py <model.pt> [condition ...]
+./hier_switch/run_sessions.sh                                  # record + analyse, one task per model
+./hier_switch/run_clamp.sh 0-11                                # the Z-clamp grids
+.venv/bin/python hier_switch/hier_switch_group.py aggregate    # the prediction table
+.venv/bin/python hier_switch/hier_switch_figures.py [session]  # group, or one session
 ```
 
 - **Python** is the repo `.venv` (it links to `~/venvs/neo`). System python has no torch.
@@ -281,18 +390,21 @@ vanishes, and Z sits at the middle. `show_blocks.py <tag>` shows it block by blo
     `block_table(trials, phase)`.
 - **Inference tests on a saved model.**
   `hier_switch_test_inference.py <model.pt> [condition ...]` runs named latent conditions
-  (`CONDITIONS`: softmax as trained; softmax off; sigmoid; each over a Z_lr sweep) on
-  copies of the model, on identical test trials.
-  - Results go to `exports/hier_switch/inference_tests/<model>/<condition>/`
-    (`summary.json`, `trials.npz`, `panels_full.pdf`, `panels_test.pdf`).
-  - A one-page comparison, `inference_summary.pdf`, is rebuilt from every condition on disk.
-- **Tuning.** `hier_switch_tune.py` holds every grid (`GRIDS`, v1–v15) as a record. An entry
+  (`CONDITIONS`) on copies of the model, on identical test trials, and **records** each one.
+  With no condition named it runs the default set for that model type (NG or RNN).
+  - Results go to `exports/hier_switch/inference_tests/<model>/<condition>/`:
+    `session.npz` (what the analyses read), `summary.json`, `trials.npz`, the panels, and
+    `results.json` once `hier_switch_group.py analyse` has run.
+  - A one-page comparison, `inference_summary.pdf`, is rebuilt from the softmax / sigmoid /
+    no-activation conditions on disk.
+- **Tuning.** `hier_switch_tune.py` holds every grid (`GRIDS`, v1–v16) as a record. An entry
   may carry `tests=[...]` to run several test sessions on one trained model, and
-  `save_model=True`.
-- **Git.** The work is committed on branch `hier-switch-task` (commit `1a1a09c`, pushed),
-  not `main`. The working tree also carries the user's own unrelated uncommitted work
-  (flanker, rotation, `configs.py`, and a staged `run_flanker.py` rename). Do not commit
-  those with this work.
+  `save_model=True`. `v15` is the six saved NG discoverers, `v16` the ten saved RNN
+  baselines (saved *before* their test phase, which is the one phase where an RNN's weights
+  still move).
+- **Git.** Phase 1 is on `main` (`1a1a09c`, `208e7d5`). Phase 2 is uncommitted in the
+  working tree at the time of writing. The tree also carries the user's own unrelated work
+  (flanker, rotation, a `run_flanker.py` rename). Do not commit those with this work.
 
 ---
 
@@ -312,158 +424,43 @@ sum-to-one constraint is what removes that direction. The natural next step, not
 is to *train* with the sigmoid from the start, now that the passive phase exists. Details
 are in `docs/hier_switch_task.md` (end of the tuning log).
 
-## 7. What to build next — suggested order
+## 7. What is left
 
-1. **B5, the per-trial Z-update analysis (§7a).** It runs on saved per-trial arrays: the
-   10 v13 seeds, and the inference-test conditions on v15 seed 0. It is the mechanism under
-   P2 and P4 at single-trial resolution.
-2. **Save the remaining discoverers.** Grid `v15` retrains the six v13 discoverers
-   (seeds 0, 1, 3, 5, 6, 9, at v13's phase lengths) with `save_model=True`.
-   - **Seed 0 is done** (`exports/hier_switch/tune_v15/NG_s0/model.pt`); it reproduced v13
-     exactly (test 0.832, steady 0.91).
-   - The other five need the v15 SLURM array. Per the site policy (§10), show the user the
-     sbatch script and get approval before submitting an array.
-   - Do not use `train_model`'s own `save_models=True`: its file name is keyed only on
-     seed, length and `experiment_to_run`, so runs overwrite each other.
-3. **Per-timestep hidden states.** `Logger.hidden_states` keeps only the final state per
-   batch.
-   - The plan: a default-off recorder in `models.RNN_with_latent.forward` (append `h` per
-     step when an attribute such as `hidden_trace` is set; ~3 lines). Plus a replay helper
-     that re-runs the frozen model over a logged test session, each trial under its `z_in`.
-   - **The replay must reproduce the logged outputs to float precision.** Check that before
-     trusting any hidden-state analysis.
-4. **Behaviour (A1–A4)**, including RT and the undecided rate, and the reversal-aligned split
-   by early-reversal conflict (P1, P2, P6).
-5. **Ideal observer (E).** This gives the normative P2 effect size and B1's posterior, and
-   the normative update B5 is compared against.
-6. **Latent (B1–B4).** The ACC/MD analogues (P3, P4).
-7. **Hidden state (C1–C3).** The PFC analogues (P5).
-8. **Causal.**
-   - The E2 clamp needs no new plumbing: `set_Z`, LU steps 0, weights frozen.
-   - E4 needs the per-trial LU schedule hook (default-off; keep existing runs unchanged).
-9. **Group level (E3).** ≥ 10 seeds per model. Report the seed count with the predicted sign
-   next to every mean (flanker lesson: single-session effects repeatedly failed to survive
-   across seeds). Build each figure panel once as a `spec_*` builder, drawn by both the
-   single-session and the group script (see `flanker_figure_utils.py`).
+1. **E4, the dynamic perturbations — the paper's optogenetics.** The only stage of the
+   phase-2 plan not built. It needs one default-off hook, `config.trial_hook`, called from
+   `train_and_infer_functions.predictive_learning` at `'pre_lu'` and `'post_lu'` with the
+   trial's `since` and context, and filling the session's `lu_scale` / `clamped` columns
+   (the readers already carry them). Then:
+   - **`lu_scale(k, trials=1..4)`** — multiply the live optimizer's lr (which scales the
+     decay term with it, as intended). `k = 0` is the paper's ACC→MD terminal silencing on
+     low-conflict reversals, predicted to delay switching; `k > 1` is our extrapolation to
+     "ACC stimulation", which **the paper never did** and which must be labelled as ours.
+   - **`z_clamp(vec, trials=1..5)`** — the MD-activation analogue, on high-conflict
+     reversals, on the sigmoid condition where (1, 1) is a real gain move. The static
+     version (Z clamped all session) is E2 and is done; what is missing is the schedule.
+   - **Forced errors** (three flipped-feedback trials mid-block) — lowest priority, needs a
+     dataset knob.
 
----
+   Exclude clamped or scaled trials from `z_updates`; keep them in behaviour.
+2. **The weak results, if they matter to the story.** Fig 1m has no analogue here (§5b) and
+   the exploration-regime signatures are weak. Both are reported as they are. If the
+   integration index is to carry weight, the honest next step is more reversals per seed
+   (the rc sessions are 2000 trials ≈ 45 blocks) rather than a different index.
+3. **Sigmoid-*trained* models** (§6b). The gain analyses currently run on a softmax-trained
+   model with the sigmoid swapped in at test, which holds the context worse (0.71 steady
+   against 0.91). Training with the sigmoid from the start, now that the passive phase
+   exists, is the clean version.
+4. **The stateful feedback-RNN** (Brabeeba's "thalamocortical RNN trained with normal
+   backprop"): `stateful_hidden=True` across trials plus an input channel carrying the
+   previous outcome, truncated BPTT, and its own tuning. §5b shows what the current RNN
+   lacks — it hedges on 99.9 % of test trials — so this is the baseline that would make the
+   comparison fair. It is a model change: huddle before starting.
+5. **Per-timestep Z within a trial** (`latent_aggregation_op='none'`) as an MDConflict
+   analogue, and the free-response variant (`target_onset`) for an RT that measures
+   integration directly. Both are model changes; both were deferred deliberately.
 
-## 7a. First analysis: how each trial moves Z (B5)
-
-**The question.** Take any trial, in either context. Does its latent update tip Z toward the
-other context's representation, or not? How does it change the overall gain? And how do
-both depend on the trial's cue conflict?
-
-This is the model's credit assignment at single-trial resolution. It is the mechanism behind
-P2 (slower switching after ambiguous reversal trials) and P4 (the ACC-like conflict-weighted
-error).
-
-### Data (already on disk)
-
-| Source | Path | What it covers |
-|---|---|---|
-| v13, 10 seeds | `exports/hier_switch/tune_v13/NG_s<k>/trials.npz` | training and test. Discoverers: s0, s1, s3, s5, s6, s9 |
-| v15 seed 0, inference tests | `exports/hier_switch/inference_tests/tune_v15_NG_s0/<condition>/trials.npz` | test only: `softmax`, `nosoftmax_zlr*`, `sigmoid_zlr*` |
-
-- **Keys in `trials.npz`:** `z`, `z_in`, `correct`, `conflict`, `context`, `since`, `cue`,
-  `vis`, `decision`, `phase`.
-- **Latent settings per run** (`Z_lr`, `Z_decay`, `latent_activation`, `softmax_temp`): the
-  run's `summary.json` (`entry` or `overrides`), falling back to the config defaults.
-- **Primary phase:** `'Inference only'`, where weights are frozen and the test uses the
-  paper's 30–60 blocks.
-- **Secondary phase:** `'Learning and inference'` (weights still plastic).
-- **Inference-test runs** restart Z at `Z_init`, so drop their first block as a start-up
-  transient.
-
-### Per-trial quantities
-
-- **`Δz = z − z_in`, the trial's own update.** The logged `z` is after the update; `z_in` is
-  the state the trial ran under. There is one SGD step per trial with no momentum, so
-  `Δz = −Z_lr·(g + Z_decay·z_in)`, where g is the pooled dL/dZ.
-- **Split out weight decay.** `Δz_decay = −Z_lr·Z_decay·z_in` and
-  `Δz_err = Δz − Δz_decay`. The conflict analysis uses `Δz_err`, the part driven by this
-  trial's error. Report `Δz_decay` once, so it is visible how much of the motion is decay.
-- **Context axis.** `m_A`, `m_B` = mean `z_in` over steady-state trials (`since ≥ 11`) of
-  each context. Then the axis `u = (m_B − m_A)/‖m_B − m_A‖`, the midpoint
-  `c = (m_A + m_B)/2`, and the prototype distance `d = ‖m_B − m_A‖`.
-  `hier_switch_analyses.z_context_axis` already returns the axis, plus the midpoint's
-  projection onto it (`mid`) and every trial's projection (`proj`).
-- **Held context.** The side of the midpoint `z_in` sits on: the context Z was representing
-  when the trial ran.
-- **Tip toward the other context.** `s = (Δz_err · u) / d`, multiplied by +1 if Z held A and
-  −1 if it held B. Positive = moved toward the context Z was *not* holding, as a fraction of
-  the way there.
-- **Tipped.** The trial moved Z across the midpoint: the side of `z` ≠ the side of `z_in`.
-- **Gain.**
-  - `Δgain = mean over units of Δz`, i.e. Δ mean(z).
-  - In gate units too: Δ mean(gate), with gate = `softmax(z/T)`, `sigmoid(z)` or `z`,
-    matching the run's activation.
-  - Under the softmax this is identically 0 (§4). Report it once as a check. It is the
-    central quantity for the sigmoid and no-activation conditions.
-
-### Split by
-
-- **Conflict:** 5 levels, 0 / .125 / .29 / .5 / .8.
-- **Outcome:** correct / error.
-- **Context:** A / B. The two should be mirror images; check it.
-- **Z state relative to the truth:**
-  - *aligned*: Z held the true context. An error here is a cue error.
-  - *stale*: Z held the other context. Mostly just after a reversal; occasionally a
-    mid-block slip. An error here is a context error.
-
-  This is the paper's credit-assignment split.
-- **Optionally, position:** trials 1–5 after a reversal vs steady state.
-
-### What the hypothesis predicts
-
-- **Errors push Z toward the other context, less so the higher the conflict.** When the cue
-  is ambiguous, ∂y/∂Z is small; that is the conflict weighting.
-- **Correct trials push Z toward the context it holds** (consolidation), more weakly.
-- **Stale-state correct trials push the wrong way.** They are mostly high-conflict: a
-  misread cue under the wrong context gives the right answer. They push Z back toward the
-  stale context, which is why switching slows when the early reversal trials are ambiguous
-  (P2).
-- **P(tipped) on error trials falls with conflict.**
-- **For the sigmoid / no-activation runs:** expect errors to also move gain (down), which is
-  the leak seen in the inference tests.
-
-### Normative comparison
-
-Compare the model's update with the ideal observer's context log-odds update at each conflict
-level:
-
-    Δlogit = ± log[ P_c / (1 − P_c) ]
-
-- P_c = P(cue read correctly | conflict). For the frame-likelihood observer (task doc,
-  tuning log) that is 1.00, .999, .99, .929, .696 from conflict 0 to 0.8.
-- An error with a clearly read cue is strong evidence for a switch; an error on an
-  ambiguous cue is weak.
-- Plot the model's mean `s` against Δlogit per conflict level and outcome, per seed. This
-  sits next to the paper's ε_CW weighting of 1/(1 − P_c) (B4).
-
-### Figures
-
-Paper panels built with `spec_*` builders, one line per condition, seeds as dots (§9):
-
-1. **Mean `s` against conflict.** Line style for error vs correct; separate lines for the
-   aligned and stale states.
-2. **P(tipped) against conflict**, error trials.
-3. **Δgain against conflict × outcome.** Sigmoid / no-activation conditions, with the softmax
-   as the flat reference.
-4. **Model `s` against the normative Δlogit.**
-
-Report per-seed estimates and the number of seeds with the predicted sign.
-
-### Implementation notes
-
-- **Put the per-trial computation in `hier_switch_analyses.py`**, e.g.
-  `z_updates(trials, cfg, phase='Inference only')`. It returns `Δz`, `Δz_err`, `Δz_decay`,
-  `s`, `tipped`, `Δgain`, the state and the axis.
-- **Self-test it on a synthetic trial set** before running it on real data.
-- **Guard `z_in[0]` (NaN).**
-- **Guard the diverged no-activation runs** (NaN Z at Z_lr ≥ 3000).
-- **The first test trial is fine.** Its `z_in` is the end-of-training Z, because
-  `train_model`'s test continues from training.
+The B5 spec that used to sit here (§7a) is now `docs/hier_switch_analyses.md` §4, which
+documents it as built rather than as a plan.
 
 ---
 
@@ -484,6 +481,18 @@ Report per-seed estimates and the number of seeds with the predicted sign.
   assignment leaves derived lengths stale.
 - **`plot_logger_panels` has `hier_switch` branches** (`behavior`, `corrects`). Its x-axis
   is timesteps: 25 per trial.
+- **`run_test` turns the latent update on when it finds it off.** For the RNN baseline and
+  for any Z-clamp run, pass `test_no_of_steps_in_latent_space=0` explicitly, or a model
+  trained without LU will quietly start inferring Z.
+- **A model pickled before a knob existed does not have it.** `model.pt` carries its whole
+  config, so anything reading a new attribute off a saved config needs a `getattr` default
+  (that is why `reversal_conflict_levels` lives in the dataset module as well).
+- **The RNN hedges at test, so its accuracy is not behaviour.** On 30–60-trial blocks the
+  v16 baselines are undecided on 99.9 % of trials; `sign(decision)` on a near-zero output
+  makes accuracy 0.5 and the switch criterion fire after ~3 coin flips. Quote the undecided
+  rate with any RNN number.
+- **A session with no context axis** (the RNN, or any clamped session) has no `aligned`
+  trials; `steady_mask` drops the aligned filter there rather than returning an empty mask.
 - **Pyright false positives.** Pyright cannot resolve the `hier_switch_*` imports
   (`extraPaths` is set; the LSP may need a restart). Treat "unknown import/attribute" on
   those modules as noise.
@@ -530,5 +539,12 @@ Report per-seed estimates and the number of seeds with the predicted sign.
   is held.
 - **Never poll.** No `watch`, and no loops around `squeue` / `sacct`. Run `squeue --me` once
   and report.
+- **`--dependency=afterok:<array>` needs *every* task of that array to succeed.** One failed
+  task leaves the dependent array pending on a condition that can never be met, and SLURM
+  eventually cancels it. Chain arrays only when the first one is known to be reliable, or
+  submit the second by hand afterwards.
+- **Recorded sessions are large**: ~3 MB per 1000 trials with hidden states, so the phase-2
+  exports are ~840 MB under `exports/hier_switch/` (git-ignored). The hidden states dominate;
+  a session can be re-recorded from its `model.pt` at any time.
 - **No recursive traversal of /oscar.** No `find`, `du`, `grep -r` or `rg` without a narrow
   explicit path. Use `ls` on specific directories.

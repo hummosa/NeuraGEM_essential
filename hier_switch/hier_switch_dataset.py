@@ -24,6 +24,10 @@ from datasets import BaseTaskDataset, DATASET_REGISTRY
 
 HP, LP, WN = 0, 1, 2
 
+# Forced early-reversal conflict levels, the paper's low and high (7:2 and 6:3). The config
+# carries them too; the getattr fallback keeps configs pickled before the knob existed usable.
+REVERSAL_CONFLICT_LEVELS = {'low': (7, 2), 'high': (6, 3)}
+
 
 class HierSwitchDataset(BaseTaskDataset):
     """
@@ -66,6 +70,16 @@ class HierSwitchDataset(BaseTaskDataset):
         L, onset = cfg.trial_len, cfg.target_onset
         n_ch = cfg.input_size
 
+        # Forced early-reversal conflict (test streams only): trials 1..n of every block.
+        forced = getattr(cfg, 'reversal_conflict', None)
+        if forced is not None and stream != 0 and not passive:
+            levels = getattr(cfg, 'reversal_conflict_levels', REVERSAL_CONFLICT_LEVELS)
+            forced = tuple(levels[forced])
+            n_forced = int(getattr(cfg, 'reversal_conflict_n', 5))
+        else:
+            forced = None
+        since = 0
+
         data = np.zeros((n_trials * L, n_ch), dtype=np.float32)
         ctx_seq = np.repeat(np.asarray(contexts, dtype=np.float32), L)
 
@@ -74,6 +88,9 @@ class HierSwitchDataset(BaseTaskDataset):
             ctx_sign = 1.0 if ctx == 0 else -1.0
             cue_sign = 1.0 if rng.random() < 0.5 else -1.0         # +1 = HP dominant
             dom, non = counts[rng.choice(len(counts), p=p)]
+            since = 1 if k == 0 or contexts[k] != contexts[k - 1] else since + 1
+            if forced is not None and since <= n_forced:
+                dom, non = forced          # drawn above anyway, so the stream is unchanged
             conflict = non / dom
 
             dominant, other = (HP, LP) if cue_sign > 0 else (LP, HP)
@@ -179,3 +196,29 @@ if __name__ == '__main__':
     assert max(test_lens[:-1]) <= cfg.block_len_range[1], 'test stream used the training schedule'
     print(f'OK  schedule {cfg.train_block_schedule}: training blocks {train_lens[:4]}..., '
           f'test blocks {test_lens[:5]}...')
+
+    # Forced early-reversal conflict: trials 1-5 of every test block at the forced level,
+    # every other trial identical to the unforced session; the training stream untouched.
+    def session(stream, forced):
+        cfg = HierSwitchConfig()
+        cfg.no_of_blocks, cfg.data_stream, cfg.reversal_conflict = 1000, stream, forced
+        return np.asarray(HierSwitchDataset(cfg).data_sequence).reshape(-1, cfg.trial_len, cfg.input_size)
+    for stream in (0, 1):
+        base = session(stream, None)
+        ctx = base[:, 0, cfg.ch('context')]
+        since = np.ones(len(ctx), dtype=int)
+        for k in range(1, len(ctx)):
+            since[k] = 1 if ctx[k] != ctx[k - 1] else since[k - 1] + 1
+        early = since <= cfg.reversal_conflict_n
+        for forced, level in (('low', 2 / 7), ('high', 3 / 6)):
+            x = session(stream, forced)
+            if stream == 0:
+                assert np.array_equal(x, base), 'reversal_conflict changed the training stream'
+                continue
+            conf = x[:, 0, cfg.ch('conflict')]
+            assert np.allclose(conf[early], level), f'{forced}: early trials not at {level:.3f}'
+            assert np.array_equal(x[~early], base[~early]), f'{forced}: later trials changed'
+            for c in ('cue', 'context', 'correct', 'vis'):
+                assert np.array_equal(x[:, -1, cfg.ch(c)], base[:, -1, cfg.ch(c)]), c
+    print(f'OK  reversal_conflict: trials 1-{cfg.reversal_conflict_n} forced to 7:2 / 6:3 in the '
+          f'test stream, everything else unchanged; training stream untouched')

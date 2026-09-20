@@ -18,7 +18,8 @@ Code lives in `hier_switch/`. Every module there puts the repo root on `sys.path
 | `hier_switch_tune.py` | Tuning grids, one entry per SLURM array task, plus `collect` for a table |
 | `run_tune.sh` | `./hier_switch/run_tune.sh <tag>` submits a grid as a SLURM array sized from the grid |
 | `show_blocks.py` | Per-block table for finished tuning runs: did the model converge within each block? |
-| `hier_switch_test_inference.py` | Load a saved model (`run(save_model=True)` → `model.pt`) and test its inference under named latent conditions, each on a copy, on the same test trials |
+| `hier_switch_test_inference.py` | Load a saved model (`run(save_model=True)` → `model.pt`) and test its inference under named latent conditions, each on a copy, on the same test trials. It is also the session recorder: every condition writes a `session.npz` with the per-timestep outputs, the pulse frames, the hidden states and the recovered dL/dZ |
+| `hier_switch_observer.py`, `hier_switch_hidden.py`, `hier_switch_perturb.py`, `hier_switch_group.py`, `hier_switch_figures.py` | The phase-2 analyses: ideal observer, hidden state, Z clamp, the group pipeline and the figure panels. See `docs/hier_switch_analyses.md` |
 
 `functions_and_utils.plot_logger_panels` has `hier_switch` branches for `behavior` and
 `corrects`.
@@ -112,7 +113,15 @@ All three models share one architecture.
   - This is the verified configuration (v13: 6/10 seeds discover; seed 0 reproduces
     exactly). A longer passive phase (2 × 3000) with 4000 active trials is an untested
     alternative.
-- **`WU_lr` = 1e-3 (Adam). The weight learning rate is not a useful lever here.** Lower
+- **Test-only knobs added in phase 2** (all default-off, so no earlier run changes):
+`record_hidden` (per-timestep hidden states into `logger.hidden_trace`), `rt_threshold`
+(0.5, the |decision| that counts as a response) and `reversal_conflict` /
+`reversal_conflict_n` — the paper's controlled reversals, which force the first 5 trials of
+every *test* block to 7:2 or 6:3. The forced level is drawn as usual and then overridden, so
+the RNG stream is untouched: the forced and unforced sessions are paired trial by trial, and
+the training stream never sees it.
+
+**`WU_lr` = 1e-3 (Adam). The weight learning rate is not a useful lever here.** Lower
   (5e-4, v11) changed nothing. Higher (3e-3, v14) stopped every seed from learning the task at
   all. Leave it.
 

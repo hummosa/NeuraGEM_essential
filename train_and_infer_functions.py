@@ -116,6 +116,10 @@ def _weight_update_step(model, config, combined_input, model_inputs, inputs, con
     model.W_optimizer.zero_grad()
     model.Z_optimizer.zero_grad()
 
+    # Per-timestep hidden states of this, the acting, forward only; the LU re-forwards are
+    # not recorded. Off unless config.record_hidden.
+    record = bool(getattr(config, 'record_hidden', False))
+    model._hidden_trace = [] if record else None
     if config.use_add_gating:
         outputs, hidden_states = model(combined_input, taskID=context_ids,
                                        what_latent=config.what_latent_to_use)
@@ -125,6 +129,8 @@ def _weight_update_step(model, config, combined_input, model_inputs, inputs, con
                                        what_latent=config.what_latent_to_use)
 
     outputs = torch.stack(outputs, dim=1)  # (batch, seq_len-1, output_size)
+    model.last_hidden_trace = torch.stack(model._hidden_trace, dim=1) if record else None
+    model._hidden_trace = None
 
     # Compute the loss # (batch, seq_len-1, output_size), unreduced
     loss = criterion(outputs, inputs) if config.predict_first_frame else criterion(outputs, inputs[:, 1:, :])
@@ -226,6 +232,9 @@ def _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
 
     if config.log_hidden_states:
         logger.log_hidden_states(hidden_states)
+
+    if getattr(config, 'record_hidden', False):
+        logger.hidden_trace.append(model.last_hidden_trace[:, -stride:, :].cpu().numpy())
 
     if config.log_weights:
         logger.log_weights(model)

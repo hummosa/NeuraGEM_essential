@@ -1267,6 +1267,8 @@ class Logger:
              That final h is the state whose readout produced the logged prediction for
              the same batch, so it aligns 1:1 with inputs/predicted_outputs/latent_values
              when stride=1 and log_initial_burn_in_timesteps=False.
+    - hidden_trace: List[(batch, stride, hidden_size)] - h at every timestep of the acting
+             (WU) forward, the h that feeds output_layer. Only if config.record_hidden=True.
     - input_attention_weights: List - Attention weights if using input attention
     
     Training Phases:
@@ -1326,6 +1328,7 @@ class Logger:
         self.context_ids = []
         self.hlcids = []
         self.hidden_states = []
+        self.hidden_trace = []   # per-timestep h of the acting (WU) forward; config.record_hidden
         self.gradients_max_entropy = []
         self.gradients_corrections = []
         self.input_attention_weights = []

@@ -12,7 +12,9 @@ With no conditions named, all of CONDITIONS run. Models come from run(save_model
 e.g. the v15 grid: exports/hier_switch/tune_v15/NG_s0/model.pt.
 
 Results: exports/hier_switch/inference_tests/<model>/<condition>/ (summary.json, trials.npz,
-panels). A table is printed at the end.
+session.npz, panels). A table is printed at the end. session.npz is what the phase-2
+analyses read (hier_switch_analyses.load_session): the per-trial arrays plus the per-timestep
+outputs, the pulse frames the model saw, the hidden states and the recovered dL/dZ.
 
 Conditions
     softmax            as trained: softmax over the 2 Z units at the trained temperature,
@@ -28,6 +30,14 @@ Conditions
                        Z can now move both units together — a gain direction the softmax
                        removed — so the table reports the gate sum alongside the usual
                        numbers.
+    sigmoid_zlr30000_wd*  the sigmoid at its best Z_lr over a weight-decay ladder
+                       (Z_lr x Z_decay = 0.03 / 0.09 / 0.3 / 0.9). Gain is a live axis only
+                       without the softmax, so the gain analyses (B5) run here.
+    *_rc_low / *_rc_high  the paper's controlled reversals: the first 5 trials of every
+                       block forced to 7:2 or 6:3 conflict (config.reversal_conflict). The
+                       unforced partner is *_rc_none; the three are paired trial by trial.
+    rnn                the backprop baseline (a v16 model): LU off, weights plastic, as its
+                       own training ran. Never analysed with z_updates.
     sigmoid_zlr*       the softmax replaced by a per-unit sigmoid at test. Z starts at 0,
                        and sigmoid(0) = 0.5 is the same [0.5, 0.5] gate as the uniform
                        softmax start. Weight decay as trained: under the sigmoid it pulls
@@ -60,19 +70,39 @@ import matplotlib.pyplot as plt
 
 import plot_style
 from plot_style import FigSize
+from hier_switch_analyses import save_session, session_arrays, session_meta
 from hier_switch_train import load_model, run_test, report, plot_panels, block_window
 
 NO_SOFTMAX = dict(latent_activation='none', Z_init=[0.5, 0.5], Z_decay=0.0)
 SIGMOID = dict(latent_activation='sigmoid', Z_init=0.0)       # weight decay as trained
+# The reversal-aligned analyses want reversals, not trials: 2000 trials is ~45 blocks.
+LONG = dict(n_trials=2000)
+
+
+def _rc(name, base):
+    """A condition and its two forced-early-conflict partners, on the same 2000 trials."""
+    return {f'{name}_rc_{k}': dict(base, **LONG, reversal_conflict=v)
+            for k, v in (('none', None), ('low', 'low'), ('high', 'high'))}
+
 
 CONDITIONS = {
     'softmax': dict(),
     **{f'nosoftmax_zlr{z:g}': dict(NO_SOFTMAX, Z_lr=float(z)) for z in (300, 1000, 3000, 10000)},
     **{f'sigmoid_zlr{z:g}': dict(SIGMOID, Z_lr=float(z)) for z in (1000, 3000, 10000, 30000, 1e5)},
-    # Z_decay held at the trained 3e-6 above, so Z_lr * Z_decay also grows with Z_lr. This
-    # one holds it at the trained 0.03 instead, to tell Z_lr apart from decay strength.
+    # Z_decay held at the trained 3e-6 above, so Z_lr * Z_decay also grows with Z_lr. The
+    # ladder below holds Z_lr at its best value and moves the decay strength on its own:
+    # Z_lr * Z_decay = 0.03 (wd1e-06), 0.09 (= sigmoid_zlr30000), 0.3, 0.9.
     'sigmoid_zlr30000_wd1e-06': dict(SIGMOID, Z_lr=3e4, Z_decay=1e-6),
+    'sigmoid_zlr30000_wd1e-05': dict(SIGMOID, Z_lr=3e4, Z_decay=1e-5),
+    'sigmoid_zlr30000_wd3e-05': dict(SIGMOID, Z_lr=3e4, Z_decay=3e-5),
+    **_rc('softmax', dict()),
+    # The RNN baseline (v16 models): no latent update, weights plastic, as it trained.
+    **_rc('rnn', dict(test_no_of_steps_in_latent_space=0)),
+    'rnn': dict(test_no_of_steps_in_latent_space=0),
 }
+# Which conditions a model type runs when none are named.
+DEFAULTS = dict(NG=[k for k in CONDITIONS if not k.startswith('rnn')],
+                RNN=[k for k in CONDITIONS if k.startswith('rnn')])
 
 
 def gate_values(z, cfg):
@@ -86,7 +116,8 @@ def gate_values(z, cfg):
 
 
 def test_condition(model, cfg, tag, name, overrides):
-    logger, _, tcfg = run_test(model, cfg, run_name=f'inference_tests/{tag}/{name}', **overrides)
+    logger, _, tcfg = run_test(model, cfg, run_name=f'inference_tests/{tag}/{name}',
+                               record_hidden=True, **overrides)
     trials, _, te = report(logger, tcfg, label=f'{tag} {name}')
     plot_panels(logger, tcfg, filename='panels_full.pdf')
     win = block_window(trials, tcfg, 'Inference only', n_blocks=8, from_end=False)
@@ -104,7 +135,16 @@ def test_condition(model, cfg, tag, name, overrides):
     np.savez_compressed(tcfg.export_path + 'trials.npz',
                         **{k: v for k, v in trials.items() if isinstance(v, np.ndarray) and k != 'phase'},
                         phase=trials['phase'].astype(str))
+    # session.npz: the superset every phase-2 analysis reads.
+    meta = session_meta(tcfg, condition=name, overrides={k: v for k, v in overrides.items()},
+                        model_path=getattr(cfg, '_model_path', ''), model_type=_model_type(cfg),
+                        z_restart=True, tag=tag)
+    save_session(tcfg.export_path + 'session.npz', trials, session_arrays(logger, tcfg), meta)
     return te, extra, trials
+
+
+def _model_type(cfg):
+    return str(getattr(cfg, 'experiment_to_run', '')).replace('hier_switch_', '') or 'NG'
 
 
 FAMILIES = {                          # label, colour ramp; darker = higher Z_lr
@@ -115,7 +155,7 @@ FAMILIES = {                          # label, colour ramp; darker = higher Z_lr
 
 
 def _family(name):
-    return name.split('_zlr')[0]
+    return name.split('_zlr')[0].split('_rc_')[0]
 
 
 def _style(name, names):
@@ -177,8 +217,8 @@ def rows_from_disk(tag, cfg):
     rows = []
     for name, over in CONDITIONS.items():
         f = os.path.join(root, name, 'trials.npz')
-        if not os.path.exists(f):
-            continue
+        if not os.path.exists(f) or _family(name) not in FAMILIES:
+            continue          # the rc_* and rnn conditions have their own figures
         d = dict(np.load(f, allow_pickle=True))
         c = copy.copy(cfg)
         c.latent_activation = over.get('latent_activation', cfg.latent_activation)
@@ -188,8 +228,10 @@ def rows_from_disk(tag, cfg):
 
 def main(path, names):
     model, cfg = load_model(path)
+    cfg._model_path = os.path.abspath(path)
     parts = os.path.normpath(path).split(os.sep)
     tag = '_'.join(parts[-3:-1])                  # e.g. tune_v15_NG_s0
+    names = names or DEFAULTS.get(_model_type(cfg), list(CONDITIONS))
     plot_style.set_plot_style()
     rows = []
     for name in names:
@@ -207,10 +249,14 @@ def main(path, names):
               f'{g("3"):5.2f} {str(te.get("cross_trial")):>5} {te.get("z_dprime", float("nan")):5.2f} '
               f'{ex["abs_decision"]:5.2f}  {ex["gate_mean"]}, {ex["gate_sum"]:.2f}')
     out = os.path.join(_ROOT, 'exports', 'hier_switch', 'inference_tests', tag)
-    summary_figure(rows_from_disk(tag, cfg), os.path.join(out, 'inference_summary.pdf'))
+    # The comparison figure covers the softmax / sigmoid / no-activation families only; a
+    # model whose conditions are all outside them (the RNN baseline) has nothing to draw.
+    disk_rows = rows_from_disk(tag, cfg)
+    if disk_rows:
+        summary_figure(disk_rows, os.path.join(out, 'inference_summary.pdf'))
 
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
-    main(sys.argv[1], sys.argv[2:] or list(CONDITIONS))
+    main(sys.argv[1], sys.argv[2:])

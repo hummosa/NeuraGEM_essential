@@ -1,11 +1,13 @@
 #!/bin/bash
-# Submit one tuning grid as a SLURM array: ./hier_switch/run_tune.sh <TAG>
-# The array size is read from the grid itself, so it cannot drift from GRIDS.
+# Submit one tuning grid as a SLURM array: ./hier_switch/run_tune.sh <TAG> [RANGE]
+# The array size is read from the grid itself, so it cannot drift from GRIDS. RANGE (e.g.
+# 1-5) submits only those entries, by their index in `hier_switch_tune.py list <TAG>`.
 set -e
 cd "$(dirname "$0")/.."
 TAG=$1
 N=$(.venv/bin/python hier_switch/hier_switch_tune.py list "$TAG" | wc -l)
-sbatch --parsable --array=0-$((N - 1)) <<EOS
+RANGE=${2:-0-$((N - 1))}
+sbatch --parsable --array=$RANGE <<EOS
 #!/bin/bash
 #SBATCH --job-name=hsw_$TAG
 #SBATCH -n 1

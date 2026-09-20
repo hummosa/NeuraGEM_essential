@@ -591,6 +591,8 @@ class RNN_with_latent(nn.Module):
             h, c = self._rnn_step(processed_input[:, step, :], h, c)
             h, c = self._apply_post_gate(h, c, step, what_latent, taskID)
             outputs.append(self.output_layer(h))
+            if getattr(self, "_hidden_trace", None) is not None:   # off unless a caller sets a list
+                self._hidden_trace.append(h.detach())
 
         return outputs, (h, c)
 

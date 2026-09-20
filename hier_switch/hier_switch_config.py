@@ -74,6 +74,15 @@ class HierSwitchConfig(Config):
         # 7:2 (0.29) and 6:3 (0.5).
         self.conflict_counts = [(9, 0), (8, 1), (7, 2), (6, 3), (5, 4)]
         self.p_conflict      = None      # None = uniform over conflict_counts
+        # Forced early-reversal conflict, the paper's controlled reversals (Fig 1f; the opto
+        # experiments). None | 'low' | 'high': the first reversal_conflict_n trials of every
+        # block take that level's counts (7:2 and 6:3, the paper's). Test streams only
+        # (data_stream != 0); training never sees it. The level is drawn as usual and then
+        # overridden, so the RNG stream is untouched and every other trial is identical to
+        # the unforced session's.
+        self.reversal_conflict        = None
+        self.reversal_conflict_n      = 5
+        self.reversal_conflict_levels = dict(hier_switch_dataset.REVERSAL_CONFLICT_LEVELS)
         # Gaussian noise on the three pulse channels of every pulse frame. It is what makes
         # conflict an actual sensory uncertainty: with noiseless pulses, counting recovers
         # the cue exactly at every conflict level.
@@ -137,6 +146,12 @@ class HierSwitchConfig(Config):
         self.output_loss_mask = [0, 0, 0, 0, 0, 0, 0, 0, 1]
         self.hidden_size      = 64
         self.predict_first_frame = True
+        # Record h at every timestep of the acting forward into logger.hidden_trace. Off by
+        # default: 64 floats x 25 steps per trial.
+        self.record_hidden    = False
+        # |decision variable| counted as a response, for RT and the undecided rate
+        # (flanker_analyses._interpolated_rt). Targets are ±1; steady |decision| is ~0.8.
+        self.rt_threshold     = 0.5
 
         # ── Latent ────────────────────────────────────────────────────────────
         # Softmax over the 2 dims: one degree of freedom, *which* gate, and no overall gain.
@@ -289,6 +304,8 @@ class HierSwitchConfig(Config):
         assert self.predict_first_frame, (
             'predict_first_frame=False is not supported: the target is constant within a '
             'trial, and the shorter output sequence would misalign the per-trial reshape.')
+        assert self.reversal_conflict in (None, *self.reversal_conflict_levels), (
+            f'reversal_conflict must be None or one of {list(self.reversal_conflict_levels)}')
         for dom, non in self.conflict_counts:
             assert dom + non == self.n_informative and dom > non, (
                 f'conflict count ({dom}, {non}) must sum to n_informative='

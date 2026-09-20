@@ -250,6 +250,31 @@ def outcome_style(correct, kind='bar', color=None):
     raise ValueError(f'unknown kind {kind!r}')
 
 
+#: Outcome palette for tasks where hue is free. In the flanker figures hue is already spent
+#: on congruency, so there outcome rides on fill (`outcome_style`). In hier_switch a panel
+#: usually shows one model, so outcome gets a hue and a marker shape of its own: a dashed
+#: line alone is close to unreadable in a paper-sized legend, which is what prompted this.
+OUTCOME_COLORS = {True: '#3c6e71', False: '#d1495b'}       # correct: teal, error: crimson
+OUTCOME_MARKERS = {True: 'o', False: '^'}
+
+
+def outcome_color(correct):
+    """Colour for a correct-response (teal) or error (crimson) series."""
+    return OUTCOME_COLORS[bool(correct)]
+
+
+def outcome_line(correct, filled=True):
+    """Plot kwargs for an outcome series: hue, marker shape and line style together.
+
+    Three channels carry the same distinction on purpose — colour and marker survive a
+    small legend, the line style survives a black-and-white print.
+    """
+    c = OUTCOME_COLORS[bool(correct)]
+    return dict(color=c, marker=OUTCOME_MARKERS[bool(correct)],
+                linestyle='-' if correct else '--',
+                markerfacecolor=c if filled else 'none', markeredgecolor=c)
+
+
 class Color_scheme:
     def __init__(self):
         self.short_horizon_rnn = 'tab:green'
