@@ -689,14 +689,17 @@ def spec_psychometric_ctx(groups):
     real asymmetry. The paper's claim is that the two coincide.
     """
     def panel(ax):
+        main = next(iter(groups))          # the model whose two contexts are spelt out
         for label, reps in groups.items():
             col = get_model_color(label)
             for k, (name, ls) in enumerate((('last trained context', '-'),
                                             ('other context', '--'))):
+                # The contrast this panel is about is within the main model, so only its two
+                # curves are named; a baseline gets its own name once and no context split.
+                key = name if label == main else (label if k == 0 else None)
                 series(ax, CONFLICT, stack(reps, f'behaviour.psychometric.acc_ctx.{k}'),
-                       label=name if label == 'NeuraGEM' else None,
-                       color=col if k == 0 else shade(col), ls=ls, dots=False,
-                       marker='o' if k == 0 else 's')
+                       label=key, color=col if k == 0 else shade(col), ls=ls,
+                       dots=(label == main), marker='o' if k == 0 else 's')
         first = next(iter(groups.values()))
         series(ax, CONFLICT, stack(first, 'observer.p_c'), label='ideal observer',
                color=COL_OBS, ls=':', marker='', dots=False)

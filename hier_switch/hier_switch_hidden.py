@@ -621,7 +621,48 @@ def hidden_report(sess, primary=PRIMARY, n_perm=100, with_decoding=True, obs=Non
     return res
 
 
+def _self_test(seed=0):
+    """Check the encoding measures on data whose answer is known.
+
+    A source built as a known linear mix of two variables should have its variance credited
+    to those two and not to the others, and a variable the source does not contain should
+    decode at chance. Runs in a second; no model or session needed.
+    """
+    from hier_switch_analyses import synthetic_session, trial_labels
+    sess, _ = synthetic_session(blen=40, n_blocks=12, seed=seed)
+    trial_labels(sess)
+    n = sess['n']
+    rng = np.random.default_rng(seed)
+    cue = (sess['cue'] > 0).astype(float)
+    ctx = sess['context'].astype(float)
+    # A 10-unit source that is 70% cue, 30% context, plus noise; and a 10-unit source that
+    # is noise alone.
+    mix = (0.7 * cue[:, None] * rng.normal(size=(1, 10))
+           + 0.3 * ctx[:, None] * rng.normal(size=(1, 10))
+           + 0.25 * rng.normal(size=(n, 10)))
+    noise = rng.normal(size=(n, 10))
+    variables = (['cue', 'context', 'conflict'],
+                 [cue, ctx, sess['conflict'].astype(float)])
+    dm = demixed_variance(mix, variables)
+    dn = demixed_variance(noise, variables)
+    u = dm['unique']
+    ok = (u['cue'] > 0.2 and u['context'] > 0.02 and u['conflict'] < 0.01
+          and max(dn['unique'].values()) < 0.01)
+    print(f"{'OK ' if ok else 'FAIL'} demixed_variance credits the mix to cue "
+          f"({u['cue']:.2f}) and context ({u['context']:.2f}), not conflict "
+          f"({u['conflict']:.3f}); pure noise gets {max(dn['unique'].values()):.3f}")
+    a_cue = _cv_logistic(mix, cue, seed=seed)
+    a_shuf = _cv_logistic(mix, rng.permutation(cue), seed=seed)
+    a_noise = _cv_logistic(noise, cue, seed=seed)
+    ok2 = a_cue > 0.8 and abs(a_shuf - 0.5) < 0.08 and abs(a_noise - 0.5) < 0.08
+    print(f"{'OK ' if ok2 else 'FAIL'} decoding: cue from the mix {a_cue:.2f}, "
+          f"from shuffled labels {a_shuf:.2f}, from pure noise {a_noise:.2f}")
+    return ok and ok2
+
+
 if __name__ == '__main__':
+    if not sys.argv[1:]:
+        raise SystemExit(0 if _self_test() else 1)
     for path in sys.argv[1:]:
         sess = trial_labels(load_session(path))
         upd = z_updates(sess) if sess['meta']['lu_steps'] > 0 else None
