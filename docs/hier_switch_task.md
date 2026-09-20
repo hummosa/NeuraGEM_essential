@@ -19,7 +19,8 @@ Code lives in `hier_switch/`. Every module there puts the repo root on `sys.path
 | `run_tune.sh` | `./hier_switch/run_tune.sh <tag>` submits a grid as a SLURM array sized from the grid |
 | `show_blocks.py` | Per-block table for finished tuning runs: did the model converge within each block? |
 | `hier_switch_test_inference.py` | Load a saved model (`run(save_model=True)` → `model.pt`) and test its inference under named latent conditions, each on a copy, on the same test trials. It is also the session recorder: every condition writes a `session.npz` with the per-timestep outputs, the pulse frames, the hidden states and the recovered dL/dZ |
-| `hier_switch_observer.py`, `hier_switch_hidden.py`, `hier_switch_perturb.py`, `hier_switch_group.py`, `hier_switch_figures.py` | The phase-2 analyses: ideal observer, hidden state, Z clamp, the group pipeline and the figure panels. See `docs/hier_switch_analyses.md` |
+| `hier_switch_observer.py`, `hier_switch_hidden.py`, `hier_switch_perturb.py`, `hier_switch_group.py`, `hier_switch_figures.py` | The phase-2 analyses: ideal observer, hidden state (including the encoding table: what each signal carries), Z clamp, the group pipeline and the figure panels. See `docs/hier_switch_analyses.md` |
+| `hier_switch_hooks.py` | Per-trial perturbations of the latent update — the paper's optogenetics. Default-off; run it directly for a self-test. See `docs/hier_switch_analyses.md` §6c |
 
 `functions_and_utils.plot_logger_panels` has `hier_switch` branches for `behavior` and
 `corrects`.
