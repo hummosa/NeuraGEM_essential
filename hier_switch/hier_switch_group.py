@@ -137,11 +137,23 @@ def _jsonable(o):
 
 # ── The group ─────────────────────────────────────────────────────────────────
 
+def all_conditions(model_type):
+    """Every condition worth *reading* for a model type.
+
+    Deliberately not `models()`: that one is the array's work list and hides the
+    manipulation conditions behind HIER_SWITCH_MANIP so `list` and `task` describe what is
+    meant to be recorded. Reading is different — a results.json on disk should be found
+    whether or not the flag that recorded it is set now, or the figures would silently drop
+    a row depending on an environment variable.
+    """
+    return (NG_CONDITIONS + NG_MANIPULATIONS) if model_type == 'NG' else RNN_CONDITIONS
+
+
 def collect():
     """Every results.json on disk, grouped as {(model_type, condition): {seed: report}}."""
     out = {}
-    for model_type, seed, _, conditions in models():
-        for path in session_dirs(model_type, seed, conditions):
+    for model_type, seed, _, _ in models():
+        for path in session_dirs(model_type, seed, all_conditions(model_type)):
             f = os.path.join(path, 'results.json')
             if os.path.exists(f):
                 with open(f) as fh:
