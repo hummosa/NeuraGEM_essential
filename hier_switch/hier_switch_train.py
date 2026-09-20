@@ -140,7 +140,7 @@ def load_model(path):
     return model, model.config
 
 
-def run_test(model, cfg, Z_lr=None, run_name=None, n_trials=None, **latent):
+def run_test(model, cfg, Z_lr=None, run_name=None, n_trials=None, perturb=None, **latent):
     """A test session on a copy of a trained model: weights frozen, Z inferred.
 
     Z restarts from Z_init (the uninformed gate) and is updated by LU at `Z_lr`, whatever the
@@ -166,6 +166,11 @@ def run_test(model, cfg, Z_lr=None, run_name=None, n_trials=None, **latent):
         tcfg.n_test_trials = int(n_trials)
     if tcfg.test_no_of_steps_in_latent_space is None and tcfg.no_of_steps_in_latent_space == 0:
         tcfg.test_no_of_steps_in_latent_space = 1      # a test of Z inference needs LU on
+    # A per-trial perturbation of the latent update (hier_switch_hooks). The spec is kept on
+    # the config so it travels into the session's meta; the hook object is what runs.
+    tcfg.perturb = perturb
+    from hier_switch_hooks import TrialHook
+    tcfg.trial_hook = TrialHook.from_spec(perturb)
     tcfg.reconfigure_for_prediction(tcfg.experiment_to_run)
     tcfg._allow_latent_updates = True
 
@@ -178,6 +183,9 @@ def run_test(model, cfg, Z_lr=None, run_name=None, n_trials=None, **latent):
     for g in m.Z_optimizer.param_groups:
         g['lr'] = float(tcfg.Z_lr)
         g['weight_decay'] = opt_decay
+        # SGD carries a momentum buffer; a hook may switch it on for a window of trials.
+        if 'momentum' in g:
+            g['momentum'] = float(getattr(tcfg, 'Z_momentum', 0.0) or 0.0)
     m.set_Z(z_init_like(m.Z, tcfg.Z_init))
 
     _, _, _, loader = create_datasets_and_loaders(tcfg)

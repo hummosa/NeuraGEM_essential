@@ -191,6 +191,7 @@ _DEFAULT_META = dict(model_type='NG', Z_lr=1e4, Z_decay=3e-6, latent_activation=
                      softmax_temp=0.5, rt_threshold=0.5, lu_steps=1, wu_steps=0,
                      response_start_timestep=19, trial_len=25, n_pulses=16,
                      pulse_noise_std=0.5, reversal_conflict=None, z_restart=False,
+                     Z_momentum=0.0, perturb=None,
                      conflict_counts=[[9, 0], [8, 1], [7, 2], [6, 3], [5, 4]])
 
 
@@ -233,6 +234,16 @@ def session_arrays(logger, cfg):
     trace = getattr(logger, 'hidden_trace', None)
     if trace:
         res['hidden'] = np.concatenate(trace, axis=0).reshape(n, L, -1)
+    # The gradient as the optimizer saw it. Recovering it from Δz only works while the step
+    # is a plain one; under a perturbed latent update (lr scaled, momentum on, Z overwritten)
+    # it does not, and the k = 0 case is exactly the one where the gradient still matters.
+    gc = getattr(logger, 'gradients_corrections', None)
+    if gc:
+        g = np.concatenate(gc, axis=0).reshape(n, L, -1)
+        res['grad_logged'] = g[:, 0, :].astype(np.float64)     # pooled: all L rows are equal
+    hook = getattr(cfg, 'trial_hook', None)
+    if hook is not None:
+        res.update(hook.arrays(n))
     return res
 
 
@@ -259,13 +270,33 @@ def save_session(path, trials, arrays, meta):
         d['hidden'] = arrays['hidden'].astype(np.float16)
     d['lu_scale'] = np.asarray(arrays.get('lu_scale', np.ones(n)), dtype=np.float32)
     d['clamped'] = np.asarray(arrays.get('clamped', np.zeros(n, bool)), dtype=bool)
-    d['grad'] = _grad_or_nan(trials['z'], trials['z_in'], meta, d['lu_scale'], d['clamped'])
+    d['z_momentum'] = np.asarray(arrays.get('z_momentum', np.zeros(n)), dtype=np.float32)
+    d['grad'] = _grad_or_nan(trials['z'], trials['z_in'], meta, d['lu_scale'], d['clamped'],
+                             arrays.get('grad_logged'), trials['z_in'])
+    # The step actually taken, expressed in gradient units. Under a plain SGD step this is
+    # the gradient again; with momentum on it is the gradient plus the velocity carried from
+    # earlier trials, so `grad_eff - grad` is exactly what the momentum added.
+    d['grad_eff'] = (-(trials['z'] - trials['z_in']) / meta['Z_lr']).astype(np.float32)
     np.savez_compressed(path, meta=np.array(json.dumps(meta, default=float)), **d)
 
 
-def _grad_or_nan(z, z_in, meta, lu_scale, clamped):
-    g = recover_grad(z, z_in, meta['Z_lr'], meta['Z_decay'])
-    bad = (lu_scale != 1) | clamped | (meta['lu_steps'] <= 0)
+def _grad_or_nan(z, z_in, meta, lu_scale, clamped, logged=None, z_in_for_decay=None):
+    """The trial's error gradient dL/dZ, NaN where there is not one to report.
+
+    Two routes. The logged gradient (`logger.gradients_corrections`, which carries the decay
+    term added in place) is exact whatever the optimizer did, and is used when a recorded
+    session has it. Otherwise it is recovered from Δz, which is only valid while the step is
+    a plain unscaled SGD one — the older sessions, and the reason the fallback still NaNs a
+    scaled or clamped trial. A clamped trial has no gradient either way: Z was overwritten.
+    """
+    if logged is not None:
+        zi = z_in if z_in_for_decay is None else z_in_for_decay
+        g = np.asarray(logged, dtype=float) - float(meta['Z_decay']) * np.asarray(zi, dtype=float)
+        bad = np.asarray(clamped, bool) | (meta['lu_steps'] <= 0)
+    else:
+        g = recover_grad(z, z_in, meta['Z_lr'], meta['Z_decay'])
+        bad = (lu_scale != 1) | clamped | (meta['lu_steps'] <= 0)
+    g = np.array(g, dtype=float)
     g[bad] = np.nan
     return g.astype(np.float32)
 
@@ -304,6 +335,7 @@ def load_session(path):
     n = len(d['correct'])
     d.setdefault('lu_scale', np.ones(n, np.float32))
     d.setdefault('clamped', np.zeros(n, bool))
+    d.setdefault('z_momentum', np.zeros(n, np.float32))
     if 'grad' not in d:
         d['grad'] = _grad_or_nan(d['z'], d['z_in'], meta, d['lu_scale'], d['clamped'])
     d['phase'] = d['phase'].astype(str)
@@ -321,6 +353,41 @@ def _blocks(sess):
     starts = np.flatnonzero(new)
     ends = np.r_[starts[1:], n]
     return block, starts, ends
+
+
+_LAST_CTX_CACHE = {}
+
+
+def last_trained_context(model_path):
+    """The context the model saw last in training, from the sibling trials.npz of model.pt.
+
+    Which of the two contexts is "0" is an accident of the data stream, but the model is not
+    symmetric about it: it comes out of training with its weights and its Z sitting in the
+    last block's context, and at the uniform gate it falls back on a default context. So
+    every per-context split is reported relative to this one (`ctx_rel`: 0 = last trained,
+    1 = the other), not to the raw label.
+
+    Returns None when the training trials are not on disk — a session recorded from a model
+    whose run directory has been cleaned, or a synthetic session.
+    """
+    if not model_path:
+        return None
+    if model_path in _LAST_CTX_CACHE:
+        return _LAST_CTX_CACHE[model_path]
+    res = None
+    path = os.path.join(os.path.dirname(model_path), 'trials.npz')
+    if os.path.exists(path):
+        try:
+            d = np.load(path, allow_pickle=True)
+            m = d['phase'].astype(str) == 'Learning and inference'
+            if not m.any():                       # an RNN trains with LU off; same phase name
+                m = d['phase'].astype(str) != PRIMARY
+            if m.any():
+                res = int(d['context'][m][-1])
+        except Exception as exc:                  # a truncated or half-written npz
+            print(f'  ! last_trained_context({path}): {exc}')
+    _LAST_CTX_CACHE[model_path] = res
+    return res
 
 
 def trial_labels(sess, primary=PRIMARY):
@@ -369,6 +436,11 @@ def trial_labels(sess, primary=PRIMARY):
     lab['err'] = ~sess['correct'].astype(bool)
     ctx_sign = np.where(ctx == 0, 1.0, -1.0)
     lab['rule'] = sess['cue'] * ctx_sign
+    # Context relative to the one the model saw last in training: 0 = last trained, 1 = the
+    # other. Falls back to the raw label when the training run is not on disk.
+    last = last_trained_context(meta.get('model_path', ''))
+    lab['last_trained_context'] = -1 if last is None else last
+    lab['ctx_rel'] = ctx if last is None else (ctx != last).astype(int)
     levels = np.array([non / dom for dom, non in meta['conflict_counts']])
     lab['conf_level'] = np.abs(sess['conflict'][:, None] - levels[None]).argmin(axis=1)
     use = (phase == primary) & ~lab['transient']
@@ -522,8 +594,11 @@ def z_updates(sess, primary=PRIMARY):
     dz_decay = -meta['Z_lr'] * meta['Z_decay'] * zin
     dz_err = dz - dz_decay
     finite = np.isfinite(z).all(1) & np.isfinite(zin).all(1)
+    # A trial whose update was scaled, given momentum, or overwritten is not a clean
+    # measurement of "what this trial's error taught Z", so it is excluded here while
+    # staying in behaviour.
     ok = (select(sess, phase=primary) & finite & (sess['held'] >= 0)
-          & ~sess['clamped'] & (sess['lu_scale'] == 1))
+          & ~sess['clamped'] & (sess['lu_scale'] == 1) & (sess['z_momentum'] == 0))
     n = sess['n']
     res = dict(dz=dz, dz_decay=dz_decay, dz_err=dz_err, ok=ok, s=np.full(n, np.nan),
                s_decay=np.full(n, np.nan), tipped=np.zeros(n, bool))
@@ -640,10 +715,18 @@ def behaviour(sess, primary=PRIMARY, criterion_n=3):
     res = dict(n=int(m.sum()), acc=mean(corr[m]), acc_steady=mean(corr[steady]),
                undecided=mean(~dec[m]) if has_rt else np.nan,
                conflict=levels.round(3).tolist())
+    # acc_ctx is ordered [last trained context, the other one] — see last_trained_context.
+    # The paper's Fig 1e says the two curves should coincide; the gap is the number to quote.
+    ctx_rel = sess.get('ctx_rel', sess['context'])
+    acc_ctx = [[mean(corr[steady & (sess['conf_level'] == c) & (ctx_rel == k)])
+                for c in range(len(levels))] for k in (0, 1)]
     res['psychometric'] = dict(
         acc=[mean(corr[steady & (sess['conf_level'] == c)]) for c in range(len(levels))],
-        acc_ctx=[[mean(corr[steady & (sess['conf_level'] == c) & (sess['context'] == k)])
-                  for c in range(len(levels))] for k in (0, 1)],
+        acc_ctx=acc_ctx,
+        acc_ctx_gap=float(np.nanmean(np.abs(np.array(acc_ctx[0]) - np.array(acc_ctx[1])))),
+        last_trained_context=int(sess.get('last_trained_context', -1)),
+        rt_ctx=[[mean(rt[steady & (sess['conf_level'] == c) & (ctx_rel == k)])
+                 for c in range(len(levels))] for k in (0, 1)],
         rt=[mean(rt[steady & (sess['conf_level'] == c)]) for c in range(len(levels))],
         undecided=[mean(~dec[steady & (sess['conf_level'] == c)]) for c in range(len(levels))],
         n=[int((steady & (sess['conf_level'] == c)).sum()) for c in range(len(levels))])
@@ -651,8 +734,12 @@ def behaviour(sess, primary=PRIMARY, criterion_n=3):
     # A2/A3, all reversals and split by the conflict of the first 5 trials
     z_side = sess['aligned'].astype(float)
     z_side[sess['held'] < 0] = np.nan
+    # `gain` is the common mode of the two Z units, identically 0 under the softmax and a
+    # live axis only when the activation is swapped (sigmoid / none) — see the gain figure.
     curves = dict(acc=corr.astype(float), z_side=z_side, z_evidence=sess['z_evidence'],
-                  abs_dec=np.abs(sess['decision']), rt=rt, undecided=(~dec).astype(float))
+                  abs_dec=np.abs(sess['decision']), rt=rt, undecided=(~dec).astype(float),
+                  contrast=sess['contrast_in'], gain=sess['gain_in'],
+                  gate_gain=sess['gate_gain_in'])
     ec, starts = _block_first(sess, 'early_class')
     res['reversal'] = {}
     for label, blk in (('all', None), ('low', ec == 0), ('high', ec == 1)):
@@ -674,6 +761,54 @@ def behaviour(sess, primary=PRIMARY, criterion_n=3):
         err_early_decided=mean(rt[m & ~corr & dec & (sess['since'] <= 2)]),
         err_steady_decided=mean(rt[steady & ~corr & dec]),
         corr_steady=mean(rt[steady & corr]))
+    return res
+
+
+def switch_by_early_conf(sess, obs=None, n_bins=3, primary=PRIMARY):
+    """The paper's Fig 1f on *natural* reversals: switch latency against how ambiguous the
+    block's first five trials happened to be.
+
+    The forced low/high sessions are the controlled version of this and are the stronger
+    test, because they hold the trial stream fixed. This one uses the unforced session and
+    bins its reversal blocks by their own `early_conf`, which is what the paper had: the
+    animals' early trials were not all controlled either. Blocks are split into `n_bins`
+    equal-count bins of early conflict, so each seed contributes the same number of blocks
+    per bin whatever its conflict distribution looks like.
+
+    Returns dict(conflict=[per-bin mean early conflict], switch/z_switch/dec_switch=[per-bin
+    mean latency], observer=[...], n=[...]) — bins ordered from least to most ambiguous.
+    """
+    block, starts, ends = _blocks(sess)
+    keep = sess['reversal'] & ~sess['transient'] & (sess['phase'] == primary)
+    sel = np.array([b for b in range(len(starts))
+                    if keep[starts[b]] and np.isfinite(sess['early_conf'][starts[b]])])
+    res = dict(conflict=[np.nan] * n_bins, n=[0] * n_bins, n_blocks=int(len(sel)))
+    for k in ('switch', 'z_switch', 'dec_switch', 'observer'):
+        res[k] = [np.nan] * n_bins
+    if len(sel) < n_bins * 2:
+        return res
+    ec = sess['early_conf'][starts[sel]]
+    # Equal-count bins by rank, so a seed whose conflicts cluster still fills every bin.
+    order = np.argsort(ec, kind='stable')
+    edges = np.linspace(0, len(sel), n_bins + 1).astype(int)
+    obs_sw = None
+    if obs is not None and 'switch_trial' in obs:
+        obs_sw = np.asarray(obs['switch_trial'], dtype=float)
+    for i in range(n_bins):
+        idx = sel[order[edges[i]:edges[i + 1]]]
+        if not len(idx):
+            continue
+        res['conflict'][i] = float(np.mean(ec[order[edges[i]:edges[i + 1]]]))
+        res['n'][i] = int(len(idx))
+        for key, field in (('switch', 'switch_trial'), ('z_switch', 'z_switch_trial'),
+                           ('dec_switch', 'dec_switch_trial')):
+            v = sess[field][starts[idx]]
+            res[key][i] = float(np.nanmean(v)) if np.isfinite(v).any() else np.nan
+        # The observer's switch_trial is per trial (every trial of a block carries its
+        # block's value), so read it at the block starts like the model's.
+        if obs_sw is not None and len(obs_sw) == sess['n']:
+            v = obs_sw[starts[idx]]
+            res['observer'][i] = float(np.nanmean(v)) if np.isfinite(v).any() else np.nan
     return res
 
 
@@ -831,6 +966,26 @@ def latent(sess, obs, upd=None, primary=PRIMARY):
         g_contrast_by_conf_correct=[float(np.nanmean(g_contrast[m & ~sess['err'] & (sess['conf_level'] == c)]))
                                     for c in range(len(sess['p_c_table']))],
         g_gain_mean=float(np.nanmean(g_gain[m])), g_contrast_mean=float(np.nanmean(g_contrast[m])))
+
+    # ── Reversal-aligned traces of the three latent signals ──
+    # The MD/ACC reading of the model: Z is the persistent context code, the per-trial step
+    # is the transient that carries the switch, and the raw gradient is the error signal
+    # that drives it. Plotted together around a reversal, they are what the momentum and
+    # latent-update manipulations move.
+    dz = sess['z'].astype(float) - sess['z_in'].astype(float)
+    ax = sess['axis']
+    if ax is not None:
+        toward_true = np.where(sess['context'] == 1, 1.0, -1.0)
+        step_ctx = (dz @ ax) * toward_true / (sess['d'] / 2)
+        grad_ctx = (g @ ax) * toward_true
+    else:
+        step_ctx = grad_ctx = np.full(sess['n'], np.nan)
+    res['traces'] = {}
+    for key, v in (('z_evidence', sess['z_evidence']), ('step', np.abs(step_ctx)),
+                   ('step_signed', step_ctx), ('grad', np.abs(grad_ctx)),
+                   ('grad_signed', grad_ctx), ('gain', sess['gain_in'])):
+        ks, mu, sem, _ = reversal_aligned(sess, v, primary=primary)
+        res['traces'][key] = dict(k=ks.tolist(), mean=mu.tolist(), sem=sem.tolist())
     return res
 
 
@@ -911,7 +1066,7 @@ def synthetic_session(blen=20, n_blocks=4, seed=0):
                 conflict=levels[conf_level], cue=np.where(rng.random(n) < 0.5, 1.0, -1.0),
                 vis=np.where(rng.random(n) < 0.5, 1.0, -1.0), out=out,
                 decision=np.where(correct, 0.8, -0.8),
-                phase=np.array([PRIMARY] * n), lu_scale=np.ones(n),
+                phase=np.array([PRIMARY] * n), lu_scale=np.ones(n), z_momentum=np.zeros(n),
                 clamped=np.zeros(n, bool),
                 meta={**_DEFAULT_META, 'Z_lr': Z_lr, 'Z_decay': Z_decay})
     sess['grad'] = recover_grad(z, z_in, Z_lr, Z_decay)

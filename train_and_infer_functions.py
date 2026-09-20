@@ -164,6 +164,11 @@ def _latent_update_step(model, config, model_inputs, inputs, criterion, logger, 
     model._ensure_Z_shape(B, seq_len_model)
 
     before_optim_loss = None
+    # Per-trial perturbation of the latent update, default-off: a config that predates this
+    # hook has no `trial_hook`, so nothing changes. See hier_switch/hier_switch_hooks.py.
+    hook = getattr(config, 'trial_hook', None)
+    if hook is not None:
+        hook.pre(model, config, context_ids)
 
     for _ in range(config.no_of_steps_in_latent_space):
         if config.pass_previous_latent:
@@ -200,6 +205,9 @@ def _latent_update_step(model, config, model_inputs, inputs, criterion, logger, 
                 logger.log_updating_latent(model.Z.detach().cpu().numpy())
             if hasattr(logger, "log_updating_output"):
                 logger.log_updating_output(outputs.detach().cpu().numpy())
+
+    if hook is not None:
+        hook.post(model, config)
 
     return before_optim_loss
 

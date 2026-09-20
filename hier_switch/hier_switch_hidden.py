@@ -154,6 +154,42 @@ def integration(sess, axes, mask, window=CUE_PERIOD):
                 proj_cue=proj_cue.mean(axis=0).tolist(), proj_late=proj_late.mean(axis=0).tolist())
 
 
+def integration_aligned(sess, axes, window=(-5, 15), blocks=None, primary=PRIMARY,
+                        min_trials=8):
+    """The integration index and cue velocity at each trial offset from a reversal.
+
+    The paper plots both across the exploration phase (Fig 3c); this is the same cut on the
+    model. Both measures are population quantities defined over a *set* of trials, not per
+    trial, so each offset pools the trials at that offset over every reversal block — the
+    same block selection `reversal_aligned` uses, so the x axis matches the behavioural
+    panels exactly. An offset with fewer than `min_trials` trials is NaN rather than noise.
+    """
+    from hier_switch_analyses import _blocks
+    _, starts, ends = _blocks(sess)
+    n, phase = sess['n'], sess['phase']
+    keep = sess['reversal'] & ~sess['transient'] & (phase == primary)
+    sel = [b for b in range(len(starts)) if keep[starts[b]] and (blocks is None or blocks[b])]
+    ks = np.arange(window[0], window[1] + 1)
+    out = dict(k=ks.tolist(), index=[], cue_velocity=[], n=[])
+    for k in ks:
+        m = np.zeros(n, bool)
+        for b in sel:
+            a, e = starts[b], ends[b]
+            i = a + k - 1
+            lo = starts[b - 1] if b > 0 else 0
+            if lo <= i < min(e, n) and phase[i] == phase[a]:
+                m[i] = True
+        if m.sum() < min_trials:
+            out['index'].append(np.nan)
+            out['cue_velocity'].append(np.nan)
+        else:
+            r = integration(sess, axes, m)
+            out['index'].append(r['index'])
+            out['cue_velocity'].append(r['cue_velocity'])
+        out['n'].append(int(m.sum()))
+    return out
+
+
 def decode(sess, mask=None, targets=('cue', 'rule', 'context', 'conflict'), folds=5, seed=0):
     """Cross-validated logistic decoding of each target from the hidden state, per timestep.
 
@@ -196,6 +232,268 @@ def decode(sess, mask=None, targets=('cue', 'rule', 'context', 'conflict'), fold
         out[name] = dict(acc=acc, buildup=int(hit[0]) if hit else None, n=int(m.sum()),
                          chance=float(max(np.mean(y), 1 - np.mean(y))))
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# What is encoded where: the hidden state ("PFC") against Z and its gradient ("MD"/"ACC")
+# ══════════════════════════════════════════════════════════════════════════════
+
+ENCODING_VARS = ('cue', 'rule', 'context', 'conflict', 'outcome',
+                 'rule_uncertainty', 'cue_uncertainty')
+#: Which variables are binary (decoded by logistic regression, scored as balanced accuracy)
+#: and which are continuous (ridge, scored as cross-validated R²).
+_BINARY_VARS = ('cue', 'rule', 'context', 'outcome')
+
+
+def encoding_variables(sess, obs=None):
+    """The task and uncertainty variables every source is tested against.
+
+    Returns {name: (values, is_binary)}. `context` is `ctx_rel` — relative to the context
+    the model saw last in training, not the raw label. The two uncertainties are the
+    paper's pair (Fig 2o-p), taken from the ideal observer rather than from the model, so
+    they are properties of the trial sequence and not of what we are decoding from:
+
+      rule uncertainty  1 − |2b − 1|, on the observer's predictive context belief b (before
+                        it sees this trial's feedback). 1 = it has no idea which context.
+      cue uncertainty   1 − max(q, 1 − q) on the observer's cue posterior. 1/2 = the pulses
+                        were uninformative. This is the graded version of cue conflict.
+    """
+    ctx_rel = sess.get('ctx_rel', sess['context'])
+    out = {'cue': ((sess['cue'] > 0).astype(float), True),
+           'rule': ((sess['rule'] > 0).astype(float), True),
+           'context': (np.asarray(ctx_rel, dtype=float), True),
+           'conflict': (sess['conflict'].astype(float), False),
+           'outcome': (sess['err'].astype(float), True)}
+    n = sess['n']
+    if obs is not None and 'b' in obs:
+        b = np.asarray(obs['b'], dtype=float)
+        out['rule_uncertainty'] = (1.0 - np.abs(2.0 * b - 1.0), False)
+        q = np.asarray(obs['q'], dtype=float)
+        out['cue_uncertainty'] = (1.0 - np.maximum(q, 1.0 - q), False)
+    else:
+        out['rule_uncertainty'] = (np.full(n, np.nan), False)
+        out['cue_uncertainty'] = (np.full(n, np.nan), False)
+    return out
+
+
+def encoding_sources(sess, mask):
+    """The per-trial feature matrices we ask "what does this carry?" of.
+
+    The model's own PFC/MD split, plus a dimension-matched control. A 64-unit hidden state
+    will out-decode a 2-unit Z on almost anything simply by having 32× the dimensions, so
+    `hidden_pc2` — the top two principal components of the same hidden state — is carried
+    alongside it: any hidden-vs-Z difference that survives against `hidden_pc2` is not a
+    unit-count effect.
+
+      hidden_t16  the hidden state at the end of the cue period (the PFC read-out)
+      hidden_t24  the hidden state at the end of the trial
+      hidden_pc2  the top 2 PCs of hidden_t16 (the dimension-matched control)
+      z_in        the latent the trial actually ran under — the persistent context code
+      step        z − z_in, the trial's own latent update: the transient switch signal
+      grad        the error gradient on Z, as [contrast component, its magnitude]
+
+    Returns {name: (X, rows)} where `rows` is the subset of `mask` with finite features.
+    """
+    out = {}
+    if 'hidden' in sess:
+        h = _hidden(sess)
+        last = h.shape[1] - 1
+        out['hidden_t16'] = h[:, min(CUE_PERIOD[1], last), :].astype(float)
+        out['hidden_t24'] = h[:, last, :].astype(float)
+    z_in, z = sess['z_in'].astype(float), sess['z'].astype(float)
+    out['z_in'] = z_in
+    out['step'] = z - z_in
+    if 'grad' in sess:
+        g = sess['grad'].astype(float)
+        gc = 0.5 * (g[:, 0] - g[:, 1])
+        out['grad'] = np.c_[gc, np.abs(gc)]
+    res = {}
+    for name, X in out.items():
+        X = np.atleast_2d(X)
+        rows = mask & np.isfinite(X).all(axis=1)
+        if rows.sum() >= 20 and np.ptp(X[rows], axis=0).max() > 0:
+            res[name] = (X, rows)
+    # The control is fitted on the same rows the full hidden state uses.
+    if 'hidden_t16' in res:
+        X, rows = res['hidden_t16']
+        Xc = X[rows] - X[rows].mean(axis=0)
+        # Two leading PCs; economy SVD on the centred, masked block.
+        _, _, vt = np.linalg.svd(Xc, full_matrices=False)
+        res['hidden_pc2'] = ((X - X[rows].mean(axis=0)) @ vt[:2].T, rows)
+    return res
+
+
+def _standardise(X):
+    X = np.asarray(X, dtype=float)
+    sd = X.std(axis=0)
+    return (X - X.mean(axis=0)) / np.where(sd > 1e-12, sd, 1.0)
+
+
+def _cv_logistic(X, y, folds=5, seed=0):
+    """Cross-validated balanced accuracy of a logistic decoder. NaN if it cannot be fitted."""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import balanced_accuracy_score
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    y = np.asarray(y).astype(int)
+    if len(np.unique(y)) < 2 or np.bincount(y).min() < folds:
+        return np.nan
+    cv = StratifiedKFold(folds, shuffle=True, random_state=seed)
+    sc = []
+    for tr, te in cv.split(X, y):
+        clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000, C=1.0))
+        clf.fit(X[tr], y[tr])
+        sc.append(balanced_accuracy_score(y[te], clf.predict(X[te])))
+    return float(np.mean(sc))
+
+
+def _cv_ridge(X, y, folds=5, seed=0):
+    """Cross-validated R² of a ridge decoder, clipped at 0 (a worse-than-mean fit is 'no
+    information', and a small negative R² is only noise about that)."""
+    from sklearn.linear_model import RidgeCV
+    from sklearn.model_selection import KFold
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    y = np.asarray(y, dtype=float)
+    if np.std(y) < 1e-12:
+        return np.nan
+    sc = []
+    for tr, te in KFold(folds, shuffle=True, random_state=seed).split(X):
+        mdl = make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-2, 4, 13)))
+        mdl.fit(X[tr], y[tr])
+        p = mdl.predict(X[te])
+        ss = np.sum((y[te] - y[te].mean()) ** 2)
+        sc.append(1.0 - np.sum((y[te] - p) ** 2) / ss if ss > 0 else np.nan)
+    return float(np.clip(np.nanmean(sc), 0.0, 1.0))
+
+
+def _r2_multi(Y, X):
+    """Total R² of an OLS fit of every column of Y on X (with intercept), pooled over
+    columns as 1 − ΣSS_res / ΣSS_tot."""
+    A = np.c_[X, np.ones(len(X))]
+    beta, *_ = np.linalg.lstsq(A, Y, rcond=None)
+    res = Y - A @ beta
+    ss_tot = np.sum((Y - Y.mean(axis=0)) ** 2)
+    return float(1.0 - np.sum(res ** 2) / ss_tot) if ss_tot > 0 else np.nan
+
+
+def demixed_variance(Y, variables, n_perm=0, seed=0):
+    """How much of a source's variance each variable uniquely explains.
+
+    The paper's Fig 2k ("MD neurons encode one variable, PFC neurons several") asked at the
+    population level and without a neuron-count confound: fit every column of the source
+    jointly on all the variables at once, then drop one variable and see how much total R²
+    falls. That drop is the variance *uniquely* attributable to it — variance two variables
+    share is not credited to either. What is left over is reported honestly as `shared`
+    (explained, but not uniquely) and `residual` (not explained), so the parts sum to 1.
+
+    With `n_perm > 0`, also returns a per-column count of how many variables each column is
+    tuned to, against a null in which that variable's column is shuffled: the Fig 2k
+    histogram.
+    """
+    Y, X = _standardise(Y), _standardise(np.column_stack(variables[1]))
+    names = list(variables[0])
+    full = _r2_multi(Y, X)
+    unique = {}
+    for j, nm in enumerate(names):
+        unique[nm] = float(full - _r2_multi(Y, np.delete(X, j, axis=1)))
+    res = dict(r2_full=float(full), unique=unique,
+               shared=float(full - sum(unique.values())), residual=float(1.0 - full))
+    if n_perm:
+        rng = np.random.default_rng(seed)
+        A = np.c_[X, np.ones(len(X))]
+        beta, *_ = np.linalg.lstsq(A, Y, rcond=None)
+        ss_tot = np.sum((Y - Y.mean(axis=0)) ** 2, axis=0)          # per column
+        base = np.sum((Y - A @ beta) ** 2, axis=0)
+        drop = np.zeros((len(names), Y.shape[1]))
+        for j in range(len(names)):
+            Aj = np.c_[np.delete(X, j, axis=1), np.ones(len(X))]
+            bj, *_ = np.linalg.lstsq(Aj, Y, rcond=None)
+            drop[j] = (np.sum((Y - Aj @ bj) ** 2, axis=0) - base) / np.maximum(ss_tot, 1e-12)
+        null = np.zeros((len(names), n_perm, Y.shape[1]))
+        for j in range(len(names)):
+            for p in range(n_perm):
+                Xp = X.copy()
+                Xp[:, j] = rng.permutation(Xp[:, j])
+                Ap, Apj = np.c_[Xp, np.ones(len(X))], np.c_[np.delete(Xp, j, axis=1), np.ones(len(X))]
+                bp, *_ = np.linalg.lstsq(Ap, Y, rcond=None)
+                bpj, *_ = np.linalg.lstsq(Apj, Y, rcond=None)
+                null[j, p] = (np.sum((Y - Apj @ bpj) ** 2, axis=0)
+                              - np.sum((Y - Ap @ bp) ** 2, axis=0)) / np.maximum(ss_tot, 1e-12)
+        tuned = drop > np.percentile(null, 95, axis=1)               # (vars, columns)
+        cnt = tuned.sum(axis=0)
+        res['n_vars_per_unit'] = cnt.tolist()
+        res['n_vars_hist'] = [int((cnt == k).sum()) for k in range(len(names) + 1)]
+        res['mean_vars_per_unit'] = float(cnt.mean())
+        res['frac_multi'] = float((cnt >= 2).mean())
+    return res
+
+
+def encoding_table(sess, obs=None, primary=PRIMARY, folds=5, seed=0, n_perm=50):
+    """What each source carries about each variable: decoding, and demixed variance.
+
+    Runs on every trial of the primary phase, not only the steady state: the trials right
+    after a reversal are where the latent update and its gradient do their work, and a
+    steady-state-only table would leave the error signal with almost nothing to carry. The
+    steady-state version is returned alongside as `decoding_steady`.
+
+    Two measures per (source, variable):
+      decoding   cross-validated balanced accuracy (binary variables) or R² (continuous),
+                 with a label-shuffle null per cell so "above chance" is measured, not assumed
+      variance   the drop-one unique variance of `demixed_variance`
+
+    No prediction here is enforced: the hidden state's context decoding is expected to be
+    near ceiling *because Z gates it*, and the gradient's cue decoding is expected to be at
+    chance because along the context axis the gradient's sign carries the context and never
+    the cue. Both are reported as they come out.
+    """
+    mask = select(sess, phase=primary)
+    if mask.sum() < 50:
+        return dict(note='too few trials', n=int(mask.sum()))
+    variables = encoding_variables(sess, obs)
+    sources = encoding_sources(sess, mask)
+    steady = mask & (sess['since'] >= STEADY)
+    rng = np.random.default_rng(seed)
+    res = dict(n=int(mask.sum()), sources=sorted(sources), variables=list(ENCODING_VARS),
+               decoding={}, decoding_null={}, decoding_steady={}, variance={})
+    for sname, (X, rows) in sources.items():
+        res['decoding'][sname], res['decoding_null'][sname] = {}, {}
+        res['decoding_steady'][sname] = {}
+        Xr = X[rows]
+        for vname in ENCODING_VARS:
+            if vname not in variables:
+                continue
+            y, binary = variables[vname]
+            yr = np.asarray(y, dtype=float)[rows]
+            good = np.isfinite(yr)
+            if good.sum() < 5 * folds:
+                res['decoding'][sname][vname] = np.nan
+                continue
+            Xg, yg = Xr[good], yr[good]
+            if vname == 'conflict':
+                # Decoded as the paper contrasts it: the two most ambiguous levels against
+                # the two least, dropping the middle one. The continuous version is what
+                # the variance decomposition uses.
+                cl = sess['conf_level'][rows][good]
+                keep = np.isin(cl, [0, 1, 3, 4])
+                Xg, yg, binary = Xg[keep], (cl[keep] >= 3).astype(float), True
+            fn = _cv_logistic if binary else _cv_ridge
+            res['decoding'][sname][vname] = fn(Xg, yg, folds, seed)
+            res['decoding_null'][sname][vname] = fn(Xg, rng.permutation(yg), folds, seed)
+            st = steady[rows][good] if vname != 'conflict' else steady[rows][good][keep]
+            if st.sum() >= 5 * folds:
+                res['decoding_steady'][sname][vname] = fn(Xg[st], yg[st], folds, seed)
+        # Demixed variance: every variable at once, on the rows where all of them are finite.
+        vnames = [v for v in ENCODING_VARS if v in variables]
+        V = np.column_stack([np.asarray(variables[v][0], dtype=float) for v in vnames])
+        good = rows & np.isfinite(V).all(axis=1)
+        if good.sum() >= 50:
+            res['variance'][sname] = demixed_variance(
+                X[good], (vnames, [V[good][:, j] for j in range(V.shape[1])]),
+                n_perm=n_perm if sname.startswith('hidden_t') else 0, seed=seed)
+            res['variance'][sname]['n'] = int(good.sum())
+    return res
 
 
 def unit_classes(sess, mask=None, n_perm=100, seed=0):
@@ -281,12 +579,13 @@ def z_side_table(sess, upd=None, primary=PRIMARY):
     return res
 
 
-def hidden_report(sess, primary=PRIMARY, n_perm=100, with_decoding=True):
+def hidden_report(sess, primary=PRIMARY, n_perm=100, with_decoding=True, obs=None):
     """Every hidden-state number for one session, as one json-able dict.
 
     Conditions for the integration index and cue velocity: steady aligned trials (the
     rule-driven regime), the first 5 trials after a reversal (exploration), stale vs
-    aligned, and each conflict level.
+    aligned, and each conflict level. `obs` (an ideal-observer result) is optional and only
+    supplies the two uncertainty variables to the encoding table.
     """
     base = steady_mask(sess, primary)
     if base.sum() < 20:
@@ -304,9 +603,12 @@ def hidden_report(sess, primary=PRIMARY, n_perm=100, with_decoding=True):
     conds.update({f'conf{c}': base & (sess['conf_level'] == c) for c in range(5)})
     res['integration'] = {k: integration(sess, axes, v) for k, v in conds.items()}
     res['unit_classes'] = unit_classes(sess, base, n_perm=n_perm)
+    # The paper's Fig 3c cut: both population measures trial by trial around a reversal.
+    res['integration_reversal'] = integration_aligned(sess, axes, primary=primary)
     if with_decoding:
         res['decoding'] = {k: decode(sess, mask=v) for k, v in
                            (('steady_aligned', base), ('early', conds['early']))}
+        res['encoding'] = encoding_table(sess, obs, primary=primary)
     # C3: the two axes' magnitude around a reversal.
     from hier_switch_analyses import reversal_aligned
     h = _hidden(sess)

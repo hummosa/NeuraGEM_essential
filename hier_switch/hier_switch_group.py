@@ -34,7 +34,8 @@ for _p in (_HERE, _ROOT):
 import numpy as np
 
 from hier_switch_analyses import (behaviour, latent, load_session, normative_table,
-                                  trial_labels, z_update_table, z_updates)
+                                  switch_by_early_conf, trial_labels, z_update_table,
+                                  z_updates)
 from hier_switch_hidden import hidden_report, z_side_table
 from hier_switch_observer import ideal_observer
 
@@ -45,12 +46,26 @@ RNN_SEEDS = tuple(range(10))
 # each block differ. The sigmoid ladder is where gain is a live axis (B5's Δgain).
 NG_CONDITIONS = ['softmax_rc_none', 'softmax_rc_low', 'softmax_rc_high',
                  'sigmoid_zlr30000', 'sigmoid_zlr30000_wd1e-05', 'sigmoid_zlr30000_wd3e-05']
+#: The manipulation sessions (hier_switch_hooks): the paper's optogenetics, plus the
+#: sigmoid triplet the gain panels need. Recorded by the same array; kept separate so a
+#: re-run of the originals does not drag these along and vice versa.
+NG_MANIPULATIONS = ['sigmoid_rc_none', 'sigmoid_rc_low', 'sigmoid_rc_high',
+                    'softmax_lu0_rc_low', 'softmax_lu0_rc_high',
+                    'softmax_lu3_rc_low', 'softmax_lu3_rc_high',
+                    'softmax_lu10_rc_low', 'softmax_lu10_rc_high',
+                    'softmax_blast_rc_low', 'softmax_blast_rc_high',
+                    'sigmoid_blast_rc_low', 'sigmoid_blast_rc_high',
+                    'softmax_mom0.5_rc_none', 'softmax_mom0.9_rc_none']
 RNN_CONDITIONS = ['rnn_rc_none', 'rnn_rc_low', 'rnn_rc_high']
+#: Off until the manipulation sessions have been recorded, so `list` and `task` keep
+#: describing what is on disk. Set HIER_SWITCH_MANIP=1 to include them.
+WITH_MANIPULATIONS = bool(os.environ.get('HIER_SWITCH_MANIP'))
 
 
 def models():
     """[(model_type, seed, model.pt, conditions)] — the group, in array-task order."""
-    out = [('NG', s, os.path.join(EXPORTS, 'tune_v15', f'NG_s{s}', 'model.pt'), NG_CONDITIONS)
+    conds = NG_CONDITIONS + (NG_MANIPULATIONS if WITH_MANIPULATIONS else [])
+    out = [('NG', s, os.path.join(EXPORTS, 'tune_v15', f'NG_s{s}', 'model.pt'), conds)
            for s in NG_SEEDS]
     out += [('RNN', s, os.path.join(EXPORTS, 'tune_v16', f'RNN_s{s}', 'model.pt'), RNN_CONDITIONS)
             for s in RNN_SEEDS]
@@ -76,6 +91,9 @@ def session_report(path, with_hidden=True):
                Z_lr=meta['Z_lr'], Z_decay=meta['Z_decay'],
                z_lr_decay=float(meta['Z_lr'] * meta['Z_decay']))
     rep['behaviour'] = behaviour(sess)
+    # The paper's Fig 1f on this session's own, uncontrolled reversals: latency against
+    # how ambiguous the block's first five trials happened to be.
+    rep['behaviour']['by_early_conf'] = switch_by_early_conf(sess, obs)
     rep['observer'] = {k: v for k, v in obs.items()
                        if k in ('acc', 'acc_given_context', 'p_c', 'p_cue_mean')}
     rep['observer']['switch'] = float(np.nanmean(obs['switch_trial']))
@@ -91,7 +109,7 @@ def session_report(path, with_hidden=True):
     else:
         rep['z_side'] = z_side_table(sess)
     if with_hidden and 'hidden' in sess:
-        rep['hidden'] = hidden_report(sess)
+        rep['hidden'] = hidden_report(sess, obs=obs)
     return rep
 
 
@@ -322,6 +340,123 @@ def predictions(data):
         seeds, v = _per_seed(sm, None, lambda r: max(abs(c['dgain']) for c in r['z_updates'].values()))
         rows.append(_sign_row('Softmax: |Δgain| is identically 0 (max over cells)', seeds, v, 0,
                               'the check that the softmax has no gain direction'))
+
+    rows += _encoding_rows(ng_none)
+    rows += _regime_rows(ng_none)
+    rows += _manipulation_rows(data)
+    return rows
+
+
+#: Which (source, variable) cells of the encoding table get a row, and what we expect.
+#: +1 = above chance, 0 = at chance (reported as a size, not a sign). The expectations are
+#: written down so the table says which ones did *not* come out that way.
+_ENCODING_EXPECT = (
+    ('hidden_t16', 'context', +1, 'the hidden state is gated by Z, so this is near ceiling'),
+    ('hidden_pc2', 'context', 0, 'dimension-matched control: is context in the dominant PCs?'),
+    ('hidden_t16', 'cue', +1, ''),
+    ('hidden_t16', 'rule', +1, ''),
+    ('hidden_t16', 'conflict', +1, ''),
+    ('z_in', 'context', +1, 'the MDContext analogue'),
+    ('z_in', 'cue', 0, 'Z should carry the context and nothing of the current trial'),
+    ('z_in', 'conflict', 0, ''),
+    ('grad', 'context', +1, 'the error signal is signed by which context was wrong'),
+    ('grad', 'outcome', +1, ''),
+    ('grad', 'cue', 0, 'along the context axis the gradient cannot carry the cue'),
+    ('grad', 'rule', 0, ''),
+)
+
+
+def _encoding_rows(ng_none):
+    """What each signal encodes, decoding accuracy minus its own shuffled-label null."""
+    rows = []
+    if not ng_none:
+        return rows
+    for src, var, expect, note in _ENCODING_EXPECT:
+        seeds, v = _per_seed(ng_none, None, lambda r, s=src, x=var: (
+            r['hidden']['encoding']['decoding'][s][x]
+            - r['hidden']['encoding']['decoding_null'][s][x]))
+        rows.append(_sign_row(f'Encoding: {var} from {src} (above its shuffle null)',
+                              seeds, v, expect, note))
+    # Mixed against demixed: how many variables a unit of each signal carries.
+    seeds, v = _per_seed(ng_none, None,
+                         lambda r: r['hidden']['encoding']['variance']['hidden_t16']['mean_vars_per_unit'])
+    rows.append(_sign_row('Encoding: variables per hidden unit (the paper\'s Fig 2k, PFC side)',
+                          seeds, v, +1, 'a count, not a difference; report the size'))
+    seeds, v = _per_seed(ng_none, None,
+                         lambda r: (r['hidden']['encoding']['variance']['z_in']['unique']['context']
+                                    - max(r['hidden']['encoding']['variance']['z_in']['unique'][k]
+                                          for k in ('cue', 'rule', 'conflict', 'outcome'))))
+    rows.append(_sign_row('Encoding: Z is demixed (context variance − the best other variable)',
+                          seeds, v, +1))
+    return rows
+
+
+def _regime_rows(ng_none):
+    """The paper's Fig 3c: does the population shift regime right after a reversal?"""
+    rows = []
+    if not ng_none:
+        return rows
+
+    def early_minus_steady(r, key):
+        ir = r['hidden'].get('integration_reversal')
+        if not ir:
+            return np.nan
+        k = np.asarray(ir['k'], dtype=float)
+        v = np.asarray(ir[key], dtype=float)
+        early = np.nanmean(v[(k >= 1) & (k <= 5)])
+        steady = np.nanmean(v[k >= 11]) if (k >= 11).any() else np.nanmean(v[k <= 0])
+        return early - steady
+    seeds, v = _per_seed(ng_none, None, lambda r: early_minus_steady(r, 'index'))
+    rows.append(_sign_row('Regime: integration index, first 5 after a reversal − steady',
+                          seeds, v, -1, 'the paper: integration collapses in exploration'))
+    seeds, v = _per_seed(ng_none, None, lambda r: early_minus_steady(r, 'cue_velocity'))
+    rows.append(_sign_row('Regime: cue velocity, first 5 after a reversal − steady',
+                          seeds, v, +1, 'the paper: activity becomes input-driven'))
+    return rows
+
+
+#: Each manipulation against its own unperturbed control, on the matching forced session.
+_MANIPULATIONS = (('softmax_lu0', 'softmax', 'latent update off, trials 1-4 (ACC→MD silencing)', +1),
+                  ('softmax_lu3', 'softmax', 'latent update x3, trials 1-5 (ours, not the paper)', -1),
+                  ('softmax_lu10', 'softmax', 'latent update x10, trials 1-5 (ours)', -1),
+                  ('softmax_blast', 'softmax', 'Z driven to (1, 1) at the first feedback', -1),
+                  ('sigmoid_blast', 'sigmoid', 'Z driven to (1, 1), sigmoid gate', -1))
+
+
+def _manipulation_rows(data, criteria=(('dec_switch', 'decided'), ('z_switch', 'Z side'))):
+    """Switch latency under each manipulation minus its control, within seed and split.
+
+    The sign convention is the paper's: positive = slower to switch. Silencing the update is
+    predicted to slow switching; driving the latent is predicted to speed it up.
+    """
+    rows = []
+    for name, base, label, expect in _MANIPULATIONS:
+        for split in ('low', 'high'):
+            pert = data.get(('NG', f'{name}_rc_{split}'), {})
+            ctrl = data.get(('NG', f'{base}_rc_{split}'), {})
+            if not pert or not ctrl:
+                continue
+            seeds = sorted(set(pert) & set(ctrl))
+            for key, crit in criteria:
+                v = np.array([pert[s]['behaviour']['switch']['all'][key]
+                              - ctrl[s]['behaviour']['switch']['all'][key] for s in seeds])
+                rows.append(_sign_row(
+                    f'Manipulation [{split} conflict]: {label} — extra trials to switch ({crit})',
+                    np.array(seeds), v, expect))
+    # Momentum: what it does to the two latent signals, not to behaviour.
+    ctrl = data.get(('NG', 'softmax_rc_none'), {})
+    for mu in ('0.5', '0.9'):
+        g = data.get(('NG', f'softmax_mom{mu}_rc_none'), {})
+        if not g or not ctrl:
+            continue
+        seeds = sorted(set(g) & set(ctrl))
+        for key, what in (('step', 'the update |Δz| on the context axis'),
+                          ('grad', 'the raw |dL/dZ|')):
+            v = np.array([np.nanmax(g[s]['latent']['traces'][key]['mean'])
+                          - np.nanmax(ctrl[s]['latent']['traces'][key]['mean']) for s in seeds])
+            rows.append(_sign_row(f'Momentum {mu}: peak of {what}, minus the control',
+                                  np.array(seeds), v, +1,
+                                  'does a run of errors build on itself?'))
     return rows
 
 

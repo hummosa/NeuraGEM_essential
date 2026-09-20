@@ -85,6 +85,13 @@ def _rc(name, base):
             for k, v in (('none', None), ('low', 'low'), ('high', 'high'))}
 
 
+def _manip(name, base, perturb):
+    """A manipulation on the forced low/high pair — the paper's design, which applies its
+    optogenetics to reversals of a known early-conflict level and compares within animal."""
+    return {f'{name}_rc_{k}': dict(base, **LONG, reversal_conflict=k, perturb=perturb)
+            for k in ('low', 'high')}
+
+
 CONDITIONS = {
     'softmax': dict(),
     **{f'nosoftmax_zlr{z:g}': dict(NO_SOFTMAX, Z_lr=float(z)) for z in (300, 1000, 3000, 10000)},
@@ -96,6 +103,28 @@ CONDITIONS = {
     'sigmoid_zlr30000_wd1e-05': dict(SIGMOID, Z_lr=3e4, Z_decay=1e-5),
     'sigmoid_zlr30000_wd3e-05': dict(SIGMOID, Z_lr=3e4, Z_decay=3e-5),
     **_rc('softmax', dict()),
+    # The sigmoid at its best setting, as a forced-conflict triplet: the only gate where the
+    # gain is a live axis, so it is where "drive both units" is a gain move and not a reset.
+    **_rc('sigmoid', dict(SIGMOID, Z_lr=3e4)),
+    # ── The manipulations (hier_switch_hooks), each on the forced low/high pair ──
+    # Every one acts on the trials just after a reversal and then stops, as the paper's
+    # optogenetics does. `lu0` is ACC→MD silencing (Fig 4h): the gradient is still computed
+    # and logged, only the step is zeroed. `lu3` / `lu10` are an "ACC stimulation" the paper
+    # never performed — ours, and labelled as ours. `blast` drives both latent units and
+    # lets the gradient take over, the MD-activation analogue (Fig 5d).
+    **_manip('softmax_lu0', dict(), dict(kind='lu_scale', k=0.0, trials=[1, 4])),
+    **_manip('softmax_lu3', dict(), dict(kind='lu_scale', k=3.0, trials=[1, 5])),
+    **_manip('softmax_lu10', dict(), dict(kind='lu_scale', k=10.0, trials=[1, 5])),
+    **_manip('softmax_blast', dict(), dict(kind='z_set', z=[1.0, 1.0], trials=[1, 1])),
+    **_manip('sigmoid_blast', dict(SIGMOID, Z_lr=3e4),
+             dict(kind='z_set', z=[1.0, 1.0], trials=[1, 1])),
+    # Momentum: not a control for anything, a question. Z is persistent where the paper's MD
+    # is transient, and the paper's ACC builds up over consecutive errors. Momentum is the
+    # one change that would make the latent update build up the same way, so the panels show
+    # what it does to Z, to the update and to the gradient around a reversal.
+    **{f'softmax_mom{mu:g}_rc_none': dict(LONG, reversal_conflict=None,
+                                          perturb=dict(kind='momentum', mu=mu, trials=[1, 5]))
+       for mu in (0.5, 0.9)},
     # The RNN baseline (v16 models): no latent update, weights plastic, as it trained.
     **_rc('rnn', dict(test_no_of_steps_in_latent_space=0)),
     'rnn': dict(test_no_of_steps_in_latent_space=0),
@@ -234,7 +263,14 @@ def main(path, names):
     names = names or DEFAULTS.get(_model_type(cfg), list(CONDITIONS))
     plot_style.set_plot_style()
     rows = []
+    root = os.path.join(_ROOT, 'exports', 'hier_switch', 'inference_tests', tag)
     for name in names:
+        # Recording is the expensive part and a session is deterministic, so a condition
+        # already on disk is left alone. Delete its folder (or pass force=1) to redo it.
+        done = os.path.join(root, name, 'session.npz')
+        if os.path.exists(done) and not os.environ.get('HIER_SWITCH_FORCE'):
+            print(f'  = {name}: session.npz exists, skipping')
+            continue
         te, extra, trials = test_condition(model, cfg, tag, name, CONDITIONS[name])
         rows.append((name, te, extra, trials))
 

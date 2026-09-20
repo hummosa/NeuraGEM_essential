@@ -122,6 +122,12 @@ MODEL_COLORS = {
     'oracle z cont':       'tab:purple',
     'bayesian':            'tab:brown',
     'naive':               'tab:purple',
+    # hier_switch: the signals a variable can be decoded *from*, treated as models in their
+    # own right so one hue means one source across every panel of the story figure.
+    'hidden state':        'tab:blue',       # the network's units — the PFC side
+    'latent z':            'tab:orange',     # the persistent context code — the MD side
+    'z update':            'tab:olive',      # its per-trial change — the transient
+    'z gradient':          'tab:pink',       # the error signal driving it — the ACC side
 }
 
 # Assigned in order to labels not in MODEL_COLORS, so an unregistered condition still gets

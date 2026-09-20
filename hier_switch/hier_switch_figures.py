@@ -230,11 +230,15 @@ def spec_reversal(groups, key='acc', ylabel='Accuracy'):
 CRITERIA = (('switch', 'behaviour'), ('z_switch', 'Z side'), ('dec_switch', 'decided'))
 
 
-def _switch_arms(groups):
-    """[(values_per_seed, criterion label, split, colour)] for the model and the observer."""
+def _switch_arms(groups, criteria=None):
+    """[(values_per_seed, criterion label, split, colour)] for the model and the observer.
+
+    `criteria` selects a subset of CRITERIA — the story figure shows two (the paper's
+    behavioural one on decided trials, and the latent one), the supplement keeps all three.
+    """
     arms = []
     for label, reps in groups.items():
-        for crit, name in CRITERIA:
+        for crit, name in (criteria or CRITERIA):
             for split in ('low', 'high'):
                 arms.append((stack(reps, f'behaviour.switch.{split}.{crit}'), name, split,
                              split_style(label, split)[0]))
@@ -255,7 +259,7 @@ def _split_legend(ax, loc='upper left'):
               frameon=False, handlelength=1.0, borderpad=0.2, labelspacing=0.25, loc=loc)
 
 
-def spec_switch(groups):
+def spec_switch(groups, criteria=None):
     """How long the network stays on the old rule, by the conflict of the first five trials.
 
     Four clusters — the paper's behavioural criterion, the latent one (Z back on the true
@@ -263,7 +267,7 @@ def spec_switch(groups):
     same trials — each a low/high pair. Shade is the early conflict, hue is the model.
     """
     def panel(ax):
-        arms = _switch_arms(groups)
+        arms = _switch_arms(groups, criteria)
         g = [(v, '', col) for v, _, _, col in arms]
         # One tick label per low/high pair, centred under it.
         clusters = [(arms[i][1], i, i + 1) for i in range(0, len(arms), 2)]
@@ -274,11 +278,11 @@ def spec_switch(groups):
     return panel
 
 
-def spec_switch_cost(groups):
+def spec_switch_cost(groups, criteria=None):
     """The same thing as one number per criterion: how many extra trials a high-conflict
     start costs, paired within seed. Positive = slower after an ambiguous start."""
     def panel(ax):
-        arms = _switch_arms(groups)
+        arms = _switch_arms(groups, criteria)
         g = []
         for i in range(0, len(arms), 2):
             low, name, _, _ = arms[i]
@@ -600,15 +604,253 @@ def spec_clamp_gain(cells, d=1.0, measure='cue_velocity', ylabel='Cue velocity')
 
 # ── Figures ───────────────────────────────────────────────────────────────────
 
-def figure(panels, path, ncol=None, panel=None):
-    """Draw a list of panel callables into one row/grid and save it."""
+# ══════════════════════════════════════════════════════════════════════════════
+# The story figure's panels
+# ══════════════════════════════════════════════════════════════════════════════
+
+#: The signals a task variable can be decoded from, in the order every panel shows them.
+#: `hidden_pc2` is the dimension-matched control for `hidden_t16` and is drawn hollow, in
+#: the same hue, because it is the same signal with 62 dimensions taken away.
+SOURCES = (('hidden_t16', 'hidden state', 'hidden state', False),
+           ('hidden_pc2', 'hidden state', 'hidden, 2 PCs', True),
+           ('z_in', 'latent z', 'Z', False),
+           ('step', 'z update', 'ΔZ', False),
+           ('grad', 'z gradient', 'dL/dZ', False))
+#: The variables each source is tested against, and how they are labelled on an axis.
+MATRIX_VARS = (('cue', 'cue'), ('rule', 'rule'), ('context', 'context'),
+               ('conflict', 'conflict'))
+#: The full set, including the paper's two uncertainties, for the variance panel.
+VARIANCE_VARS = MATRIX_VARS + (('outcome', 'outcome'),
+                               ('rule_uncertainty', 'rule uncert.'),
+                               ('cue_uncertainty', 'cue uncert.'))
+
+
+def _source_color(key):
+    return get_model_color(dict((k, c) for k, c, _, _ in SOURCES)[key])
+
+
+def spec_psychometric_ctx(groups):
+    """The paper's Fig 1e: accuracy against cue conflict, one curve per context.
+
+    The two contexts are ordered relative to training — solid is the context the model saw
+    last, dashed the other — because which one is labelled "0" is an accident of the data
+    stream, while "the one the weights and Z were sitting in when training stopped" is a
+    real asymmetry. The paper's claim is that the two coincide.
+    """
+    def panel(ax):
+        for label, reps in groups.items():
+            col = get_model_color(label)
+            for k, (name, ls) in enumerate((('last trained context', '-'),
+                                            ('other context', '--'))):
+                series(ax, CONFLICT, stack(reps, f'behaviour.psychometric.acc_ctx.{k}'),
+                       label=name if label == 'NeuraGEM' else None,
+                       color=col if k == 0 else shade(col), ls=ls, dots=False,
+                       marker='o' if k == 0 else 's')
+        first = next(iter(groups.values()))
+        series(ax, CONFLICT, stack(first, 'observer.p_c'), label='ideal observer',
+               color=COL_OBS, ls=':', marker='', dots=False)
+        ax.axhline(0.5, color='k', linewidth=0.5, alpha=0.3)
+        ax.set_xlabel('Cue conflict')
+        ax.set_ylabel('Accuracy (steady state)')
+        ax.set_ylim(0.4, 1.02)
+        legend(ax, loc='lower left')
+    return panel
+
+
+def spec_switch_vs_early_conflict(groups, criterion='dec_switch'):
+    """The paper's Fig 1f on uncontrolled reversals: switch latency against how ambiguous
+    the block's first five trials happened to be.
+
+    The forced low/high sessions (spec_switch) are the controlled version and the stronger
+    test. This one is the paper's own design: bin each seed's reversals by their own early
+    conflict and see whether latency rises with it.
+    """
+    def panel(ax):
+        for label, reps in groups.items():
+            x = np.nanmean(stack(reps, 'behaviour.by_early_conf.conflict'), axis=0)
+            series(ax, x, stack(reps, f'behaviour.by_early_conf.{criterion}'),
+                   label=label, color=get_model_color(label))
+        first = next(iter(groups.values()))
+        x = np.nanmean(stack(first, 'behaviour.by_early_conf.conflict'), axis=0)
+        obs = stack(first, 'behaviour.by_early_conf.observer')
+        if np.isfinite(obs).any():
+            series(ax, x, obs, label='ideal observer', color=COL_OBS, ls='--', marker='s',
+                   dots=False)
+        ax.set_xlabel('Cue conflict of the first 5 trials')
+        ax.set_ylabel('Trials to switch')
+        legend(ax, loc='upper left')
+    return panel
+
+
+def spec_decoding_matrix(reports, variables=MATRIX_VARS, sources=SOURCES):
+    """What each signal carries: cross-validated decoding, one cluster per variable.
+
+    Hue is the source (hidden state, Z, ΔZ, dL/dZ); the hollow bar is the hidden state cut
+    down to two principal components, so a hidden-vs-Z difference cannot be explained by
+    the hidden state simply having 32× the dimensions. The dashed line is the shuffled-
+    label null pooled over every cell.
+    """
+    def panel(ax):
+        groups, gaps, clusters, hollow_at = [], [], [], []
+        i = 0
+        for vkey, vlabel in variables:
+            first = i
+            for skey, _, slabel, hollow in sources:
+                groups.append((stack(reports, f'hidden.encoding.decoding.{skey}.{vkey}'),
+                               slabel, _source_color(skey)))
+                if hollow:
+                    hollow_at.append(i)
+                i += 1
+            clusters.append((vlabel, first, i - 1))
+            gaps.append(i - 1)
+        bars(ax, groups, ylabel='Decoding accuracy\n(balanced, cross-validated)',
+             baseline=0.5, connect=False, clusters=clusters, gap_after=gaps[:-1])
+        # Hollow the dimension-matched control, the way outcome is hollowed elsewhere.
+        # bars() draws one patch per group, in order, so the indices line up.
+        patches = [p for p in ax.patches]
+        for j in hollow_at:
+            if j < len(patches):
+                patches[j].set_facecolor('none')
+                patches[j].set_edgecolor(groups[j][2])
+                patches[j].set_linewidth(0.8)
+        ax.set_ylim(0.4, 1.02)
+        ax.tick_params(axis='x', length=0)
+        from matplotlib.patches import Patch
+        # One horizontal row above the axes: the bars fill the panel, so an in-axes legend
+        # would sit on top of them (docs/figure_style.md offers this as the alternative).
+        ax.legend(handles=[Patch(facecolor='none' if h else _source_color(k),
+                                 edgecolor=_source_color(k), label=l)
+                           for k, _, l, h in sources],
+                  frameon=False, handlelength=0.9, borderpad=0.2, labelspacing=0.2,
+                  columnspacing=0.8, ncol=3, loc='lower left',
+                  bbox_to_anchor=(0, 1.0, 1, 0.14), mode='expand', fontsize='small')
+    return panel
+
+
+def spec_encoding_variance(reports, sources=SOURCES, variables=VARIANCE_VARS):
+    """How much of each signal's variance each variable uniquely explains.
+
+    The paper's Fig 2k asked at the population level: one stacked bar per signal, one
+    segment per variable, plus the variance that two variables share and the variance
+    nothing explains. A signal that stacks into one tall segment is demixed; one that
+    stacks into several is mixed.
+
+    Segments are means over seeds. A stacked bar cannot carry a SEM or a dot per seed
+    without becoming unreadable, so the spread lives in the group table instead: the row
+    "Encoding: Z is demixed" is the same contrast with its per-seed values and sign count.
+    """
+    def panel(ax):
+        cmap = plt.cm.tab20
+        cols = {v: cmap(j / 20.0) for j, (v, _) in enumerate(variables)}
+        x = np.arange(len(sources), dtype=float)
+        for i, (skey, _, slabel, _) in enumerate(sources):
+            bottom = 0.0
+            for vkey, vlabel in variables:
+                h = float(np.nanmean(stack(reports, f'hidden.encoding.variance.{skey}.unique.{vkey}')))
+                h = max(h, 0.0)
+                ax.bar(x[i], h, bottom=bottom, width=0.7, color=cols[vkey], linewidth=0,
+                       label=vlabel if i == 0 else None, zorder=2)
+                bottom += h
+            for key, col in (('shared', '0.6'), ('residual', '0.88')):
+                h = max(float(np.nanmean(stack(reports, f'hidden.encoding.variance.{skey}.{key}'))), 0.0)
+                ax.bar(x[i], h, bottom=bottom, width=0.7, color=col, linewidth=0,
+                       label=key if i == 0 else None, zorder=2)
+                bottom += h
+        ax.set_xticks(x)
+        ax.set_xticklabels([l for _, _, l, _ in sources], rotation=45, ha='right')
+        ax.tick_params(axis='x', length=0)
+        ax.set_ylabel('Fraction of the signal’s variance')
+        ax.set_ylim(0, 1.02)
+        ax.legend(frameon=False, handlelength=0.9, borderpad=0.2, labelspacing=0.18,
+                  loc='center left', bbox_to_anchor=(1.0, 0.5), fontsize='small')
+    return panel
+
+
+def spec_decoding_timecourse(reports, which=('cue', 'rule')):
+    """Cue and rule decoding from the hidden state, per timestep, steady state against the
+    first five trials after a reversal — the two codes and what a reversal does to each."""
+    def panel(ax):
+        for name, ls in ((which[0], '-'), (which[1], '--')):
+            for cond, f, tag in (('steady_aligned', 1.0, 'steady'),
+                                 ('early', LOW_SHADE, 'first 5 after reversal')):
+                arr = stack(reports, f'hidden.decoding.{cond}.{name}.acc')
+                col = COL_NG if f == 1.0 else shade(COL_NG)
+                band(ax, np.arange(arr.shape[1]), arr, color=col, ls=ls,
+                     label=f'{name}, {tag}')
+        ax.axhline(0.5, color='k', linewidth=0.5, alpha=0.3)
+        ax.axvspan(1, 16, color='0.85', alpha=0.35, linewidth=0, zorder=0)
+        ax.set_xlabel('Timestep (grey: the cue)')
+        ax.set_ylabel('Decoding accuracy')
+        ax.set_ylim(0.4, 1.02)
+        legend(ax, loc='lower right', fontsize='small')
+    return panel
+
+
+def spec_integration_reversal(groups, measure='index',
+                              ylabel='Integration index', splits=('all',)):
+    """The paper's Fig 3c: a population measure of the PFC regime, trial by trial around a
+    reversal. `measure` is 'index' (late/early cue-period activity, high = rule-driven) or
+    'cue_velocity' (the fastest rise along the cue axis, high = input-driven)."""
+    def panel(ax):
+        for label, reps in groups.items():
+            col = get_model_color(label)
+            k = np.asarray(_get(reps[0], 'hidden.integration_reversal.k'), dtype=float)
+            arr = stack(reps, f'hidden.integration_reversal.{measure}')
+            if not np.isfinite(arr).any():
+                continue
+            band(ax, k[:arr.shape[1]], arr, label=label, color=col)
+        ax.axvline(0.5, color='k', linewidth=0.5, alpha=0.4)
+        ax.set_xlabel('Trials from reversal')
+        ax.set_ylabel(ylabel)
+        if len(groups) > 1:
+            legend(ax, loc='best', fontsize='small')
+    return panel
+
+
+def spec_trace(groups, key='z_evidence', ylabel='Z on the true context'):
+    """One of the three latent signals around a reversal, one line per condition.
+
+    `key` is a trace name from latent()['traces']: z_evidence (the persistent context code),
+    step (the size of the trial's own latent update — the transient), grad (the raw error
+    gradient, the signal that drives it), or gain.
+    """
+    def panel(ax):
+        for label, reps in groups.items():
+            k = np.asarray(_get(reps[0], f'latent.traces.{key}.k'), dtype=float)
+            arr = stack(reps, f'latent.traces.{key}.mean')
+            if not np.isfinite(arr).any():
+                continue
+            band(ax, k[:arr.shape[1]], arr, label=label, color=get_model_color(label))
+        ax.axvline(0.5, color='k', linewidth=0.5, alpha=0.4)
+        ax.set_xlabel('Trials from reversal')
+        ax.set_ylabel(ylabel)
+        if len(groups) > 1:
+            legend(ax, loc='best', fontsize='small')
+    return panel
+
+
+def figure(panels, path, ncol=None, panel=None, letters=False):
+    """Draw a list of panel callables into one row/grid and save it.
+
+    A `None` entry leaves a blank slot, so a multi-row figure can keep its columns aligned
+    when one row is shorter. With `letters`, each occupied panel is lettered a, b, c … in
+    reading order, which is what the captions refer to.
+    """
     n = len(panels)
     ncol = ncol or min(n, 3)
     nrow = int(np.ceil(n / ncol))
     fig, axes = plt.subplots(nrow, ncol, figsize=FigSize.grid(nrow, ncol, panel or FigSize.wide))
     axes = np.atleast_1d(axes).ravel()
+    drawn = 0
     for ax, p in zip(axes, panels):
+        if p is None:
+            ax.axis('off')
+            continue
         p(ax)
+        if letters:
+            ax.text(-0.28, 1.06, chr(ord('a') + drawn), transform=ax.transAxes,
+                    fontweight='bold', va='bottom', ha='left')
+        drawn += 1
     for ax in axes[n:]:
         ax.axis('off')
     fig.tight_layout()
@@ -638,10 +880,11 @@ def group_figures(out_dir=None):
     by_condition = {cond: [d[s] for s in sorted(d)]
                     for (model, cond), d in data.items() if model == 'NG'}
 
-    figure([spec_psychometric(groups), spec_rt(groups), spec_rt_reversal(groups)],
-           os.path.join(out_dir, 'behaviour.pdf'))
-    figure([spec_reversal(split), spec_reversal(split, 'z_side', 'Z on the true context')],
-           os.path.join(out_dir, 'switching.pdf'), ncol=2)
+    # Retired into the story figure: the reversal-aligned RT panel (story row 4) and the
+    # whole of switching.pdf (story rows 1 and 4). What stays here is what the story does
+    # not carry: accuracy and RT against conflict pooled over contexts.
+    figure([spec_psychometric(groups), spec_rt(groups)],
+           os.path.join(out_dir, 'behaviour.pdf'), ncol=2)
     # Four labelled clusters per panel need more width than the standard wide preset.
     figure([spec_switch(split), spec_switch_cost(split)],
            os.path.join(out_dir, 'switch_latency.pdf'), ncol=2,
@@ -668,6 +911,78 @@ def group_figures(out_dir=None):
                 spec_clamp_gain(cells, 1.0, 'index', 'Integration index'),
                 spec_clamp_gain(cells, 1.0, 'acc_match', 'Accuracy\n(gate matches context)')],
                os.path.join(out_dir, 'clamp_sigmoid_gain.pdf'))
+    story_figure(out_dir)
+
+
+#: The two switch criteria the story figure shows. The raw behavioural one is contaminated
+#: by hedging (an undecided trial's sign is a coin flip), so the story uses the decided-only
+#: version of the paper's criterion and the latent one; all three stay in switch_latency.pdf.
+STORY_CRITERIA = (('dec_switch', 'decided'), ('z_switch', 'Z side'))
+
+
+def story_figure(out_dir=None):
+    """The whole result as one figure: five rows of four panels, a–t.
+
+    Deliberately larger than a single panel preset (docs/figure_style.md allows it for a
+    figure that genuinely summarises a lot of data, and asks for a comment saying why): it
+    is the paper's argument end to end, and each row is also written on its own so a row
+    can be iterated without rebuilding the rest.
+
+      1  behaviour, against the paper's Fig 1e and 1f
+      2  what each signal encodes — the hidden state against Z, its update and its gradient
+      3  what the gate does when it is held still: gain against contrast
+      4  the same measures trial by trial around a reversal (the paper's Fig 3c cut)
+      5  the three latent signals around a reversal: persistent, transient, and the error
+    """
+    data = collect()
+    out_dir = out_dir or os.path.join(EXPORTS, 'group', 'figures')
+    pick = lambda key: [data[key][s] for s in sorted(data.get(key, {}))]
+    ng, rnn = pick(('NG', 'softmax_rc_none')), pick(('RNN', 'rnn_rc_none'))
+    low, high = pick(('NG', 'softmax_rc_low')), pick(('NG', 'softmax_rc_high'))
+    sig = pick(('NG', 'sigmoid_zlr30000'))
+    if not ng:
+        raise SystemExit('no NG reports on disk yet: run hier_switch_group.py task first')
+    groups = {'NeuraGEM': ng}
+    if rnn:
+        groups['RNN'] = rnn
+    split = ({'NeuraGEM': [merge_splits(a, b) for a, b in zip(low, high)]}
+             if low and high else groups)
+    cells = clamp_cells_on_disk('sigmoid')
+
+    rows = [
+        ('story_1_behaviour', [
+            spec_psychometric_ctx(groups),
+            spec_switch_vs_early_conflict({'NeuraGEM': ng}),
+            spec_switch(split, STORY_CRITERIA),
+            spec_reversal(split, 'acc', 'Accuracy')]),
+        ('story_2_encoding', [
+            spec_decoding_matrix(ng),
+            spec_encoding_variance(ng),
+            spec_decoding_timecourse(ng),
+            spec_eps_cw(ng)]),
+        ('story_3_gate', [
+            spec_clamp_grid(cells, 'acc_match', 'Accuracy\n(gate matches context)'),
+            spec_clamp_grid(cells, 'rt', 'RT (timesteps)'),
+            spec_clamp_grid(cells, 'index', 'Integration index'),
+            spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity')]),
+        ('story_4_reversal', [
+            spec_reversal(split, 'undecided', 'Undecided rate'),
+            spec_rt_reversal(groups),
+            spec_integration_reversal({'NeuraGEM': ng}, 'index', 'Integration index'),
+            spec_integration_reversal({'NeuraGEM': ng}, 'cue_velocity', 'Cue velocity')]),
+        ('story_5_latent', [
+            spec_z_belief({'NeuraGEM': ng}),
+            spec_trace({'NeuraGEM': ng}, 'step', 'ΔZ toward the true context\n(|update|)'),
+            spec_trace({'NeuraGEM': ng}, 'grad', '|dL/dZ| on the context axis'),
+            spec_trace({'sigmoid at test': sig} if sig else {'NeuraGEM': ng}, 'gain',
+                       'Z gain (mean of the units)')]),
+    ]
+    panel = FigSize.custom(1.7, 1.35)
+    for name, panels in rows:
+        figure(panels, os.path.join(out_dir, f'{name}.pdf'), ncol=4, panel=panel,
+               letters=True)
+    figure([p for _, ps in rows for p in ps], os.path.join(out_dir, 'story.pdf'),
+           ncol=4, panel=panel, letters=True)
 
 
 def merge_splits(low_rep, high_rep):
@@ -717,11 +1032,18 @@ def session_figures(path, out_dir=None):
     if 'hidden' in rep:
         figure([spec_decoding(reps, 'cue'), spec_decoding(reps, 'rule'),
                 spec_integration(reps)], os.path.join(out_dir, 'hidden.pdf'))
+        if 'encoding' in rep['hidden']:
+            figure([spec_decoding_matrix(reps), spec_encoding_variance(reps)],
+                   os.path.join(out_dir, 'encoding.pdf'), ncol=2,
+                   panel=FigSize.custom(2.2, 1.5))
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        for p in sys.argv[1:]:
+    args = [a for a in sys.argv[1:]]
+    if args and args[0] == 'story':
+        story_figure()
+    elif args:
+        for p in args:
             session_figures(p)
     else:
         group_figures()

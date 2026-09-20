@@ -64,8 +64,17 @@ Run it:
 | `pulses` | (n, 16, 3) | the noisy frames the model saw — the observer reads these |
 | `hidden` | (n, 25, 64) | float16; only with `record_hidden` |
 | `grad` | (n, 2) | the pooled error gradient, recovered from Z (below) |
-| `lu_scale`, `clamped` | (n,) | 1 / False unless a perturbation set them |
-| `meta` | json | model, condition, Z_lr, Z_decay, activation, temperature, rt_threshold, seed, `reversal_conflict`, whether Z restarted |
+| `lu_scale`, `clamped`, `z_momentum` | (n,) | 1 / False / 0 unless a trial hook set them |
+| `grad_eff` | (n, 2) | the step actually taken, in gradient units: `−Δz/Z_lr`. Equal to `grad` under a plain SGD step; with momentum on, `grad_eff − grad` is what the velocity added |
+| `meta` | json | model, condition, Z_lr, Z_decay, `Z_momentum`, activation, temperature, rt_threshold, seed, `reversal_conflict`, `perturb` (the trial hook's spec), whether Z restarted |
+
+**Two routes to `grad`.** A recorded session now saves the gradient the optimizer actually
+saw (`logger.gradients_corrections`, minus the decay term it carries), which is exact
+whatever the optimizer did. The older route — recovering it from Δz — is only valid while
+the step is a plain unscaled SGD one, and is still used for sessions recorded before this.
+The distinction matters for exactly one condition: with the latent update scaled to zero,
+Δz is zero but the gradient is not, and that surviving error signal is the whole point of
+the manipulation.
 
 Three facts the whole pipeline rests on:
 
@@ -110,6 +119,7 @@ start-up block of a Z-restarted session is dropped unless `include_transient=Tru
 | `switch_trial` | per block, the paper's criterion: the first correct trial with another correct within the next two. `z_switch_trial`: the first trial Z holds the true context. `dec_switch_trial`: the paper's, on decided trials only |
 | `pre_switch` | `since < switch_trial` (all of a block that never switched) |
 | `p_c`, `err_w`, `eps_cw` | the session's own steady-state accuracy at that conflict level, clipped at 0.99; `err/(1 − p_c)`; its mean over the previous 5 trials — the paper's ε_CW, not reset at reversals (the animal's ACC does not know where they are) |
+| `ctx_rel`, `last_trained_context` | the context **relative to training**: 0 = the one the model saw in the last block of the active phase, 1 = the other. Which context is labelled "0" is an accident of the data stream, but the model is not symmetric about it — it leaves training with its weights and its Z sitting in the last block's context, and at the uniform gate it falls back on a default context. Every per-context split is reported on `ctx_rel`. Read from the sibling `trials.npz` of `model.pt` by `last_trained_context()`; falls back to the raw label, with a warning, when that file is gone. Across the six NG seeds it is context 1 for s0, s3, s5 and context 0 for s1, s6, s9, so pooling on the raw label would average two different things |
 
 **Why the undecided rate travels with accuracy.** With Z at the middle of the axis the
 outputs sit near 0 and `sign(decision)` is a coin flip, so "accuracy crossed 0.5" can mean
@@ -206,6 +216,99 @@ input frames < t. Pulses are frames 0-15 → the cue period of the hidden state 
 and every decoder pools trials from both contexts. A per-context refit is what tests P5
 (the cue axis agrees across contexts, the rule axis flips).
 
+## 6b. What is encoded where (`hier_switch_hidden.encoding_table`)
+
+The paper's central representational claim is that PFC mixes task variables while MD
+demixes them: most MD neurons are selective to *one* of cueing conflict or rule context,
+most PFC neurons to several (Fig 2k–l, 2o–p). We do not take that claim on, and we do not
+try to reproduce its PFC cell classes. We ask the same question our own way, on the
+signals this model actually has, and report the answer whichever way it falls.
+
+**Sources** — the per-trial feature matrices we ask "what does this carry?" of:
+
+| source | what it is | the paper's counterpart |
+|---|---|---|
+| `hidden_t16` | the 64 hidden units at the end of the cue period | PFC |
+| `hidden_t24` | the same at the end of the trial | PFC |
+| `hidden_pc2` | the top **two** principal components of `hidden_t16` | the control (below) |
+| `z_in` | the latent the trial ran under — the only thing that crosses trials | MDContext |
+| `step` | `z − z_in`, the trial's own latent update | MD's transient switch response |
+| `grad` | the error gradient on Z, as `[g_contrast, |g_contrast|]` | the ACC error signal |
+
+**Why `hidden_pc2` is there.** A 64-unit hidden state will out-decode a 2-unit Z on almost
+anything, simply by having 32× the dimensions to do it with. That is the objection to
+reading the paper's PFC-vs-MD comparison at face value, so the same hidden state cut down
+to two dimensions is carried in every panel: a hidden-vs-Z difference that survives against
+`hidden_pc2` is not a unit-count effect. It is fitted on the same trials, and drawn hollow.
+
+**Variables**: cue, rule, context (`ctx_rel`), conflict, outcome, and the paper's two
+uncertainties taken from the **ideal observer** rather than from the model, so they are
+properties of the trial sequence and not of the thing being decoded — rule uncertainty
+`1 − |2b − 1|` on the observer's predictive belief, cue uncertainty `1 − max(q, 1 − q)` on
+its cue posterior.
+
+**Two measures per (source, variable).**
+
+1. **Decoding.** Cross-validated balanced accuracy (binary variables) or ridge R²
+   (continuous), 5 folds, **with a shuffled-label null computed per cell** — so "above
+   chance" is measured rather than assumed. Conflict is decoded the way the paper contrasts
+   it: the two most ambiguous levels against the two least, dropping the middle.
+2. **Demixed variance.** Every column of the source is fitted jointly on all the variables
+   at once; dropping one variable and re-fitting gives the variance **uniquely**
+   attributable to it. Variance two variables share is credited to neither and is reported
+   as `shared`; what nothing explains is `residual`. The parts sum to 1, so a stacked bar
+   reads directly: one tall segment means demixed, several means mixed. For the hidden
+   state there is also a per-unit count of how many variables a unit is tuned to against a
+   permutation null — the paper's Fig 2k histogram.
+
+Run over **every** trial of the primary phase, not only the steady state: the trials right
+after a reversal are where the latent update and its gradient do their work, and a
+steady-state-only table would leave the error signal almost nothing to carry. The
+steady-state version is returned beside it as `decoding_steady`.
+
+## 6c. Trial hooks — the paper's optogenetics (`hier_switch_hooks.py`)
+
+Lam et al. manipulate the switch itself: ACC→MD terminals silenced during the feedback of
+the first four post-reversal trials (switching is delayed, Fig 4h), and MD driven during
+the feedback of the first five trials after a **high-conflict** reversal (switching speeds
+up and PFC cue velocity rises, Fig 5d,g). Both act on a few trials at a known position in
+the block and then stop.
+
+A `TrialHook` is exactly that. `predictive_learning` calls `hook.pre()` before each trial's
+latent update and `hook.post()` after it; `config.trial_hook` is absent everywhere else, so
+**nothing that ran before this existed changes**. The spec is a plain dict, so it travels in
+the session's meta:
+
+| spec | what it does | the paper |
+|---|---|---|
+| `dict(kind='lu_scale', k=0, trials=[1, 4])` | multiplies the latent learning rate | ACC→MD silencing |
+| `dict(kind='lu_scale', k=3 or 10, trials=[1, 5])` | the same, upward | **ours, not theirs** — the paper never stimulated ACC |
+| `dict(kind='z_set', z=[1, 1], trials=[1, 1])` | drives both latent units at the first feedback, then lets the gradient take over | MD activation (SSFO) |
+| `dict(kind='momentum', mu=0.9, trials=[1, 5])` | gives the latent update a memory for the window | — |
+
+Three things to know.
+
+- **`k = 0` does not silence the gradient.** It zeroes the *step*; the gradient is still
+  computed, pooled and logged, which is why the session saves the logged gradient rather
+  than recovering it from Δz. In the paper too, the ACC error signal survives the silencing
+  of its output to MD.
+- **Z = (1, 1) is not the same move under the two gates.** The softmax is shift-invariant,
+  so (1, 1) is the *uniform* gate: a reset to maximal uncertainty. Under the sigmoid both
+  units open to 0.73, which is a genuine gain boost. Both are run, and each panel says which.
+- **Momentum's buffer is cleared when a window opens**, because Z is one Parameter for the
+  whole session and would otherwise carry velocity from the previous reversal.
+
+Trials the hook touched are marked `lu_scale`, `clamped` and `z_momentum`, and `z_updates`
+excludes them — a scaled, clamped or momentum-carrying Δz is not a clean measurement of
+"what this trial's error taught Z". They stay in behaviour, which is what the manipulation
+is asking about.
+
+**Momentum is a question, not a control.** Z here is persistent where the paper's MD switch
+response is transient, and the paper's ACC signal builds up over consecutive errors, which
+a memoryless gradient cannot do. Momentum is the smallest change that would let the latent
+update build up the same way, so the panels show what it does to Z, to the update and to
+the gradient around a reversal, rather than comparing it against a matched control.
+
 ## 7. E2 — the Z clamp (`hier_switch_perturb.py`)
 
 Weights frozen, latent update off (`test_no_of_steps_in_latent_space=0`), Z held at a
@@ -269,7 +372,10 @@ works from the repo root). Run with `.venv/bin/python`.
 | `exports/hier_switch/group/group.json`, `…/figures/*.pdf` | the group table and the nine figures |
 
 `hier_switch_group.models()` lists the model × condition grid; `session_dirs(model_type,
-seed, conditions)` turns a row into paths.
+seed, conditions)` turns a row into paths. The manipulation conditions
+(`NG_MANIPULATIONS`) are off unless `HIER_SWITCH_MANIP=1`, so `list` and `task` keep
+describing what is on disk; `hier_switch_test_inference.main` skips any condition whose
+`session.npz` already exists unless `HIER_SWITCH_FORCE=1`.
 
 ### Reading and labelling
 
@@ -299,7 +405,10 @@ m = select(sess, phase=PRIMARY, err=True, stale=True, conf_level=[3, 4])
 | `latent(sess, obs, upd)` | belief vs observer, uncertainty peaks, update-rule regressions, ε_CW |
 | `normative_table(sess, upd, obs)` | the model's update against the observer's, per cell |
 | `hier_switch_observer.ideal_observer(sess)` | cue posterior, context belief, its own choices, `p_c`, switch latency |
-| `hier_switch_hidden.hidden_report(sess)` | axes, per-timestep decoding, integration index, cue velocity, unit classes |
+| `hier_switch_hidden.hidden_report(sess, obs=…)` | axes, per-timestep decoding, integration index, cue velocity, unit classes, the encoding table, the reversal-aligned regime measures |
+| `hier_switch_hidden.encoding_table(sess, obs)` | §6b: every source × variable, decoding with its own null plus demixed variance |
+| `hier_switch_hidden.integration_aligned(sess, axes)` | the integration index and cue velocity at each trial offset from a reversal (the paper's Fig 3c cut) |
+| `switch_by_early_conf(sess, obs)` | the paper's Fig 1f on uncontrolled reversals: switch latency per equal-count bin of the block's early conflict |
 | `hier_switch_hidden.fit_axes / decode / integration / unit_classes / steady_mask` | the pieces, if a new analysis wants them directly |
 | `hier_switch_hidden.z_side_table(sess, upd)` | what Z carries (context d′) and what its update carries (conflict) |
 | `hier_switch_group.session_report(path)` | all of the above for one session, as a json-able dict |
@@ -313,9 +422,10 @@ logger, m, tcfg = run_test(model, cfg, run_name='scratch/probe', n_trials=1000,
                            record_hidden=True, **overrides)
 ```
 
-- `run_test(model, cfg, Z_lr=…, n_trials=…, run_name=…, **latent)` — a test session on a
-  **copy**: weights frozen, Z restarted at `Z_init`, any latent setting overridden. It
-  patches the live optimizer, which never re-reads the config.
+- `run_test(model, cfg, Z_lr=…, n_trials=…, run_name=…, perturb=None, **latent)` — a test
+  session on a **copy**: weights frozen, Z restarted at `Z_init`, any latent setting
+  overridden. It patches the live optimizer, which never re-reads the config. `perturb` is
+  a trial-hook spec (§6c) and defaults to None.
 - Useful overrides: `latent_activation='sigmoid'|'none'`, `Z_init=[a, b]` (per unit),
   `test_no_of_steps_in_latent_space=0` (freeze Z — **pass it explicitly**, or `run_test`
   turns the latent update on), `record_hidden=True`, `reversal_conflict='low'|'high'`,
@@ -337,6 +447,9 @@ figure([spec_psychometric({'NeuraGEM': reports})], 'out/panel.pdf')
 ```
 
 Builders take **a list of per-seed reports** (a single session is a list of one):
+`spec_psychometric_ctx`, `spec_switch_vs_early_conflict`, `spec_decoding_matrix`,
+`spec_encoding_variance`, `spec_decoding_timecourse`, `spec_integration_reversal`,
+`spec_trace`, and the earlier
 `spec_psychometric`, `spec_reversal`, `spec_switch`, `spec_switch_cost`, `spec_z_belief`,
 `spec_z_uncertainty`, `spec_eps_cw`, `spec_gain`, `spec_gain_ladder`, `spec_gain_cost`,
 `spec_rt`, `spec_rt_reversal`, `spec_decoding`, `spec_integration`, `spec_unit_classes`,
@@ -355,6 +468,9 @@ Builders take **a list of per-seed reports** (a single session is a list of one)
 .venv/bin/python hier_switch/hier_switch_group.py list|task|analyse|aggregate
 .venv/bin/python hier_switch/hier_switch_perturb.py list|task|recompute
 .venv/bin/python hier_switch/hier_switch_figures.py [session dir]
+.venv/bin/python hier_switch/hier_switch_figures.py story      # only the story figure
+.venv/bin/python hier_switch/hier_switch_hooks.py              # trial-hook self-test
+./hier_switch/run_manipulations.sh                             # the manipulation sessions
 ./hier_switch/run_sessions.sh [range]      ./hier_switch/run_clamp.sh [range] [after_jobid]
 ./hier_switch/run_tune.sh <grid tag> [range]
 ```
