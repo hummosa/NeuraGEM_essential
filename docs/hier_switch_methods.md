@@ -133,6 +133,52 @@ saved Z (`g = −Δz/lr − decay·z_in`; it matches the logged gradient to 7e-1
   It provides the accuracy ceiling, the normative size of every switching effect, and the
   normative log-odds update each trial deserves.
 
+**Which context is which.** The two contexts are not interchangeable from the network's
+point of view: it comes out of training with its weights and its latent sitting in the
+context of the last block it saw, and when the gate is held at the middle it falls back on
+a context of its own rather than sitting between the two. Every per-context split is
+therefore reported **relative to training** — "the last trained context" against "the
+other" — read per seed from the final trial of the active phase. Across the six networks
+this is context 1 for three of them and context 0 for the other three, so pooling on the
+raw label would have averaged two different things.
+
+**What is encoded where.** The paper's representational claim is that the cortex mixes task
+variables while the thalamus demixes them. We ask the same question of this model's own
+signals, without assuming its answer, and with the one control the comparison needs. Six
+sources are tested: the 64 hidden units at the end of the cue period and at the end of the
+trial, the latent before the trial, the latent's own update, the error gradient on the
+latent, and — the control — the hidden state reduced to its top two principal components.
+That last one matters because a 64-dimensional signal will out-decode a 2-dimensional one
+on almost anything simply by having more dimensions to do it with, so any difference
+between the hidden state and the latent that does not survive against the 2-component
+version is a dimensionality effect and is reported as such. Each source is tested against
+cue, rule, context, cue conflict, outcome, and the ideal observer's rule and cue
+uncertainty, in two ways: cross-validated decoding with a shuffled-label null computed for
+every cell, and a drop-one variance decomposition that fits all the variables jointly and
+credits each one only with the variance it uniquely explains, leaving what two variables
+share and what nothing explains as their own segments.
+
+**Manipulating the switch.** The paper's causal experiments act on a handful of trials just
+after a reversal and then stop: the ACC→MD terminals are silenced during the feedback of
+the first four trials, and the thalamus is driven during the feedback of the first five
+trials after a high-conflict reversal. The model's equivalent is a hook on the latent
+update, off by default, that applies one change inside a window defined in trials since the
+reversal. Three are used. **The latent update is scaled**, to zero (the silencing analogue)
+or up by 3 or 10 — the upward version has no counterpart in the paper, which never
+stimulated ACC, and is labelled as ours throughout. Scaling to zero stops the latent from
+moving but not the gradient from being computed, which is the point: in the paper the error
+signal survives the silencing of its output. **Both latent units are driven to 1** at the
+first post-reversal feedback and the gradient takes over from there. Under the softmax this
+is a reset to the uniform gate, because the softmax is shift-invariant; under the sigmoid
+both gates open to 0.73 and it is a genuine gain boost, so it is run on both and each panel
+says which. **The latent update is given momentum** for the window. This last one is a
+question rather than a control: the model's latent is persistent where the paper's thalamic
+switch response is transient, and the paper's cortical error signal builds up over
+consecutive errors in a way a memoryless gradient cannot, so momentum is the smallest change
+that would let it build up the same way. Every manipulation runs on the forced low- and
+high-conflict sessions, so each is compared with its own unperturbed partner within seed and
+within trial stream.
+
 **Figure conventions.** Hue is the model (NeuraGEM, RNN, ideal observer;
 `plot_style.get_model_color`). **Outcome gets a hue and a marker of its own** — correct is
 teal circles on a solid line, error crimson triangles on a dashed one
