@@ -187,17 +187,36 @@ def _family(name):
     return name.split('_zlr')[0].split('_rc_')[0]
 
 
+def _zlr_of(name):
+    """The Z_lr a condition's name encodes, or NaN when it does not name one.
+
+    Not every member of a family carries a `_zlr` tag: `sigmoid_rc_none` runs the family's
+    default rate. Returning NaN rather than raising is what keeps those conditions from
+    taking the whole summary figure down with them.
+    """
+    if '_zlr' not in name:
+        return float('nan')
+    try:
+        return float(name.split('_zlr')[1].split('_')[0])
+    except (IndexError, ValueError):
+        return float('nan')
+
+
 def _style(name, names):
     """Softmax in black; each other family on its own one-hue ramp ordered by Z_lr. Conditions
-    that also change weight decay (a '_wd' suffix) are dashed."""
+    that also change weight decay (a '_wd' suffix) are dashed. A condition of the family that
+    names no Z_lr gets the ramp's full tone."""
     ls = '--' if '_wd' in name else '-'
     fam = _family(name)
     if fam == 'softmax':
         return 'k', ls
-    zlr = lambda n: float(n.split('_zlr')[1].split('_')[0])
-    levels = sorted({zlr(n) for n in names if _family(n) == fam})
-    frac = levels.index(zlr(name)) / max(1, len(levels) - 1)
-    return FAMILIES[fam][1](0.4 + 0.55 * frac), ls
+    cmap = FAMILIES[fam][1]
+    z = _zlr_of(name)
+    levels = sorted({v for v in (_zlr_of(n) for n in names if _family(n) == fam) if v == v})
+    if not levels or z != z:
+        return cmap(0.8), ls
+    frac = levels.index(z) / max(1, len(levels) - 1)
+    return cmap(0.4 + 0.55 * frac), ls
 
 
 def summary_figure(rows, path):
