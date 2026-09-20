@@ -191,21 +191,34 @@ def _self_test():
           f"(max |Δz| {np.abs(base['z'] - same['z']).max():.2e})")
 
     off, arr = go(perturb=dict(kind='lu_scale', k=0.0, trials=[1, 4]))
-    win = arr['lu_scale'] == 0
-    frozen = np.allclose(off['z'][win], off['z_in'][win], atol=1e-12)
+    # The session's very first trial has no incoming Z, so it is dropped from every check.
+    fin = np.isfinite(off['z_in']).all(axis=1)
+    win = (arr['lu_scale'] == 0) & fin
+    dz = np.abs(off['z'][win] - off['z_in'][win])
+    moved = np.abs(off['z'][~win & fin] - off['z_in'][~win & fin])
+    frozen = dz.max() < 1e-12 and moved.max() > 0
     print(f"{'OK ' if frozen else 'FAIL'} lu_scale k=0 freezes Z on {win.sum()} window "
-          f"trials (max |Δz| there {np.abs(off['z'][win] - off['z_in'][win]).max():.2e})")
+          f"trials (max |Δz| there {dz.max():.2e}; outside the window {moved.max():.2e}, "
+          f"so the rest of the session still runs)")
 
     zs, arr = go(perturb=dict(kind='z_set', z=[1.0, 1.0], trials=[1, 1]))
     hit = arr['clamped']
-    at = np.allclose(zs['z'][hit], 1.0, atol=1e-6)
-    print(f"{'OK ' if at else 'FAIL'} z_set puts Z at (1, 1) on {hit.sum()} trials")
+    at = bool(hit.any()) and np.allclose(zs['z'][hit], 1.0, atol=1e-6)
+    # The trial after each clamp must start from (1, 1) and then be free to move again.
+    nxt = np.zeros_like(hit)
+    nxt[1:] = hit[:-1]
+    off_it = np.abs(zs['z'][nxt] - zs['z_in'][nxt]).max()
+    print(f"{'OK ' if at and off_it > 0 else 'FAIL'} z_set puts Z at (1, 1) on "
+          f"{hit.sum()} trials, and the next trial moves off it (max |Δz| {off_it:.2e})")
 
     mom, arr = go(perturb=dict(kind='momentum', mu=0.9, trials=[1, 5]))
-    inwin = arr['z_momentum'] > 0
-    print(f"OK  momentum ran on {inwin.sum()} of {mom['n']} trials; "
-          f"|Δz| in window {np.abs(mom['z'][inwin] - mom['z_in'][inwin]).mean():.3e} vs "
-          f"{np.abs(base['z'][inwin] - base['z_in'][inwin]).mean():.3e} without it")
+    fin = np.isfinite(mom['z_in']).all(axis=1) & np.isfinite(base['z_in']).all(axis=1)
+    inwin = (arr['z_momentum'] > 0) & fin
+    a = float(np.abs(mom['z'][inwin] - mom['z_in'][inwin]).mean())
+    b = float(np.abs(base['z'][inwin] - base['z_in'][inwin]).mean())
+    ratio = a / b if b else float('nan')
+    print(f"{'OK ' if a > b else 'FAIL'} momentum ran on {inwin.sum()} of {mom['n']} trials; "
+          f"mean |Δz| in the window {a:.3e} against {b:.3e} without it ({ratio:.2f}x)")
 
 
 if __name__ == '__main__':

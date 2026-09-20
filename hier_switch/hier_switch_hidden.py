@@ -276,6 +276,34 @@ def encoding_variables(sess, obs=None):
     return out
 
 
+#: Sources with at most this many columns are given a magnitude channel — see `_augment`.
+LOW_DIM = 8
+
+
+def _contrast_gain(v):
+    """A 2-unit latent signal in its meaningful coordinates: (contrast, gain).
+
+    A rotation of the raw pair, but the one that names things: the contrast is what the
+    softmax acts on and what selects the context, the gain is the common mode.
+    """
+    v = np.asarray(v, dtype=float)
+    return np.c_[0.5 * (v[:, 0] - v[:, 1]), v.mean(axis=1)]
+
+
+def _augment(X):
+    """A low-dimensional signal plus the absolute value of each of its columns.
+
+    Both uncertainty variables are *magnitudes* (rule uncertainty is 1 − |2b − 1|, cue
+    uncertainty is 1 − max(q, 1 − q)), and a linear read-out of a signed two-dimensional
+    vector cannot form a magnitude. Without this channel, "Z carries no rule uncertainty"
+    would be a statement about the decoder rather than about Z. Every source of at most
+    LOW_DIM columns gets it, so the comparison between them stays symmetric; the 64-unit
+    hidden state is left raw, having units enough to carry such a channel itself.
+    """
+    X = np.asarray(X, dtype=float)
+    return np.c_[X, np.abs(X)] if X.shape[1] <= LOW_DIM else X
+
+
 def encoding_sources(sess, mask):
     """The per-trial feature matrices we ask "what does this carry?" of.
 
@@ -290,7 +318,11 @@ def encoding_sources(sess, mask):
       hidden_pc2  the top 2 PCs of hidden_t16 (the dimension-matched control)
       z_in        the latent the trial actually ran under — the persistent context code
       step        z − z_in, the trial's own latent update: the transient switch signal
-      grad        the error gradient on Z, as [contrast component, its magnitude]
+      grad        the error gradient on Z
+
+    The four low-dimensional sources are all in (contrast, gain) coordinates and all carry
+    a magnitude channel (`_augment`), so none of them is handicapped on the magnitude
+    variables relative to the others.
 
     Returns {name: (X, rows)} where `rows` is the subset of `mask` with finite features.
     """
@@ -301,25 +333,29 @@ def encoding_sources(sess, mask):
         out['hidden_t16'] = h[:, min(CUE_PERIOD[1], last), :].astype(float)
         out['hidden_t24'] = h[:, last, :].astype(float)
     z_in, z = sess['z_in'].astype(float), sess['z'].astype(float)
-    out['z_in'] = z_in
-    out['step'] = z - z_in
+    out['z_in'] = _contrast_gain(z_in)
+    out['step'] = _contrast_gain(z - z_in)
     if 'grad' in sess:
-        g = sess['grad'].astype(float)
-        gc = 0.5 * (g[:, 0] - g[:, 1])
-        out['grad'] = np.c_[gc, np.abs(gc)]
+        out['grad'] = _contrast_gain(sess['grad'].astype(float))
     res = {}
     for name, X in out.items():
-        X = np.atleast_2d(X)
+        X = _augment(np.atleast_2d(X))
         rows = mask & np.isfinite(X).all(axis=1)
-        if rows.sum() >= 20 and np.ptp(X[rows], axis=0).max() > 0:
-            res[name] = (X, rows)
+        if rows.sum() < 20:
+            continue
+        # Drop dead columns: under the softmax the gain is identically zero, and a constant
+        # column makes the standardiser divide by ~0.
+        keep = np.ptp(X[rows], axis=0) > 1e-12
+        if not keep.any():
+            continue
+        res[name] = (X[:, keep], rows)
     # The control is fitted on the same rows the full hidden state uses.
     if 'hidden_t16' in res:
         X, rows = res['hidden_t16']
         Xc = X[rows] - X[rows].mean(axis=0)
         # Two leading PCs; economy SVD on the centred, masked block.
         _, _, vt = np.linalg.svd(Xc, full_matrices=False)
-        res['hidden_pc2'] = ((X - X[rows].mean(axis=0)) @ vt[:2].T, rows)
+        res['hidden_pc2'] = (_augment((X - X[rows].mean(axis=0)) @ vt[:2].T), rows)
     return res
 
 
