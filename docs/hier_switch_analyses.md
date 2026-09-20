@@ -341,8 +341,16 @@ where single-session effects repeatedly failed to survive across seeds.
 
 Figures: `hier_switch_figures.py`, one `spec_*` builder per panel, taking a list of per-seed
 reports. A single session is a list of one, so the single-session and group figures are the
-same panels. The nine group figures and what each shows are captioned in
-`docs/hier_switch_methods.md`.
+same panels. Every figure is captioned in `docs/hier_switch_methods.md`.
+
+**`story_figure()` is the one to look at**: five rows of four panels (behaviour, what is
+encoded where, the clamped gate, the reversal, the latent signals), written both as one
+`story.pdf` and as a PDF per row so a row can be reworked on its own. It grows a sixth row,
+the manipulations, as soon as those sessions are on disk. `group_figures()` writes it last,
+along with the supplementary figures — the panels the story does not carry. Two earlier
+figures were folded into it: `switching.pdf` is no longer written and `behaviour.pdf` lost
+its reversal-aligned RT panel. **No builder was deleted**, so either figure can be brought
+back in one line.
 
 **Styling rules the panels follow** (on top of `docs/figure_style.md`): hue is the model
 (`plot_style.get_model_color`); **outcome has a hue and a marker of its own** — correct teal
