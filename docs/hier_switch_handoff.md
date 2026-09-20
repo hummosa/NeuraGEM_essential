@@ -35,8 +35,9 @@ one stage was built:
   dissociation. See §5c.
 - **Reversal-aligned versions** of the integration index and cue velocity, and of the latent,
   its update and its gradient.
-- **E4, the trial hooks, is built** (`hier_switch_hooks.py`) and its 15 conditions are defined,
-  but **the sessions have not been run** — that is the one thing outstanding. See §7.
+- **E4, the manipulations, is built and run** (`hier_switch_hooks.py`): 15 conditions × 6
+  seeds, 90 sessions, array 6551481. Silencing the latent update reproduces the paper's
+  ACC→MD result and driving it gives the converse, graded. See §5c.4 and §5c.5.
 
 ---
 
@@ -101,7 +102,7 @@ forward. ✅ done · 🟡 partly · ⬜ not started.
 | E1 | **Core session.** Train (passive, then active; discovery) → frozen-weight test on the paper's 30–60 blocks | ✅ 6/10 seeds discover (v13); all six retrained and saved as `tune_v15/NG_s*/model.pt`, each reproducing its v13 numbers exactly |
 | E2 | **Z-clamp probe.** Freeze weights and the latent update; hold Z at a grid of gates; measure RT, accuracy, undecided rate, the integration index and the cue/rule build-up | ✅ `hier_switch_perturb.clamp_grid`: softmax contrast ladder and a sigmoid gain × contrast grid, per seed |
 | E3 | **Group sweep.** ≥ 10 seeds × {NG, RNN} plus the ideal observer | ✅ 6 NG (the discoverers) × 6 conditions and 10 RNN × 3 conditions, all recorded and analysed; `hier_switch_group.py aggregate` prints the prediction table. Oracle → inference not repeated at group level |
-| E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); the latent driven for the first trials (MD activation); momentum; forced errors | 🟡 **Built, not run.** `hier_switch_hooks.py` plus the default-off call sites in `_latent_update_step`; 15 conditions defined and `run_manipulations.sh` ready. Needs ~90 SLURM sessions and the user's go-ahead. Forced errors still need a dataset knob. See §7 |
+| E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); the latent driven for the first trials (MD activation); momentum; forced errors | ✅ `hier_switch_hooks.py` plus the default-off call sites in `_latent_update_step`; 15 conditions × 6 seeds recorded and analysed. Results in §5c.4–5. **Forced errors are the one part still missing** — they need a dataset knob |
 
 ### Predictions
 
@@ -143,7 +144,7 @@ the numbers in §5b. ✅ = built and run on the group.
 | C1 | Per-timestep cross-validated decoding of cue, rule, context and conflict from the hidden state | ✅ `hier_switch_hidden.decode` |
 | C2 | Per-unit CueS / CueL / Rule classification against a permutation null | ✅ `unit_classes` |
 | C3 | Cue and rule axis magnitude reversal-aligned; the paper's integration index and cue velocity | ✅ `hidden_report`, `integration` |
-| D | Z clamp (E2) ✅ `hier_switch_perturb`; dynamic perturbations (E4) 🟡 built, not run |
+| D | Z clamp (E2) ✅ `hier_switch_perturb`; dynamic perturbations (E4) ✅ `hier_switch_hooks` |
 | F | **What is encoded where**: every signal (hidden state, its top 2 PCs, Z, ΔZ, dL/dZ) against every variable, by decoding with a per-cell null and by drop-one demixed variance | ✅ `hier_switch_hidden.encoding_table`; §5c and `docs/hier_switch_analyses.md` §6b |
 | E | Ideal observer (numpy): frame-wise cue posterior, hazard-1/45 context filter, its own choice and switch latency | ✅ `hier_switch_observer.py` (0.93 cue accuracy at σ 0.5, as the tuning log had it) |
 
@@ -367,10 +368,11 @@ conditions, and the Oracle was not re-run at group level.
 
 ## 5c. The story figure, and what reorganising found
 
-`exports/hier_switch/group/figures/story.pdf` — five rows of four panels, a–t, each row also
-written on its own. Every panel is captioned in `docs/hier_switch_methods.md`, which is the
-place to read this from. Two earlier figures were folded into it: `switching.pdf` is retired
-and `behaviour.pdf` lost its reversal-aligned RT panel. No builder was deleted.
+`exports/hier_switch/group/figures/story.pdf` — **six rows of four panels, a–x**, each row
+also written on its own. Every panel is captioned in `docs/hier_switch_methods.md`, which is
+the place to read this from. Two earlier figures were folded into it: `switching.pdf` is
+retired and `behaviour.pdf` lost its reversal-aligned RT panel. No builder was deleted; the
+raw switch latencies, which need 20 bars, moved to `manipulations.pdf`.
 
 **Three findings that were not visible before.**
 
@@ -382,24 +384,37 @@ three in context 0 (s1, s6, s9), so the old per-context split averaged the two h
 real asymmetry against each other. Everything per-context now goes through `ctx_rel`
 (0 = last trained), read from the final trial of the active phase.
 
-**2. The latent is a pure context code and the hidden state is not — and it is not a
-dimensionality effect.** From the encoding table (§6b of the analyses doc), decoding minus
-each cell's own shuffle null, 6 seeds:
+**2. The latent is a pure context code and the hidden state is not.** From the encoding
+table (§6b of the analyses doc), decoding minus each cell's own shuffle null, 6 seeds, with
+the count of seeds above their own null in brackets:
 
-| signal | cue | rule | context | conflict |
-|---|---|---|---|---|
-| hidden state (64 units) | +0.42 | +0.33 | +0.40 | +0.35 |
-| hidden state, top 2 PCs | +0.41 | +0.32 | **+0.09** | +0.02 |
-| Z (2 units) | −0.02 | −0.00 | **+0.41** | −0.01 |
-| dL/dZ | +0.07 | +0.06 | +0.14 | (outcome +0.16) |
+| signal | cue | rule | context | conflict | outcome |
+|---|---|---|---|---|---|
+| hidden state (64 units) | +0.42 (6) | +0.33 (6) | +0.40 (6) | +0.35 (6) | +0.06 (6) |
+| hidden state, top 2 PCs | +0.43 (6) | +0.26 (6) | **+0.18 (6)** | +0.31 (6) | +0.04 (5) |
+| Z (2 units) | −0.00 (4) | +0.00 (3) | **+0.41 (6)** | −0.00 (2) | +0.00 (1) |
+| ΔZ, the update | +0.07 (6) | +0.04 (5) | +0.05 (6) | +0.13 (6) | +0.21 (6) |
+| dL/dZ | +0.08 (6) | +0.05 (5) | +0.14 (6) | +0.15 (6) | +0.19 (6) |
 
-Every hidden row is 6/6 seeds; every "flat" entry is 0/6. A hidden unit is tuned to 4.5 of
-seven variables on average, while context alone explains 0.65 more of Z's variance than the
-best other variable (6/6). **The dimension-matched control is what makes this a result rather
-than an artefact**: the hidden state's top two components carry cue and rule as well as all
-64 do, and carry context barely at all — so the hidden state's near-ceiling context decoding
-is neither a unit-count effect nor something the network computes. Context reaches it only
-because Z gates it, and it sits outside the directions that dominate its variance.
+**Z decodes context and nothing else** — flat on cue, rule, conflict and outcome, in every
+seed. The hidden state decodes everything, and a hidden unit is tuned to 4.5 of the seven
+variables on average against the RNN baseline's 1.45. In the variance decomposition Z is a
+single segment (context 0.17, every other variable ≤ 0.01) while the hidden state is
+several (cue 0.21, rule 0.08, context 0.06). That is the paper's mixed-cortex,
+demixed-thalamus dissociation, arrived at without being asked for.
+
+**On the dimension-matched control.** The hidden state's top two components carry cue and
+rule as well as all 64 units do, and carry context **less than half as strongly** (+0.18
+against +0.40). So context is in the hidden state but not in the directions that dominate
+its variance — which fits it arriving through the gate rather than being computed. The
+first version of this table gave those components +0.09 on context and made the gap look
+total; that was an artefact of denying the low-dimensional sources a magnitude channel
+(§6b), and the corrected number is the one above.
+
+**The RNN baseline is the foil that matters.** With the latent update off, its hidden state
+decodes cue +0.29 (10/10) but rule +0.01 and context +0.04, and its units are tuned to 1.45
+variables each. So the mixing in NeuraGEM's hidden state is **not** a generic property of an
+LSTM on this task: it appears only when a latent is gating it.
 
 **3. The latent's state is persistent and its update is transient.** Aligned on a reversal:
 the position on the context axis goes +1.0 → −0.99 on trial 1 and climbs back over 4–6
@@ -414,6 +429,47 @@ reversals: binning each session's own reversals into three equal-count bins of e
 conflict, the decided switch latency is 4.6 / 5.3 / 6.1 trials, slower in the most ambiguous
 bin than the least in **6 of 6** seeds; the ideal observer pays 2.6 / 2.9 / 3.5 on the same
 trials. The raw behavioural criterion does not show it (4.1 / 4.6 / 4.3) — hedging again.
+
+**4. The manipulations reproduce the paper's causal result, and grade it.** Every
+manipulation acts on the first few trials after a reversal and then stops, and each is
+compared with its own unperturbed session, within seed and within trial stream. Switch
+latency (decided criterion), low-conflict reversals, 6 seeds:
+
+| what was done to the latent update | trials to switch | vs control | seeds |
+|---|---|---|---|
+| **off** for trials 1–4 (the paper's ACC→MD silencing) | 9.07 | **+4.46** | 6/6 |
+| unperturbed | 4.61 | — | — |
+| **×3** for trials 1–5 (ours, not the paper's) | 3.68 | −0.93 | 6/6 |
+| **×10** for trials 1–5 (ours) | 2.80 | −1.81 | 6/6 |
+| **Z driven to (1, 1)** at the first feedback | 3.24 | −1.37 | 6/6 |
+
+Silencing the update nearly doubles the latency; driving it roughly halves it; the
+dose-response across 0×, 1×, 3×, 10× is monotone. Steady-state accuracy is 0.88 in every
+arm, so none of this is the manipulation breaking the model. **The paper's Fig 4h result
+and its converse both hold here, and the graded version is ours to report** — the paper
+never stimulated ACC.
+
+**Driving the latent means two different things under the two gates, and the sizes say so.**
+Under the softmax, (1, 1) is the *uniform* gate, because the softmax is shift-invariant: it
+is a reset to maximal uncertainty, worth −1.37 trials. Under the sigmoid both units open to
+0.73 and it is a real gain boost, worth −7.85. The sigmoid's control is genuinely slow
+(13.90 trials against the softmax's 4.61, at 0.69 steady accuracy against 0.88), so quote
+the raw pair rather than the difference alone.
+
+**5. Momentum does not make the error signal ramp — it cannot.** The question was whether
+giving the latent update a memory would let a run of errors build on itself, the way the
+paper's cortical error signal does over consecutive errors. It does not. At μ = 0.5 the
+peak update is barely changed (+0.03, 4/6) and switching is slightly faster (4.86 against
+5.35); at μ = 0.9 the peak update is **lower** (−0.09, 1/6) and switching is **slower**
+(6.17). The raw gradient is unchanged to four decimal places by construction — momentum
+changes the step, not the gradient — and its peak falls if anything.
+
+The reason is structural and worth keeping: **this error signal is self-limiting.** It
+exists because Z is in the wrong place, and it drives Z to the right place, so anything that
+makes Z move faster removes the very errors that would have made the signal grow. A ramp
+over consecutive errors needs a signal that accumulates *without* acting, which a gradient
+on the thing it is correcting cannot be. If the ACC-like ramp matters to the story, it needs
+a separate accumulator that does not feed back on Z within the window.
 
 **Still weak, and now explained.** The paper's exploration-regime signature barely appears:
 the integration index falls by only 0.079 ± 0.025 in the first five post-reversal trials
@@ -504,36 +560,22 @@ are in `docs/hier_switch_task.md` (end of the tuning log).
 
 ## 7. What is left
 
-1. **E4, the manipulations — built, not yet run. This is the next thing to do.**
-   `hier_switch/hier_switch_hooks.py` holds the hook (§6c of the analyses doc), the call
-   sites are in `_latent_update_step`, the 15 conditions are in
-   `hier_switch_test_inference.CONDITIONS`, and `hier_switch/run_manipulations.sh` submits
-   them. The self-test (`.venv/bin/python hier_switch/hier_switch_hooks.py`) checks each kind
-   against a trained model. What is missing is the compute: **6 seeds × 15 conditions ≈ 90
-   sessions at 2–3 min each**, which is a SLURM array and needs the user's go-ahead, and then
-   `hier_switch_group.py aggregate` plus the row-5 panels.
+1. **E4 is done — except forced errors.** `hier_switch_hooks.py` (§6c of the analyses doc),
+   15 conditions × 6 seeds, all recorded and analysed; results in §5c.4–5 and in the group
+   table. Re-running is `./hier_switch/run_manipulations.sh`, which skips anything already
+   on disk. What is *not* built is the paper's **forced-error** condition — three
+   flipped-feedback trials mid-block, to ask whether errors alone trigger the switch or
+   whether the latent needs them to be genuine. It needs a dataset knob rather than a hook,
+   so it did not come along with the rest. Lowest priority of the open items, but it is the
+   one manipulation in the paper with no analogue here.
 
-   The conditions, all on the forced low/high pairs so each has its own control:
-   - **`softmax_lu0`** — the latent update scaled to zero on trials 1–4. The paper's ACC→MD
-     silencing (Fig 4h); predicted to delay switching. The gradient is still computed and
-     logged, so the error signal survives, as it does in the paper.
-   - **`softmax_lu3`, `softmax_lu10`** — the same scaled up. **The paper never stimulated
-     ACC**, so this is ours and must be labelled as ours wherever it appears.
-   - **`softmax_blast`, `sigmoid_blast`** — both latent units driven to 1 at the first
-     post-reversal feedback, then the gradient takes over. The MD-activation analogue
-     (Fig 5d). Under the softmax this is a *reset to the uniform gate*, because the softmax
-     is shift-invariant; only under the sigmoid is it also a gain boost. Run both, and say
-     which is which.
-   - **`softmax_mom0.5`, `softmax_mom0.9`** — momentum on the latent update for trials 1–5.
-     Not a control: a question about whether a run of errors can build on itself the way the
-     paper's cortical error signal does. The panels are the reversal-aligned latent, update
-     and gradient (story row 5), not behaviour.
-   - **Forced errors** (three flipped-feedback trials mid-block) — still not built; needs a
-     dataset knob. Lowest priority.
+   Two results from E4 worth carrying into whatever comes next. **The dose-response is
+   monotone** (0×, 1×, 3×, 10× of the latent update → 9.07, 4.61, 3.68, 2.80 trials to
+   switch), which makes the latent update the switch's rate-limiting step rather than one
+   contributor among several. And **momentum cannot make the error signal ramp**, because
+   the signal is self-limiting: it exists only while Z is wrong and it drives Z to be right.
+   An ACC-like accumulation needs something that integrates without acting.
 
-   Scaled, clamped and momentum trials are already excluded from `z_updates` and kept in
-   behaviour. The group table already has the rows (`_manipulation_rows`); they simply have
-   no data yet.
 2. **The weak results, if they matter to the story.** Fig 1m has no analogue here (§5b) and
    the exploration-regime signatures are weak. Both are reported as they are. If the
    integration index is to carry weight, the honest next step is more reversals per seed

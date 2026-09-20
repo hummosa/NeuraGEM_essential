@@ -196,9 +196,9 @@ significance tests are used.
 
 ## The story figure (`story.pdf`)
 
-One figure, five rows of four panels, lettered a–t, with each row also written on its own
-(`story_1_behaviour.pdf` … `story_5_latent.pdf`) so a row can be reworked without rebuilding
-the rest. It is larger than a single panel preset on purpose: it is the whole argument, and
+One figure, six rows of four panels, lettered a–x, with each row also written on its own
+(`story_1_behaviour.pdf` … `story_6_manipulations.pdf`) so a row can be reworked without
+rebuilding the rest. It is larger than a single panel preset on purpose: it is the whole argument, and
 `docs/figure_style.md` allows that for a figure that summarises this much, provided the
 reason is stated. Six networks throughout; the seed is the unit, every mean carries its SEM
 across seeds and one faint line or dot per seed. A legend appears only where it says
@@ -247,19 +247,24 @@ decomposition, one stacked bar per signal.
 four variables well above its null (cue +0.42, rule +0.33, context +0.40, conflict +0.35;
 6/6 networks each), and a hidden unit is tuned to 4.5 of the seven variables on average.
 The latent decodes **context and nothing else** — +0.41 above null for context in every
-network, and −0.02 and −0.01, i.e. flat, for cue and conflict. In panel h that is one tall
-segment against several: context alone accounts for 0.65 more of Z's variance than the best
-other variable does, in 6/6. This is the paper's cortex-mixed / thalamus-demixed
-dissociation, arrived at without being asked for.
+network, and flat on cue, rule, conflict and outcome. In panel h that is one tall segment
+against several: of Z's variance, context uniquely explains 0.17 and no other variable
+reaches 0.01, while the hidden state's is split across cue (0.21), rule (0.08) and context
+(0.06). This is the paper's cortex-mixed / thalamus-demixed dissociation, arrived at
+without being asked for.
 
-**The dimension-matched control is what makes that readable.** A 64-unit signal will
-out-decode a 2-unit one by having more dimensions, so the hidden state reduced to its own
-top two principal components is plotted beside it. Those two components carry cue and rule
-as well as the full hidden state does — and carry **context barely at all** (+0.085 ± 0.060,
-and not in every network). So the hidden state's near-ceiling context decoding is not a
-dimensionality artefact, and it is also not something the network computes for itself:
-context reaches the hidden state only because Z gates it, and it lives outside the
-directions that dominate that state's variance.
+**The dimension-matched control.** A 64-unit signal will out-decode a 2-unit one by having
+more dimensions, so the hidden state reduced to its own top two principal components is
+plotted beside it (hollow). Those two components carry cue and rule as well as the full
+hidden state does, and carry context **less than half as strongly** (+0.18 against +0.40).
+So context is present in the hidden state but not in the directions that dominate its
+variance — which is what arriving through the gate looks like, rather than being computed.
+
+**The baseline is the other half of that argument.** The RNN, which has the same
+architecture with the latent update switched off, decodes cue +0.29 from its hidden state
+(10/10 networks) but rule +0.01 and context +0.04, and its units are tuned to 1.45 variables
+each against NeuraGEM's 4.5. **The mixing is therefore not something an LSTM does on this
+task**; it appears only when a latent is gating the state.
 
 One column has to be read carefully: the decoders are linear, and the two uncertainties
 are magnitudes, which a signed two-unit signal cannot produce under a linear map. Z scoring
@@ -351,6 +356,45 @@ of the gain axis when it exists: after a reversal the burst of errors pushes the
 (+0.03 before, −0.33 by trial 5) and the correct trials that follow do not restore it. Under
 the softmax this panel would be a flat line at zero, and that is the reason the softmax is
 used.
+
+### Row 6 — Manipulating the switch (`story_6_manipulations.pdf`), against Fig 4h and 5d
+
+**Ran.** Each manipulation acts on the first few trials after a reversal and then stops, as
+the paper's optogenetics does, and each runs on the forced low- and high-conflict sessions
+so it is compared with its own unperturbed partner within network and within trial stream.
+15 conditions × 6 networks, 90 sessions.
+
+**Plotted.** *(u)* Extra trials to switch against that same session unperturbed, one
+low/high pair per manipulation; positive is slower. *(v)* What the latent itself does, on
+the low-conflict reversals: its position on the context axis under no manipulation, under
+the update being switched off, and under being driven to (1, 1). *(w)* The size of the
+latent's update and *(x)* of the raw gradient, with momentum at 0.5 and 0.9 against none.
+
+**See.** **Switching off the latent update for four trials nearly doubles the switch
+latency** — 9.07 trials against 4.61, +4.46 ± 0.19, in 6 of 6 networks — which is the
+paper's ACC→MD silencing result (Fig 4h) in a model where nothing else was touched. Panel v
+shows why: the latent simply sits on the old context for the four silenced trials and only
+then begins to move. Driving the update the other way gives the converse and does so
+**monotonically**: ×3 and ×10 reach 3.68 and 2.80 trials, so across 0×, 1×, 3×, 10× the
+latency runs 9.07, 4.61, 3.68, 2.80. Steady-state accuracy is 0.88 in every arm, so none of
+this is a manipulation breaking the network. The graded version has no counterpart in the
+paper, which never stimulated ACC, and is ours.
+
+**Driving the latent to (1, 1) means different things under the two gates, and the sizes
+say so.** Under the softmax it is a reset to the uniform gate, because the softmax is
+shift-invariant, and it is worth −1.37 trials. Under the sigmoid both units open and it is a
+real gain boost, worth −7.85 — though that arm's control is genuinely slow (13.90 trials at
+0.69 steady accuracy), so the raw pair belongs beside the difference.
+
+**Momentum does not make the error signal ramp.** At 0.5 the peak update is unchanged and
+switching is marginally faster (4.86 against 5.35); at 0.9 the peak update is *lower* and
+switching is *slower* (6.17). The raw gradient (x) is unchanged by construction — momentum
+changes the step, not the gradient — and its peak falls if anything. The reason is
+structural: **this error signal is self-limiting.** It exists because the latent is in the
+wrong place and it drives the latent to the right place, so anything that makes the latent
+move faster removes the very errors that would have made the signal grow. An accumulation
+over consecutive errors, of the kind the paper's cortical signal shows, needs something that
+integrates *without* acting on what it is integrating.
 
 ---
 

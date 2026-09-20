@@ -327,6 +327,18 @@ a memoryless gradient cannot do. Momentum is the smallest change that would let 
 update build up the same way, so the panels show what it does to Z, to the update and to
 the gradient around a reversal, rather than comparing it against a matched control.
 
+**The answer turned out to be no, for a structural reason.** At μ = 0.9 the peak update is
+*lower* than without momentum and switching is *slower*; the raw gradient is unchanged by
+construction and its peak falls if anything. This error signal is self-limiting: it exists
+only while Z is in the wrong place and it drives Z to the right place, so anything that
+makes Z move faster removes the errors that would have made the signal grow. An
+accumulation over consecutive errors needs a quantity that integrates without acting on
+what it integrates — which a gradient on the thing it corrects cannot be.
+
+**These sessions exist**: 15 conditions × 6 seeds, recorded and analysed, listed in
+`hier_switch_group.NG_MANIPULATIONS`. `./hier_switch/run_manipulations.sh` re-runs them and
+skips whatever is already on disk.
+
 ## 7. E2 — the Z clamp (`hier_switch_perturb.py`)
 
 Weights frozen, latent update off (`test_no_of_steps_in_latent_space=0`), Z held at a

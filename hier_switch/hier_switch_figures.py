@@ -1070,6 +1070,7 @@ def story_figure(out_dir=None):
       3  what the gate does when it is held still: gain against contrast
       4  the same measures trial by trial around a reversal (the paper's Fig 3c cut)
       5  the three latent signals around a reversal: persistent, transient, and the error
+      6  the manipulations, against the paper's Fig 4h and 5d
     """
     data = collect()
     out_dir = out_dir or os.path.join(EXPORTS, 'group', 'figures')
