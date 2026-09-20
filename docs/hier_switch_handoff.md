@@ -21,7 +21,22 @@ Read, in this order:
    flanker project is the house precedent for how analyses and figures are built here;
 8. `/oscar/AGENTS.md` — the cluster's site policy for agents (summarised in §10).
 
-**Start with §5b** (what the analyses found) and §7 (what is left).
+**Start with §5b** (what the analyses found), §5c (the story figure) and §7 (what is left).
+
+**Update, 2026-09-20.** The analyses were reorganised around one figure that tells the whole
+story (`exports/hier_switch/group/figures/story.pdf`, five rows of four panels, captioned row
+by row in `docs/hier_switch_methods.md`). Three things changed in the analyses themselves and
+one stage was built:
+- **Context is now labelled relative to training** (`ctx_rel`), because three of the six
+  networks finished training in context 1 and three in context 0, so the raw label pooled two
+  different things. See §5c.
+- **A new encoding analysis** (`encoding_table`) asks what each of the model's signals carries,
+  with a dimension-matched control. It reproduces the paper's mixed-cortex / demixed-thalamus
+  dissociation. See §5c.
+- **Reversal-aligned versions** of the integration index and cue velocity, and of the latent,
+  its update and its gradient.
+- **E4, the trial hooks, is built** (`hier_switch_hooks.py`) and its 15 conditions are defined,
+  but **the sessions have not been run** — that is the one thing outstanding. See §7.
 
 ---
 
@@ -86,7 +101,7 @@ forward. ✅ done · 🟡 partly · ⬜ not started.
 | E1 | **Core session.** Train (passive, then active; discovery) → frozen-weight test on the paper's 30–60 blocks | ✅ 6/10 seeds discover (v13); all six retrained and saved as `tune_v15/NG_s*/model.pt`, each reproducing its v13 numbers exactly |
 | E2 | **Z-clamp probe.** Freeze weights and the latent update; hold Z at a grid of gates; measure RT, accuracy, undecided rate, the integration index and the cue/rule build-up | ✅ `hier_switch_perturb.clamp_grid`: softmax contrast ladder and a sigmoid gain × contrast grid, per seed |
 | E3 | **Group sweep.** ≥ 10 seeds × {NG, RNN} plus the ideal observer | ✅ 6 NG (the discoverers) × 6 conditions and 10 RNN × 3 conditions, all recorded and analysed; `hier_switch_group.py aggregate` prints the prediction table. Oracle → inference not repeated at group level |
-| E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); Z_lr ×k for the first 5 trials of high-conflict reversals (MD activation); forced errors | ⬜ **The one stage not built.** Needs a per-trial Z_lr / LU-on-off schedule hook in `train_and_infer_functions.predictive_learning`, default-off; the design is in the plan file §6 and the flanker "error-gated Z_lr" deferred design is the same hook. The static version (Z clamped for a whole session) is E2 and is done |
+| E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); the latent driven for the first trials (MD activation); momentum; forced errors | 🟡 **Built, not run.** `hier_switch_hooks.py` plus the default-off call sites in `_latent_update_step`; 15 conditions defined and `run_manipulations.sh` ready. Needs ~90 SLURM sessions and the user's go-ahead. Forced errors still need a dataset knob. See §7 |
 
 ### Predictions
 
@@ -128,7 +143,8 @@ the numbers in §5b. ✅ = built and run on the group.
 | C1 | Per-timestep cross-validated decoding of cue, rule, context and conflict from the hidden state | ✅ `hier_switch_hidden.decode` |
 | C2 | Per-unit CueS / CueL / Rule classification against a permutation null | ✅ `unit_classes` |
 | C3 | Cue and rule axis magnitude reversal-aligned; the paper's integration index and cue velocity | ✅ `hidden_report`, `integration` |
-| D | Z clamp (E2) ✅ `hier_switch_perturb`; dynamic perturbations (E4) ⬜ |
+| D | Z clamp (E2) ✅ `hier_switch_perturb`; dynamic perturbations (E4) 🟡 built, not run |
+| F | **What is encoded where**: every signal (hidden state, its top 2 PCs, Z, ΔZ, dL/dZ) against every variable, by decoding with a per-cell null and by drop-one demixed variance | ✅ `hier_switch_hidden.encoding_table`; §5c and `docs/hier_switch_analyses.md` §6b |
 | E | Ideal observer (numpy): frame-wise cue posterior, hazard-1/45 context filter, its own choice and switch latency | ✅ `hier_switch_observer.py` (0.93 cue accuracy at σ 0.5, as the tuning log had it) |
 
 ### Design choices already settled, which the analyses must respect
@@ -349,6 +365,64 @@ behavioural switch criterion is contaminated by hedging, which is why the Z-side
 decided-correct criteria are reported beside it. The RNN never saw the sigmoid or clamp
 conditions, and the Oracle was not re-run at group level.
 
+## 5c. The story figure, and what reorganising found
+
+`exports/hier_switch/group/figures/story.pdf` — five rows of four panels, a–t, each row also
+written on its own. Every panel is captioned in `docs/hier_switch_methods.md`, which is the
+place to read this from. Two earlier figures were folded into it: `switching.pdf` is retired
+and `behaviour.pdf` lost its reversal-aligned RT panel. No builder was deleted.
+
+**Three findings that were not visible before.**
+
+**1. The two contexts are not interchangeable.** A network leaves training with its weights
+and its latent sitting in the context of the last block it saw, and that context stays
+easier: accuracy is higher in it at every conflict level, by 0.042 on average, in the same
+direction in every seed. Three of the six networks finished in context 1 (s0, s3, s5) and
+three in context 0 (s1, s6, s9), so the old per-context split averaged the two halves of a
+real asymmetry against each other. Everything per-context now goes through `ctx_rel`
+(0 = last trained), read from the final trial of the active phase.
+
+**2. The latent is a pure context code and the hidden state is not — and it is not a
+dimensionality effect.** From the encoding table (§6b of the analyses doc), decoding minus
+each cell's own shuffle null, 6 seeds:
+
+| signal | cue | rule | context | conflict |
+|---|---|---|---|---|
+| hidden state (64 units) | +0.42 | +0.33 | +0.40 | +0.35 |
+| hidden state, top 2 PCs | +0.41 | +0.32 | **+0.09** | +0.02 |
+| Z (2 units) | −0.02 | −0.00 | **+0.41** | −0.01 |
+| dL/dZ | +0.07 | +0.06 | +0.14 | (outcome +0.16) |
+
+Every hidden row is 6/6 seeds; every "flat" entry is 0/6. A hidden unit is tuned to 4.5 of
+seven variables on average, while context alone explains 0.65 more of Z's variance than the
+best other variable (6/6). **The dimension-matched control is what makes this a result rather
+than an artefact**: the hidden state's top two components carry cue and rule as well as all
+64 do, and carry context barely at all — so the hidden state's near-ceiling context decoding
+is neither a unit-count effect nor something the network computes. Context reaches it only
+because Z gates it, and it sits outside the directions that dominate its variance.
+
+**3. The latent's state is persistent and its update is transient.** Aligned on a reversal:
+the position on the context axis goes +1.0 → −0.99 on trial 1 and climbs back over 4–6
+trials, while the update peaks at trial 2 (0.10 → 0.56 of the prototype distance, back near
+baseline by trial 8) and the raw gradient does the same (7.5e-6 → 4.4e-5 → 1.7e-5). The
+paper's thalamic switch response is transient and its context code is persistent; here both
+are present as the derivative and the integral of one another. That correspondence is not in
+the paper and is only available because the state and its update are separately measurable.
+
+**Reproduced, and newly quantified.** The paper's Fig 1f now also holds on *uncontrolled*
+reversals: binning each session's own reversals into three equal-count bins of early
+conflict, the decided switch latency is 4.6 / 5.3 / 6.1 trials, slower in the most ambiguous
+bin than the least in **6 of 6** seeds; the ideal observer pays 2.6 / 2.9 / 3.5 on the same
+trials. The raw behavioural criterion does not show it (4.1 / 4.6 / 4.3) — hedging again.
+
+**Still weak, and now explained.** The paper's exploration-regime signature barely appears:
+the integration index falls by only 0.079 ± 0.025 in the first five post-reversal trials
+(5/6) and the cue velocity does not move (+0.001 ± 0.011, 4/6). The clamp grid says why this
+is coherent rather than contradictory — **cue velocity is set by the gain, and under the
+softmax the gain cannot move**. The one measure the paper uses to define the exploratory
+regime is the one this model's latent has no way to change. Testing that properly means
+training with the sigmoid (§6b), which is still not done.
+
 ## 6. How to run things
 
 ```bash
@@ -367,6 +441,9 @@ conditions, and the Oracle was not re-run at group level.
 ./hier_switch/run_clamp.sh 0-11                                # the Z-clamp grids
 .venv/bin/python hier_switch/hier_switch_group.py aggregate    # the prediction table
 .venv/bin/python hier_switch/hier_switch_figures.py [session]  # group, or one session
+.venv/bin/python hier_switch/hier_switch_figures.py story      # only the story figure
+.venv/bin/python hier_switch/hier_switch_hooks.py              # trial-hook self-test
+./hier_switch/run_manipulations.sh                             # E4: the ~90 new sessions
 ```
 
 - **Python** is the repo `.venv` (it links to `~/venvs/neo`). System python has no torch.
@@ -390,6 +467,7 @@ conditions, and the Oracle was not re-run at group level.
     `block_table(trials, phase)`.
 - **Inference tests on a saved model.**
   `hier_switch_test_inference.py <model.pt> [condition ...]` runs named latent conditions
+  (a condition whose `session.npz` exists is skipped unless `HIER_SWITCH_FORCE=1`)
   (`CONDITIONS`) on copies of the model, on identical test trials, and **records** each one.
   With no condition named it runs the default set for that model type (NG or RNN).
   - Results go to `exports/hier_switch/inference_tests/<model>/<condition>/`:
@@ -426,22 +504,36 @@ are in `docs/hier_switch_task.md` (end of the tuning log).
 
 ## 7. What is left
 
-1. **E4, the dynamic perturbations — the paper's optogenetics.** The only stage of the
-   phase-2 plan not built. It needs one default-off hook, `config.trial_hook`, called from
-   `train_and_infer_functions.predictive_learning` at `'pre_lu'` and `'post_lu'` with the
-   trial's `since` and context, and filling the session's `lu_scale` / `clamped` columns
-   (the readers already carry them). Then:
-   - **`lu_scale(k, trials=1..4)`** — multiply the live optimizer's lr (which scales the
-     decay term with it, as intended). `k = 0` is the paper's ACC→MD terminal silencing on
-     low-conflict reversals, predicted to delay switching; `k > 1` is our extrapolation to
-     "ACC stimulation", which **the paper never did** and which must be labelled as ours.
-   - **`z_clamp(vec, trials=1..5)`** — the MD-activation analogue, on high-conflict
-     reversals, on the sigmoid condition where (1, 1) is a real gain move. The static
-     version (Z clamped all session) is E2 and is done; what is missing is the schedule.
-   - **Forced errors** (three flipped-feedback trials mid-block) — lowest priority, needs a
-     dataset knob.
+1. **E4, the manipulations — built, not yet run. This is the next thing to do.**
+   `hier_switch/hier_switch_hooks.py` holds the hook (§6c of the analyses doc), the call
+   sites are in `_latent_update_step`, the 15 conditions are in
+   `hier_switch_test_inference.CONDITIONS`, and `hier_switch/run_manipulations.sh` submits
+   them. The self-test (`.venv/bin/python hier_switch/hier_switch_hooks.py`) checks each kind
+   against a trained model. What is missing is the compute: **6 seeds × 15 conditions ≈ 90
+   sessions at 2–3 min each**, which is a SLURM array and needs the user's go-ahead, and then
+   `hier_switch_group.py aggregate` plus the row-5 panels.
 
-   Exclude clamped or scaled trials from `z_updates`; keep them in behaviour.
+   The conditions, all on the forced low/high pairs so each has its own control:
+   - **`softmax_lu0`** — the latent update scaled to zero on trials 1–4. The paper's ACC→MD
+     silencing (Fig 4h); predicted to delay switching. The gradient is still computed and
+     logged, so the error signal survives, as it does in the paper.
+   - **`softmax_lu3`, `softmax_lu10`** — the same scaled up. **The paper never stimulated
+     ACC**, so this is ours and must be labelled as ours wherever it appears.
+   - **`softmax_blast`, `sigmoid_blast`** — both latent units driven to 1 at the first
+     post-reversal feedback, then the gradient takes over. The MD-activation analogue
+     (Fig 5d). Under the softmax this is a *reset to the uniform gate*, because the softmax
+     is shift-invariant; only under the sigmoid is it also a gain boost. Run both, and say
+     which is which.
+   - **`softmax_mom0.5`, `softmax_mom0.9`** — momentum on the latent update for trials 1–5.
+     Not a control: a question about whether a run of errors can build on itself the way the
+     paper's cortical error signal does. The panels are the reversal-aligned latent, update
+     and gradient (story row 5), not behaviour.
+   - **Forced errors** (three flipped-feedback trials mid-block) — still not built; needs a
+     dataset knob. Lowest priority.
+
+   Scaled, clamped and momentum trials are already excluded from `z_updates` and kept in
+   behaviour. The group table already has the rows (`_manipulation_rows`); they simply have
+   no data yet.
 2. **The weak results, if they matter to the story.** Fig 1m has no analogue here (§5b) and
    the exploration-regime signatures are weak. Both are reported as they are. If the
    integration index is to carry weight, the honest next step is more reversals per seed
@@ -449,7 +541,11 @@ are in `docs/hier_switch_task.md` (end of the tuning log).
 3. **Sigmoid-*trained* models** (§6b). The gain analyses currently run on a softmax-trained
    model with the sigmoid swapped in at test, which holds the context worse (0.71 steady
    against 0.91). Training with the sigmoid from the start, now that the passive phase
-   exists, is the clean version.
+   exists, is the clean version. **§5c raises the stakes on this**: cue velocity is set by
+   the gain and the softmax has no gain axis, so the paper's exploration-regime signature
+   cannot appear in a softmax-trained model *in principle*. A sigmoid-trained model is the
+   only way to find out whether that signature is absent from the mechanism or only from
+   this gate.
 4. **The stateful feedback-RNN** (Brabeeba's "thalamocortical RNN trained with normal
    backprop"): `stateful_hidden=True` across trials plus an input channel carrying the
    previous outcome, truncated BPTT, and its own tuning. §5b shows what the current RNN
