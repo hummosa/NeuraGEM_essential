@@ -1,13 +1,22 @@
 #!/bin/bash
 # Record and analyse the manipulation sessions (hier_switch_hooks) as a SLURM array:
 #     ./hier_switch/run_manipulations.sh [RANGE]
-# One task per model, as run_sessions.sh does, but with HIER_SWITCH_MANIP=1 so each NG task
-# also records the manipulation conditions. A condition whose session.npz already exists is
-# skipped, so this fills gaps rather than redoing work; HIER_SWITCH_FORCE=1 re-records.
+#
+# One task per NeuraGEM seed — the RNN has no latent update, so there is nothing to
+# perturb, and its tasks are left out of the default range. Each task records that seed's
+# 15 manipulation conditions (2000 trials each, hidden states and pulses saved) and then
+# re-analyses all of its sessions. A condition whose session.npz already exists is skipped,
+# so re-running fills gaps rather than redoing work; HIER_SWITCH_FORCE=1 re-records.
+#
+# Cost: ~15 sessions x 6 seeds x ~2 min recording, plus ~21 analyses x ~30 s per task, so
+# roughly 40-55 min per task inside a 3 h limit. Each session is ~6.4 MB, so this adds
+# ~0.6 GB under exports/hier_switch (git-ignored).
 set -e
 cd "$(dirname "$0")/.."
-N=$(HIER_SWITCH_MANIP=1 .venv/bin/python hier_switch/hier_switch_group.py list | wc -l)
-RANGE=${1:-0-$((N - 1))}
+# models() lists the NG seeds first, then the RNN baselines; default to the NG block.
+NG=$(HIER_SWITCH_MANIP=1 .venv/bin/python hier_switch/hier_switch_group.py list \
+     | awk '$2 == "NG"' | wc -l)
+RANGE=${1:-0-$((NG - 1))}
 sbatch --parsable --array=$RANGE <<EOS
 #!/bin/bash
 #SBATCH --job-name=hsw_manip
