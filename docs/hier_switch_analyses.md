@@ -261,6 +261,15 @@ its cue posterior.
    state there is also a per-unit count of how many variables a unit is tuned to against a
    permutation null — the paper's Fig 2k histogram.
 
+**An asymmetry to know about.** `grad` is built as `[g_contrast, |g_contrast|]` — its
+magnitude is the whole point of that signal, since the conflict weighting lives in the size
+of the gradient — while `z_in` and `step` are the raw two units. So the gradient gets a
+magnitude channel and the latent does not. It does not affect the substantive comparison
+(cue, rule, context, conflict are all sign-carrying), but it is the reason the gradient
+scores above zero on the uncertainty columns while Z scores flat. Giving `z_in` and `step`
+the same treatment is the obvious next refinement; it would mean re-running every session
+report, which was not worth it for a secondary column.
+
 **One limit to state before reading the uncertainty columns.** Every decoder here is
 linear, and both uncertainties are *magnitudes* — rule uncertainty is `1 − |2b − 1|`, cue
 uncertainty is `1 − max(q, 1 − q)`. A signed two-unit source cannot produce a magnitude
