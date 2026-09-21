@@ -598,12 +598,13 @@ def spec_unit_classes(groups):
     return panel
 
 
-#: Negative clamped contrasts are dropped from the plotted ladder. A contrast of −1 selects
-#: the *other* context, and every measure here is scored against whichever context the gate
-#: selects, so −1 is the mirror of +1 and not a level of its own: measured side by side they
-#: give cue velocity 0.201 against 0.201, index 1.43 against 1.39, accuracy 0.71 against
-#: 0.76. Only |contrast| is a real axis. The cells stay on disk.
-DROP_NEGATIVE_CONTRAST = True
+#: Negative clamped contrasts were dropped while the panels scored "whichever context the
+#: gate selects", because under that rule −1 was the mirror of +1 rather than a level of
+#: its own. Now that a fixed task is scored (`acc_task_a`), a negative contrast is the gate
+#: pointing the *other* way and the ladder runs from one task to the other, so it is kept.
+#: The population measures are sign-blind and simply come out symmetric about zero, which
+#: is itself worth seeing next to an accuracy that is not.
+DROP_NEGATIVE_CONTRAST = False
 
 
 def clamp_value(c, measure):
@@ -620,6 +621,11 @@ def clamp_value(c, measure):
     network applies one rule, and measured across every cell they sum to 1.0015 — so their
     difference already carries what the pair contains.
     """
+    if measure in ('acc_task_a', 'acc_task_b'):
+        a, t = c.get('acc_ctx'), c.get('task_a')
+        if not a or len(a) != 2 or t is None:
+            return np.nan
+        return a[t] if measure == 'acc_task_a' else a[1 - t]
     if measure == 'rule_selectivity':
         a = c.get('acc_ctx')
         return abs(a[0] - a[1]) if a and len(a) == 2 else np.nan
@@ -1191,17 +1197,24 @@ def group_figures(out_dir=None):
         if cells:
             figure([spec_clamp_grid(cells, 'index'),
                     spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity'),
-                    spec_clamp_grid(cells, 'rule_selectivity',
-                                    'Rule selectivity\n|acc(ctx 0) − acc(ctx 1)|'),
-                    spec_clamp_grid(cells, 'acc_match', 'Accuracy\n(gate matches context)')],
+                    spec_clamp_grid(cells, 'acc_task_a', 'Accuracy on task A'),
+                    spec_clamp_grid(cells, 'abs_decision', '|decision|')],
                    os.path.join(out_dir, f'clamp_{act}.pdf'), ncol=4)
+            # The companion: the same grid scored on the other task. It is the mirror of
+            # the panel above, and saying so is the point — one gate, one rule, and the
+            # two tasks' accuracies are complementary.
+            figure([spec_clamp_grid(cells, 'acc_task_b', 'Accuracy on task B'),
+                    spec_clamp_grid(cells, 'acc_task_a', 'Accuracy on task A'),
+                    spec_clamp_grid(cells, 'rule_selectivity',
+                                    'Rule selectivity\n|acc(A) − acc(B)|'),
+                    spec_clamp_grid(cells, 'acc_match', 'Accuracy\n(gate matches context)')],
+                   os.path.join(out_dir, f'clamp_{act}_taskB.pdf'), ncol=4)
     # The simple cut through the sigmoid grid: contrast fixed, gain varied.
     cells = clamp_cells_on_disk('sigmoid')
     if cells:
         figure([spec_clamp_gain(cells, 1.0, 'cue_velocity', 'Cue velocity'),
                 spec_clamp_gain(cells, 1.0, 'index', 'Integration index'),
-                spec_clamp_gain(cells, 1.0, 'rule_selectivity',
-                                'Rule selectivity\n|acc(ctx 0) − acc(ctx 1)|'),
+                spec_clamp_gain(cells, 1.0, 'acc_task_a', 'Accuracy on task A'),
                 spec_clamp_gain(cells, 1.0, 'acc_match', 'Accuracy\n(gate matches context)'),
                 spec_clamp_gain(cells, 1.0, 'rt', 'RT (timesteps)')],
                os.path.join(out_dir, 'clamp_sigmoid_gain.pdf'), ncol=5)
@@ -1315,14 +1328,15 @@ def story_figure(out_dir=None, gate='softmax'):
         # axes have to be visible for the dissociation to be one — the gain lines separate
         # in cue velocity and lie on top of each other in nothing else. The negative
         # contrast is dropped as the mirror of its positive twin (DROP_NEGATIVE_CONTRAST).
-        # Both behavioural panels are threshold-free and take no maximum. Rule selectivity
-        # is |acc(context 0) − acc(context 1)|, which has a real zero where `acc_match` had
-        # a floor above chance; |decision| is the raw output magnitude, where RT depends on
-        # the crossing threshold we picked and pins every undecided cell at the trial end.
-        # Accuracy and RT keep their place in clamp_sigmoid.pdf and clamp_sigmoid_gain.pdf.
+        # Panel i is plain accuracy on one named task, scored the same way at every cell,
+        # so a gate that imposes nothing is free to sit at chance and a gate pointing the
+        # wrong way is free to go below it. Which task is "A" is fixed once per network
+        # (clamp_cells_on_disk) because the unit-to-context labelling is arbitrary. The
+        # companion figure scoring task B is clamp_<act>_taskB.pdf and is its mirror.
+        # |decision| replaces RT, which depends on the crossing threshold we picked and
+        # pins every never-crossing cell at the trial length.
         ('story_3_gate', [
-            nolegend(spec_clamp_grid(cells, 'rule_selectivity',
-                                     'Rule selectivity\n|acc(ctx 0) − acc(ctx 1)|')),
+            nolegend(spec_clamp_grid(cells, 'acc_task_a', 'Accuracy on task A')),
             nolegend(spec_clamp_grid(cells, 'abs_decision', '|decision|')),
             nolegend(spec_clamp_grid(cells, 'index', 'Integration index')),
             relegend(spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity'),
@@ -1369,16 +1383,36 @@ def merge_splits(low_rep, high_rep):
 
 
 def clamp_cells_on_disk(activation):
-    """Every clamp cell of every seed, pooled (each cell carries its own m and d)."""
+    """Every clamp cell of every seed, pooled (each cell carries its own m and d).
+
+    Each cell is tagged with the network it came from and with that network's **task
+    labelling**: `task_a` is the context a positive contrast drives it toward. Which Z unit
+    comes to mean which context is decided by symmetry breaking during training and is
+    arbitrary — here two of the six networks have positive contrast driving toward context
+    1 and four toward context 0 — so pooling raw "accuracy in context 0" across networks
+    would cancel the effect. The labelling is read **once per network**, from the sign of
+    the most committed cells, and then applied to every cell of that network; it is not a
+    per-cell choice, so it introduces no selection bias and an individual cell's accuracy
+    is free to fall below chance.
+    """
     root = os.path.join(EXPORTS, 'clamp')
     cells = []
     if not os.path.isdir(root):
         return cells
     for tag in sorted(os.listdir(root)):
         f = os.path.join(root, tag, f'clamp_grid_{activation}.json')
-        if os.path.exists(f):
-            with open(f) as fh:
-                cells += json.load(fh)['cells']
+        if not os.path.exists(f):
+            continue
+        with open(f) as fh:
+            grid = json.load(fh)['cells']
+        if grid:
+            dmax = max(c['d'] for c in grid)
+            sides = [c['side'] for c in grid if abs(c['d'] - dmax) < 1e-9
+                     and c.get('side') is not None]
+            task_a = int(round(np.mean(sides))) if sides else 0
+            for c in grid:
+                c['tag'], c['task_a'] = tag, task_a
+        cells += grid
     return cells
 
 

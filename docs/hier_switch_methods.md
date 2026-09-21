@@ -367,34 +367,39 @@ gate (the softmax has no gain direction to clamp). Accuracy is on the context th
 selects, read off behaviour; hidden-state measures pool both halves of the session, which
 see identical inputs.
 
-**Plotted.** *(i)* Rule selectivity, *(j)* the decision magnitude, *(k)* integration index
-and *(l)* cue velocity against the clamped contrast, **one line per clamped gain**. Both
-axes have to be on the page for the dissociation to be one: the gain lines separate in cue
-velocity and lie on top of each other in nothing else, which no single cut can show.
+**Plotted.** *(i)* Accuracy on task A, *(j)* the decision magnitude, *(k)* integration
+index and *(l)* cue velocity against the clamped contrast, **one line per clamped gain**.
+Both axes have to be on the page for the dissociation to be one: the gain lines separate in
+cue velocity and lie on top of each other in nothing else, which no single cut can show.
 
-**Why these two behavioural measures and not accuracy and RT.** Neither of the obvious
-choices survives scrutiny at a gate that imposes nothing, and both failures are artefacts
-of a convention rather than facts about the network.
+**What "task A" means, and why the panel is plain accuracy.** Panel i is accuracy on one
+named task, scored identically at every cell. Nothing is maximised and nothing is derived,
+so the curve is free to sit at chance where the gate says nothing and to fall below it
+where the gate points the wrong way — which is what it does.
 
-*Accuracy* was reported as `acc_match`, the accuracy on whichever context the clamped gate
-selects — and since the selecting context is read off behaviour, that is **the larger of
-the two contexts' accuracies**. Taking a maximum cannot go below 0.5, so a gate carrying no
-information still scored 0.54, which invites exactly the objection that the whole panel is
-wrong. **Rule selectivity, |acc(context 0) − acc(context 1)|, takes no maximum and has a
-real zero**: 0 means the gate decides nothing about which rule is applied, 1 means it fixes
-the answer outright. At the closed gate with no contrast it reads 0.076 rather than 0.54.
-Nothing is lost, because the two accuracies are complementary — the network applies one
-rule, and across every cell of the grid they sum to 1.0015 — so their difference already
-contains what the pair does. What remains at low contrast is each network's **default
-context**, a real property: with an uninformative gate it falls back on one rule rather
-than sitting between the two.
+The one thing that has to be fixed is which task is called A. Which of the two latent units
+comes to mean which context is settled by symmetry breaking during training and is
+arbitrary: of the six networks, four have a positive contrast driving them toward context 0
+and two toward context 1. Pooling raw "accuracy in context 0" would therefore cancel the
+effect. So **task A is defined once per network** as the context a strongly positive
+contrast drives it toward, read from the sign of its most committed cells, and then applied
+to every cell of that network. It is not a per-cell choice and so carries no selection
+bias. The companion figure `clamp_sigmoid_taskB.pdf` scores task B instead and is the
+mirror image; their sum is 1.00 at every level, because the network applies one rule.
 
-*RT* is a threshold crossing of |output| at 0.5, with trials that never cross scored at the
-trial end. At the closed gate nothing crosses, so that line is pinned at exactly 25 — the
-trial length, not a response time. **|decision|, the raw magnitude of the response output,
-measures the same commitment without a threshold** and reads 0.12 there instead. Accuracy
-and RT keep their place in `clamp_sigmoid.pdf` and `clamp_sigmoid_gain.pdf`, where the
-caption has room for the caveats.
+**This is what the earlier versions of the panel got wrong.** It first plotted `acc_match`,
+the accuracy on whichever context the gate selects — and since that context is read off
+behaviour per cell, `acc_match` is *the larger* of the two accuracies. A maximum cannot go
+below 0.5, so a gate carrying no information still scored 0.54, which rightly invites the
+objection that the panel is broken. The fix attempted next, |acc(A) − acc(B)|, removed the
+floor but replaced a plain quantity with a derived score. Scoring a named task does both
+jobs and needs no defending.
+
+*RT* had the parallel problem: it is a crossing of the |output| = 0.5 threshold we chose,
+with trials that never cross scored at the trial end, so the closed-gate line sat pinned at
+exactly 25 — the trial length, not a response time. **|decision|, the raw magnitude of the
+response output, measures the same commitment with no threshold.** Accuracy on the selected
+context, rule selectivity and RT all keep their place in the supplementary clamp figures.
 
 **The negative contrast is not plotted.** A contrast of −1 selects the *other* context, and
 every measure here is scored against whichever context the gate selects, so −1 is the mirror
@@ -403,18 +408,27 @@ of +1 rather than a level of its own — side by side they give cue velocity 0.2
 residual being each network's default-context bias. Only |contrast| is a real axis. The
 cells remain on disk and `DROP_NEGATIVE_CONTRAST` turns them back on.
 
-**See.** **Gain and contrast do different jobs.** Opening the gate speeds the hidden state's
-integration of the cue — cue velocity 0.126 → 0.188 → 0.232 → 0.256 from gain −1 to +2,
-monotonically in 6 of 6 networks — and raises the integration index (1.10 → 1.60). Moving
-the contrast instead does not touch the cue velocity at all: 0.200 to 0.201 across its whole
-ladder. **What the contrast does is fix the rule and make the output commit to it**: rule
-selectivity rises 0.23 → 0.39 → 0.51 → 0.66 and |decision| 0.26 → 0.34 → 0.48 → 0.68 across
-the same four levels. Two controls, two jobs, and each leaves the other's measure alone.
+**See.** **The contrast chooses the task, and the shapes say so.** Accuracy on task A runs
+0.29 → 0.53 → 0.67 → 0.76 → 0.83 across contrast −1 to +2: monotone, and **crossing chance
+almost exactly where the contrast is zero** (0.529). A gate pointing the wrong way makes the
+network reliably wrong, which is the sharpest statement that the gate *is* the rule. The
+decision magnitude is V-shaped about the same point, 0.26 at zero contrast rising to 0.47
+and 0.68 at the two extremes: the network commits in either direction and is least committed
+when the gate is neutral.
 
-Gain is not neutral for the behavioural pair either — rule selectivity peaks at gain 0
-(0.66) and falls away on both sides (0.24 at −1, 0.38 at +2), which is the non-monotonicity
-accuracy showed before: too little gain and nothing reaches the output, too much and both
-units saturate so the contrast between them stops meaning anything. What the contrast
+**Gain does a different job, and the symmetry is the evidence.** Cue velocity is 0.126 →
+0.188 → 0.231 → 0.257 from gain −1 to +2, monotonically in 6 of 6 networks, and the
+integration index follows (1.09 → 1.61) — while both are flat across contrast to three
+decimals (0.200–0.201) and **symmetric about zero**, since they do not care which task the
+gate points at. One control changes which answer is right and the other changes how fast
+the cue is integrated, and each leaves the other's measure alone.
+
+**On the bias at zero contrast.** Pooled over networks the neutral gate sits at chance
+(0.529), so there is no systematic default across the group. Individual networks are a
+different matter: per seed the same cell reads 0.55, 0.30, 0.69, 0.48, 0.67 and 0.91, so
+most do fall back on one task or the other, in both directions, and they cancel in the mean.
+That spread is visible as the scatter of per-seed dots at contrast 0 and is a real property
+of each trained network, not an artefact of the measure. What the contrast
 sets is which context is applied and how decisive the answer is (accuracy 0.61 → 0.83,
 undecided 0.79 → 0.25). Accuracy is non-monotonic in gain and peaks near 0 to +1: too little
 and the network is undecided on nearly every trial, too much and both units saturate so the

@@ -337,16 +337,20 @@ is split by whether the clamped gate matches the block's context. The context ke
 reversing inside a clamped session, so every cell tests its gate against both contexts; that
 is a within-session control rather than a confound, because the context label never enters
 the input (it only picks the answer key), so the two halves differ in scoring alone. Split
-the behavioural measures, pool the hidden-state ones. **Rule selectivity is the measure to quote, not accuracy.** `|acc(context 0) − acc(context
-1)|` is computed in the figures (`clamp_value`) and is what the story figure plots. The
-stored `acc_match` is the accuracy on the context the gate selects, which — because the
-selecting context is read off behaviour — is *the larger* of the two, and so cannot fall
-below 0.5 even for a gate that carries no information. The difference takes no maximum and
-has a real zero, and it loses nothing: the two accuracies are complementary (they sum to
-1.0015 across every cell of the sigmoid grid), because the network applies one rule.
-Likewise `abs_decision` is preferred to `rt` wherever a commitment measure is wanted, since
-RT is a crossing of a threshold we chose and pins every never-crossing cell at the trial
-length. **Which context a clamped
+the behavioural measures, pool the hidden-state ones. **Score a named task, not "whichever the gate selects".** The figures plot `acc_task_a`
+(`clamp_value`): accuracy on one task, identical at every cell, free to fall below chance.
+Which task is A is fixed **once per network** in `clamp_cells_on_disk`, as the context a
+strongly positive contrast drives it toward — an arbitrary labelling settled by symmetry
+breaking in training, and one that differs across networks (4 of 6 toward context 0, 2
+toward context 1), so pooling raw "accuracy in context 0" would cancel the effect. Because
+the assignment is per network and not per cell it carries no selection bias. `acc_task_b`
+is its complement and gives the companion figure.
+
+Avoid the stored `acc_match` in a figure: it is the accuracy on whichever context the gate
+selects *per cell*, hence **the larger** of the two, so it cannot fall below 0.5 even for a
+gate carrying no information — it read 0.54 at a gate that imposes nothing. Likewise prefer
+`abs_decision` to `rt` for a commitment measure, since RT is a crossing of a threshold we
+chose and pins every never-crossing cell at the trial length. **Which context a clamped
 gate selects is read off behaviour** — the context the model is more accurate in — with both
 contexts' accuracies reported beside it (`acc_ctx`). Geometry was tried first and does not
 work: the gain direction takes a sigmoid cell off the context axis, and the raw middle gate
