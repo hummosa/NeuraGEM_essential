@@ -606,6 +606,28 @@ def spec_unit_classes(groups):
 DROP_NEGATIVE_CONTRAST = True
 
 
+def clamp_value(c, measure):
+    """One clamped cell's value for a named measure.
+
+    `rule_selectivity` is the one that is computed rather than stored: |accuracy in context
+    0 − accuracy in context 1|. It replaces `acc_match` in the story figure, and the reason
+    is worth stating. `acc_match` is *the larger* of the two contexts' accuracies, so at a
+    gate that imposes no rule it still returns something above 0.5 — partly each network's
+    default context, partly the upward bias of taking a maximum — and a reader is right to
+    balk at a network scoring 0.54 with a useless gate. The difference takes no maximum and
+    has a real zero: 0 means the gate decides nothing, 1 means it fixes the answer outright.
+    Nothing is lost by the change, because the two accuracies are complementary — the
+    network applies one rule, and measured across every cell they sum to 1.0015 — so their
+    difference already carries what the pair contains.
+    """
+    if measure == 'rule_selectivity':
+        a = c.get('acc_ctx')
+        return abs(a[0] - a[1]) if a and len(a) == 2 else np.nan
+    if measure in ('index', 'cue_velocity'):
+        return _get(c, f'integration.{measure}')
+    return _get(c, measure)
+
+
 def spec_clamp_grid(cells, measure='index', ylabel='Integration index',
                     drop_negative=DROP_NEGATIVE_CONTRAST):
     """E2: one line per clamped gain level, the measure against the clamped contrast.
@@ -614,8 +636,7 @@ def spec_clamp_grid(cells, measure='index', ylabel='Integration index',
     its SEM and one faint dot per seed — the same convention as every other panel.
     """
     def value(c):
-        return (_get(c, f'integration.{measure}') if measure in ('index', 'cue_velocity')
-                else _get(c, measure))
+        return clamp_value(c, measure)
 
     def panel(ax):
         ms = sorted({c['m'] for c in cells})
@@ -647,8 +668,7 @@ def spec_clamp_gain(cells, d=1.0, measure='cue_velocity', ylabel='Cue velocity')
     One line, x = the clamped gain (the mean of the two Z units), seeds as dots.
     """
     def value(c):
-        return (_get(c, f'integration.{measure}') if measure in ('index', 'cue_velocity')
-                else _get(c, measure))
+        return clamp_value(c, measure)
 
     def panel(ax):
         rows = [c for c in cells if abs(c['d'] - d) < 1e-9]
@@ -1171,16 +1191,20 @@ def group_figures(out_dir=None):
         if cells:
             figure([spec_clamp_grid(cells, 'index'),
                     spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity'),
+                    spec_clamp_grid(cells, 'rule_selectivity',
+                                    'Rule selectivity\n|acc(ctx 0) − acc(ctx 1)|'),
                     spec_clamp_grid(cells, 'acc_match', 'Accuracy\n(gate matches context)')],
-                   os.path.join(out_dir, f'clamp_{act}.pdf'))
+                   os.path.join(out_dir, f'clamp_{act}.pdf'), ncol=4)
     # The simple cut through the sigmoid grid: contrast fixed, gain varied.
     cells = clamp_cells_on_disk('sigmoid')
     if cells:
         figure([spec_clamp_gain(cells, 1.0, 'cue_velocity', 'Cue velocity'),
                 spec_clamp_gain(cells, 1.0, 'index', 'Integration index'),
+                spec_clamp_gain(cells, 1.0, 'rule_selectivity',
+                                'Rule selectivity\n|acc(ctx 0) − acc(ctx 1)|'),
                 spec_clamp_gain(cells, 1.0, 'acc_match', 'Accuracy\n(gate matches context)'),
                 spec_clamp_gain(cells, 1.0, 'rt', 'RT (timesteps)')],
-               os.path.join(out_dir, 'clamp_sigmoid_gain.pdf'), ncol=4)
+               os.path.join(out_dir, 'clamp_sigmoid_gain.pdf'), ncol=5)
     by_condition = {cond: [d[s] for s in sorted(d)]
                     for (model, cond), d in data.items() if model == 'NG'}
     if _manip_pairs(by_condition):
@@ -1291,9 +1315,15 @@ def story_figure(out_dir=None, gate='softmax'):
         # axes have to be visible for the dissociation to be one — the gain lines separate
         # in cue velocity and lie on top of each other in nothing else. The negative
         # contrast is dropped as the mirror of its positive twin (DROP_NEGATIVE_CONTRAST).
+        # Both behavioural panels are threshold-free and take no maximum. Rule selectivity
+        # is |acc(context 0) − acc(context 1)|, which has a real zero where `acc_match` had
+        # a floor above chance; |decision| is the raw output magnitude, where RT depends on
+        # the crossing threshold we picked and pins every undecided cell at the trial end.
+        # Accuracy and RT keep their place in clamp_sigmoid.pdf and clamp_sigmoid_gain.pdf.
         ('story_3_gate', [
-            nolegend(spec_clamp_grid(cells, 'acc_match', 'Accuracy\n(gate matches context)')),
-            nolegend(spec_clamp_grid(cells, 'rt', 'RT (timesteps)')),
+            nolegend(spec_clamp_grid(cells, 'rule_selectivity',
+                                     'Rule selectivity\n|acc(ctx 0) − acc(ctx 1)|')),
+            nolegend(spec_clamp_grid(cells, 'abs_decision', '|decision|')),
             nolegend(spec_clamp_grid(cells, 'index', 'Integration index')),
             relegend(spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity'),
                      loc='center left', bbox_to_anchor=(1.0, 0.5), fontsize='xx-small')]),

@@ -337,7 +337,16 @@ is split by whether the clamped gate matches the block's context. The context ke
 reversing inside a clamped session, so every cell tests its gate against both contexts; that
 is a within-session control rather than a confound, because the context label never enters
 the input (it only picks the answer key), so the two halves differ in scoring alone. Split
-the behavioural measures, pool the hidden-state ones. **Which context a clamped
+the behavioural measures, pool the hidden-state ones. **Rule selectivity is the measure to quote, not accuracy.** `|acc(context 0) − acc(context
+1)|` is computed in the figures (`clamp_value`) and is what the story figure plots. The
+stored `acc_match` is the accuracy on the context the gate selects, which — because the
+selecting context is read off behaviour — is *the larger* of the two, and so cannot fall
+below 0.5 even for a gate that carries no information. The difference takes no maximum and
+has a real zero, and it loses nothing: the two accuracies are complementary (they sum to
+1.0015 across every cell of the sigmoid grid), because the network applies one rule.
+Likewise `abs_decision` is preferred to `rt` wherever a commitment measure is wanted, since
+RT is a crossing of a threshold we chose and pins every never-crossing cell at the trial
+length. **Which context a clamped
 gate selects is read off behaviour** — the context the model is more accurate in — with both
 contexts' accuracies reported beside it (`acc_ctx`). Geometry was tried first and does not
 work: the gain direction takes a sigmoid cell off the context axis, and the raw middle gate

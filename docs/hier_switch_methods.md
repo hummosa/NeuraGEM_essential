@@ -367,10 +367,34 @@ gate (the softmax has no gain direction to clamp). Accuracy is on the context th
 selects, read off behaviour; hidden-state measures pool both halves of the session, which
 see identical inputs.
 
-**Plotted.** *(i)* Accuracy, *(j)* RT, *(k)* integration index and *(l)* cue velocity
-against the clamped contrast, **one line per clamped gain**. Both axes have to be on the
-page for the dissociation to be one: the gain lines separate in cue velocity and lie on top
-of each other in nothing else, which no single cut can show.
+**Plotted.** *(i)* Rule selectivity, *(j)* the decision magnitude, *(k)* integration index
+and *(l)* cue velocity against the clamped contrast, **one line per clamped gain**. Both
+axes have to be on the page for the dissociation to be one: the gain lines separate in cue
+velocity and lie on top of each other in nothing else, which no single cut can show.
+
+**Why these two behavioural measures and not accuracy and RT.** Neither of the obvious
+choices survives scrutiny at a gate that imposes nothing, and both failures are artefacts
+of a convention rather than facts about the network.
+
+*Accuracy* was reported as `acc_match`, the accuracy on whichever context the clamped gate
+selects — and since the selecting context is read off behaviour, that is **the larger of
+the two contexts' accuracies**. Taking a maximum cannot go below 0.5, so a gate carrying no
+information still scored 0.54, which invites exactly the objection that the whole panel is
+wrong. **Rule selectivity, |acc(context 0) − acc(context 1)|, takes no maximum and has a
+real zero**: 0 means the gate decides nothing about which rule is applied, 1 means it fixes
+the answer outright. At the closed gate with no contrast it reads 0.076 rather than 0.54.
+Nothing is lost, because the two accuracies are complementary — the network applies one
+rule, and across every cell of the grid they sum to 1.0015 — so their difference already
+contains what the pair does. What remains at low contrast is each network's **default
+context**, a real property: with an uninformative gate it falls back on one rule rather
+than sitting between the two.
+
+*RT* is a threshold crossing of |output| at 0.5, with trials that never cross scored at the
+trial end. At the closed gate nothing crosses, so that line is pinned at exactly 25 — the
+trial length, not a response time. **|decision|, the raw magnitude of the response output,
+measures the same commitment without a threshold** and reads 0.12 there instead. Accuracy
+and RT keep their place in `clamp_sigmoid.pdf` and `clamp_sigmoid_gain.pdf`, where the
+caption has room for the caveats.
 
 **The negative contrast is not plotted.** A contrast of −1 selects the *other* context, and
 every measure here is scored against whichever context the gate selects, so −1 is the mirror
@@ -380,10 +404,17 @@ residual being each network's default-context bias. Only |contrast| is a real ax
 cells remain on disk and `DROP_NEGATIVE_CONTRAST` turns them back on.
 
 **See.** **Gain and contrast do different jobs.** Opening the gate speeds the hidden state's
-integration of the cue — cue velocity 0.126 → 0.188 → 0.231 → 0.257 from gain −1 to +2,
-monotonically in 6 of 6 networks — and raises the integration index (1.09 → 1.61). Moving
+integration of the cue — cue velocity 0.126 → 0.188 → 0.232 → 0.256 from gain −1 to +2,
+monotonically in 6 of 6 networks — and raises the integration index (1.10 → 1.60). Moving
 the contrast instead does not touch the cue velocity at all: 0.200 to 0.201 across its whole
-ladder, which is the other half of the dissociation and is why these panels vary the gain. What the contrast
+ladder. **What the contrast does is fix the rule and make the output commit to it**: rule
+selectivity rises 0.23 → 0.39 → 0.51 → 0.66 and |decision| 0.26 → 0.34 → 0.48 → 0.68 across
+the same four levels. Two controls, two jobs, and each leaves the other's measure alone.
+
+Gain is not neutral for the behavioural pair either — rule selectivity peaks at gain 0
+(0.66) and falls away on both sides (0.24 at −1, 0.38 at +2), which is the non-monotonicity
+accuracy showed before: too little gain and nothing reaches the output, too much and both
+units saturate so the contrast between them stops meaning anything. What the contrast
 sets is which context is applied and how decisive the answer is (accuracy 0.61 → 0.83,
 undecided 0.79 → 0.25). Accuracy is non-monotonic in gain and peaks near 0 to +1: too little
 and the network is undecided on nearly every trial, too much and both units saturate so the
