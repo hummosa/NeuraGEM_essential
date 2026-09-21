@@ -129,6 +129,7 @@ MODEL_COLORS = {
     'z update':            'tab:olive',      # its per-trial change — the transient
     'z gradient':          'tab:pink',       # the error signal driving it — the ACC side
     'sigmoid at test':     'tab:purple',     # the gate swapped at test, where gain is live
+    'softmax trained':     'tab:blue',       # the trained gate = NeuraGEM, same hue
 }
 
 # Assigned in order to labels not in MODEL_COLORS, so an unregistered condition still gets

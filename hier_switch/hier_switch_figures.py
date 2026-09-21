@@ -598,7 +598,16 @@ def spec_unit_classes(groups):
     return panel
 
 
-def spec_clamp_grid(cells, measure='index', ylabel='Integration index'):
+#: Negative clamped contrasts are dropped from the plotted ladder. A contrast of −1 selects
+#: the *other* context, and every measure here is scored against whichever context the gate
+#: selects, so −1 is the mirror of +1 and not a level of its own: measured side by side they
+#: give cue velocity 0.201 against 0.201, index 1.43 against 1.39, accuracy 0.71 against
+#: 0.76. Only |contrast| is a real axis. The cells stay on disk.
+DROP_NEGATIVE_CONTRAST = True
+
+
+def spec_clamp_grid(cells, measure='index', ylabel='Integration index',
+                    drop_negative=DROP_NEGATIVE_CONTRAST):
     """E2: one line per clamped gain level, the measure against the clamped contrast.
 
     `cells` pools every seed's grid, so each (gain, contrast) cell is a mean over seeds with
@@ -610,7 +619,7 @@ def spec_clamp_grid(cells, measure='index', ylabel='Integration index'):
 
     def panel(ax):
         ms = sorted({c['m'] for c in cells})
-        ds = sorted({c['d'] for c in cells})
+        ds = sorted({c['d'] for c in cells if not (drop_negative and c['d'] < 0)})
         cmap = plt.cm.viridis
         for i, m in enumerate(ms):
             col = cmap(0.15 + 0.7 * i / max(len(ms) - 1, 1))
@@ -1188,6 +1197,10 @@ def group_figures(out_dir=None):
                os.path.join(out_dir, 'rnn_baseline.pdf'), ncol=4,
                panel=FigSize.custom(1.7, 1.35), letters=True)
     story_figure(out_dir)
+    # The same row 4 with both gates overlaid: the question of whether the paper's
+    # exploration signature is absent because of the softmax or because of the model is
+    # one a reader should not have to re-run the script to answer.
+    story_figure(out_dir, gate='both')
 
 
 #: The two switch criteria the story figure shows. The raw behavioural one is contaminated
@@ -1196,7 +1209,17 @@ def group_figures(out_dir=None):
 STORY_CRITERIA = (('dec_switch', 'decided'), ('z_switch', 'Z side'))
 
 
-def story_figure(out_dir=None):
+#: Which recorded condition row 4's population measures are read from. The softmax is the
+#: trained gate and the main story; the sigmoid is the same weights with the gate swapped at
+#: test, where the gain is a live axis. 'both' overlays them, which is what answers whether
+#: the paper's exploration signature is missing because of the gate or because of the model.
+REVERSAL_GATES = {'softmax': (('softmax_rc_none', 'softmax (trained)'),),
+                  'sigmoid': (('sigmoid_rc_none', 'sigmoid at test'),),
+                  'both': (('softmax_rc_none', 'softmax (trained)'),
+                           ('sigmoid_rc_none', 'sigmoid at test'))}
+
+
+def story_figure(out_dir=None, gate='softmax'):
     """The whole result as one figure: five rows of four panels, a–t.
 
     Deliberately larger than a single panel preset (docs/figure_style.md allows it for a
@@ -1229,6 +1252,10 @@ def story_figure(out_dir=None):
     split = ({'NeuraGEM': [merge_splits(a, b) for a, b in zip(low, high)]}
              if low and high else groups)
     cells = clamp_cells_on_disk('sigmoid')
+    # Row 4's population measures, under whichever gate(s) the toggle names.
+    gate_groups = {label: pick(('NG', cond)) for cond, label in REVERSAL_GATES[gate]}
+    gate_groups = {k: v for k, v in gate_groups.items() if v} or {'NeuraGEM': ng}
+    gate_tag = '' if gate == 'softmax' else f'_{gate}'
 
     # A legend is kept only where it carries something the caption cannot: which context,
     # which signal, which variable, correct against error, the gain ladder, which model.
@@ -1251,19 +1278,22 @@ def story_figure(out_dir=None):
             # Errors only: the correct-trial line is flat and ten times smaller.
             nolegend(spec_eps_cw(ng, outcomes=((False, 'error'),))),
             spec_encoding_variance(ng)]),
-        # The full gain × contrast grid is five lines per panel and hard to read at this
-        # width; the cut through it at a committed contrast carries the result — gain moves
-        # the cue velocity, contrast does not — and the grid stays in clamp_sigmoid.pdf.
+        # The full grid: one line per clamped gain, against the clamped contrast. Both
+        # axes have to be visible for the dissociation to be one — the gain lines separate
+        # in cue velocity and lie on top of each other in nothing else. The negative
+        # contrast is dropped as the mirror of its positive twin (DROP_NEGATIVE_CONTRAST).
         ('story_3_gate', [
-            spec_clamp_gain(cells, 1.0, 'acc_match', 'Accuracy\n(gate matches context)'),
-            spec_clamp_gain(cells, 1.0, 'rt', 'RT (timesteps)'),
-            spec_clamp_gain(cells, 1.0, 'index', 'Integration index'),
-            spec_clamp_gain(cells, 1.0, 'cue_velocity', 'Cue velocity')]),
-        ('story_4_reversal', [
+            nolegend(spec_clamp_grid(cells, 'acc_match', 'Accuracy\n(gate matches context)')),
+            nolegend(spec_clamp_grid(cells, 'rt', 'RT (timesteps)')),
+            nolegend(spec_clamp_grid(cells, 'index', 'Integration index')),
+            relegend(spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity'),
+                     loc='center left', bbox_to_anchor=(1.0, 0.5), fontsize='xx-small')]),
+        (f'story_4_reversal{gate_tag}', [
             nolegend(spec_reversal(split, 'undecided', 'Undecided rate')),
             relegend(spec_rt_reversal(groups), loc='upper right'),
-            nolegend(spec_integration_reversal({'NeuraGEM': ng}, 'index', 'Integration index')),
-            nolegend(spec_integration_reversal({'NeuraGEM': ng}, 'cue_velocity', 'Cue velocity'))]),
+            nolegend(spec_integration_reversal(gate_groups, 'index', 'Integration index')),
+            relegend(spec_integration_reversal(gate_groups, 'cue_velocity', 'Cue velocity'),
+                     loc='best', fontsize='xx-small')]),
         ('story_5_latent', [
             relegend(spec_z_belief({'NeuraGEM': ng}), loc='lower right'),
             nolegend(spec_trace({'NeuraGEM': ng}, 'step', 'ΔZ toward the true context\n(|update|)')),
@@ -1299,8 +1329,8 @@ def story_figure(out_dir=None):
     for name, panels in rows:
         figure(panels, os.path.join(out_dir, f'{name}.pdf'), ncol=4, panel=panel,
                letters=True)
-    figure([p for _, ps in rows for p in ps], os.path.join(out_dir, 'story.pdf'),
-           ncol=4, panel=panel, letters=True)
+    figure([p for _, ps in rows for p in ps],
+           os.path.join(out_dir, f'story{gate_tag}.pdf'), ncol=4, panel=panel, letters=True)
 
 
 def merge_splits(low_rep, high_rep):
@@ -1359,7 +1389,7 @@ def session_figures(path, out_dir=None):
 if __name__ == '__main__':
     args = [a for a in sys.argv[1:]]
     if args and args[0] == 'story':
-        story_figure()
+        story_figure(gate=args[1] if len(args) > 1 else 'softmax')
     elif args:
         for p in args:
             session_figures(p)

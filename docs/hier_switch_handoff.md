@@ -512,13 +512,27 @@ over consecutive errors needs a signal that accumulates *without* acting, which 
 on the thing it is correcting cannot be. If the ACC-like ramp matters to the story, it needs
 a separate accumulator that does not feed back on Z within the window.
 
-**Still weak, and now explained.** The paper's exploration-regime signature barely appears:
-the integration index falls by only 0.079 ± 0.025 in the first five post-reversal trials
-(5/6) and the cue velocity does not move (+0.001 ± 0.011, 4/6). The clamp grid says why this
-is coherent rather than contradictory — **cue velocity is set by the gain, and under the
-softmax the gain cannot move**. The one measure the paper uses to define the exploratory
-regime is the one this model's latent has no way to change. Testing that properly means
-training with the sigmoid (§6b), which is still not done.
+**Still weak, and the explanation has been corrected.** The paper's exploration-regime
+signature barely appears: the integration index falls by only 0.079 ± 0.025 in the first
+five post-reversal trials (5/6) and the cue velocity does not move (+0.001 ± 0.011, 4/6).
+
+This was first explained as a limitation of the gate — cue velocity is set by the gain, the
+softmax has no gain axis, so the model could not show the effect in principle. **That was
+wrong, and the sigmoid sessions disprove it.** Run on the same weights with a live gain
+axis, the sigmoid gives index −0.080 ± 0.062 (3/6) and cue velocity +0.001 ± 0.007 (3/6) —
+the same answer, with worse sign consistency because it holds the context less well.
+`story_figure(gate='softmax'|'sigmoid'|'both')` switches panels o and p between them, and
+`story_4_reversal_both.pdf` overlays them by default.
+
+**The real reason is that the gain moves the wrong way.** After a reversal the sigmoid's
+gain falls, +0.03 before to −0.33 by trial 5, because a burst of errors shrinks the gate
+(the gain leak). The clamp grid says a lower gain integrates the cue *more slowly* — 0.188
+at gain 0 against 0.126 at −1 — so the model answers a reversal by closing the gate and
+slowing cue integration, where the paper's exploratory regime is input-driven and speeds it
+up. The excursion is also small: ~0.4 gain units, worth about 0.02 of cue velocity by the
+clamp, against the +0.001 ± 0.007 measured. **So the mechanisms point in opposite
+directions**, which is a more interesting negative than "the gate forbids it" and does not
+depend on training with the sigmoid to settle.
 
 ## 5d. The RNN baseline that behaves (v17, 2026-09-20)
 

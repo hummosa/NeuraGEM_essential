@@ -373,10 +373,16 @@ selects, read off behaviour; hidden-state measures pool both halves of the sessi
 see identical inputs.
 
 **Plotted.** *(i)* Accuracy, *(j)* RT, *(k)* integration index and *(l)* cue velocity
-against the **clamped gain**, at a committed contrast of +1. This is the cut through the
-grid rather than the grid itself: five lines per panel is more than a panel this wide can
-carry, and the cut is what the grid is there to show. The full 4 × 5 grid, including the
-contrast axis, is `clamp_sigmoid.pdf`.
+against the clamped contrast, **one line per clamped gain**. Both axes have to be on the
+page for the dissociation to be one: the gain lines separate in cue velocity and lie on top
+of each other in nothing else, which no single cut can show.
+
+**The negative contrast is not plotted.** A contrast of −1 selects the *other* context, and
+every measure here is scored against whichever context the gate selects, so −1 is the mirror
+of +1 rather than a level of its own — side by side they give cue velocity 0.201 against
+0.201, integration index 1.43 against 1.39 and accuracy 0.71 against 0.76, the small
+residual being each network's default-context bias. Only |contrast| is a real axis. The
+cells remain on disk and `DROP_NEGATIVE_CONTRAST` turns them back on.
 
 **See.** **Gain and contrast do different jobs.** Opening the gate speeds the hidden state's
 integration of the cue — cue velocity 0.126 → 0.188 → 0.231 → 0.257 from gain −1 to +2,
@@ -408,10 +414,26 @@ network is confidently applying the old rule, then RT peaks at trial 3 (20.5) wh
 latent is most uncertain, and recovers by trial 6 (19.5). **The paper's population signature is at best weakly present.** The integration
 index is lower in the first five trials than in the steady state, but only by 0.079 ± 0.025
 (5/6 networks), and the cue velocity does not move at all (+0.001 ± 0.011, 4/6) where the
-paper has it rise. Row 3 says why that is coherent rather than contradictory: cue velocity
-is set by the *gain*, and under the softmax the gain cannot move, so the one measure the
-paper uses to define the exploratory regime is the one measure this model's latent has no
-way to change. **The baseline in n is on its own scale**: its blocks are 250–350 trials, so
+paper has it rise.
+
+**An earlier version of this caption blamed the gate, and that was wrong.** The argument
+was that cue velocity is set by the gain, the softmax has no gain axis, and so the model
+could not show the effect even in principle. It is testable, because the same weights run
+with a sigmoid gate do have a live gain axis — and they give the same answer: index
+−0.080 ± 0.062 (3/6), cue velocity +0.001 ± 0.007 (3/6). Panels o and p can be drawn under
+either gate, or both overlaid, with `story_figure(gate=…)`; `story_4_reversal_both.pdf` is
+written by default and the two curves lie on top of each other.
+
+**What the sigmoid shows instead is that the mechanism runs the wrong way.** Its gain does
+move after a reversal — from +0.03 before to −0.33 by trial 5 — but it moves *down*, because
+a burst of errors shrinks the gate (the gain leak, Fig 5). By the clamp result, a lower gain
+means *slower* cue integration, not faster: cue velocity falls from 0.188 at gain 0 to 0.126
+at gain −1. So the model's response to the errors that follow a reversal is to close the
+gate and integrate the cue more slowly, where the paper's exploratory regime is
+input-driven and integrates it faster. The excursion is also small — about 0.4 gain units,
+which the clamp says is worth roughly 0.02 of cue velocity, near the +0.001 ± 0.007 measured.
+**The signature is absent because the gain moves the wrong way and barely, not because the
+softmax forbids it.** **The baseline in n is on its own scale**: its blocks are 250–350 trials, so
 the axis is logarithmic and its curve runs to trial 250 where NeuraGEM's stops at 15. It
 starts fast and confident on the old rule, climbs to a peak around trial 40 as its output
 collapses toward zero, and only recovers as its weights re-learn the mapping — a hedge

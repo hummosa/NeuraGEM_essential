@@ -377,6 +377,18 @@ Figures: `hier_switch_figures.py`, one `spec_*` builder per panel, taking a list
 reports. A single session is a list of one, so the single-session and group figures are the
 same panels. Every figure is captioned in `docs/hier_switch_methods.md`.
 
+**The gate toggle.** `story_figure(gate='softmax' | 'sigmoid' | 'both')` chooses which
+recorded condition row 4's population measures come from — the trained softmax, the same
+weights with a sigmoid swapped in at test (where the gain is a live axis), or both
+overlaid. `group_figures()` writes the softmax story plus `story_4_reversal_both.pdf`, so
+the comparison exists without anyone re-running the script. On the command line:
+`hier_switch_figures.py story sigmoid`.
+
+**The clamp ladder drops its negative contrast when plotted.** A contrast of −1 selects the
+other context and every clamp measure is scored against whichever context the gate selects,
+so −1 is the mirror of +1, not a level of its own. `DROP_NEGATIVE_CONTRAST` turns it back
+on; the cells are always on disk.
+
 **`story_figure()` is the one to look at**: five rows of four panels (behaviour, what is
 encoded where, the clamped gate, the reversal, the latent signals), written both as one
 `story.pdf` and as a PDF per row so a row can be reworked on its own. It grows a sixth row,
