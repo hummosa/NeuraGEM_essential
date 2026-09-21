@@ -743,8 +743,8 @@ def spec_psychometric_ctx(groups):
         main = next(iter(groups))          # the model whose two contexts are spelt out
         for label, reps in groups.items():
             col = get_model_color(label)
-            for k, (name, ls) in enumerate((('last trained context', '-'),
-                                            ('other context', '--'))):
+            for k, (name, ls) in enumerate((('last trained', '-'),
+                                            ('other ctx', '--'))):
                 # The contrast this panel is about is within the main model, so only its two
                 # curves are named; a baseline gets its own name once and no context split.
                 key = name if label == main else (label if k == 0 else None)
@@ -1152,7 +1152,11 @@ def story_figure(out_dir=None):
     # Shade and dash mean low against high early conflict in every panel that has them.
     rows = [
         ('story_1_behaviour', [
-            relegend(spec_psychometric_ctx(groups), loc='lower left'),
+            # The baseline now runs through the lower-left corner, where this legend used
+            # to sit, so it goes above the axes — narrow enough not to reach panel b.
+            relegend(spec_psychometric_ctx(groups), loc='lower left', ncol=2,
+                     bbox_to_anchor=(-0.02, 1.0), columnspacing=0.6, handlelength=1.0,
+                     fontsize='xx-small'),
             relegend(spec_switch_vs_early_conflict({'NeuraGEM': ng}), loc='upper left'),
             rotate_xticks(nolegend(spec_switch(split, STORY_CRITERIA))),
             nolegend(spec_reversal(split, 'acc', 'Accuracy'))]),
@@ -1196,7 +1200,7 @@ def story_figure(out_dir=None):
             ('update off', pick(('NG', 'softmax_lu0_rc_low'))),
             ('Z→(1,1)', pick(('NG', 'softmax_blast_rc_low')))) if v}
         rows.append(('story_6_manipulations', [
-            nolegend(spec_manipulation_cost(by_condition)),
+            rotate_xticks(nolegend(spec_manipulation_cost(by_condition)), 30),
             relegend(spec_trace(mech, 'z_evidence', 'Z on the context axis'),
                      loc='lower right'),
             relegend(spec_trace(traces, 'step', 'ΔZ toward the true context\n(|update|)'),

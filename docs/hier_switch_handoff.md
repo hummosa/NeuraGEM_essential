@@ -101,7 +101,7 @@ forward. ✅ done · 🟡 partly · ⬜ not started.
 |---|---|---|
 | E1 | **Core session.** Train (passive, then active; discovery) → frozen-weight test on the paper's 30–60 blocks | ✅ 6/10 seeds discover (v13); all six retrained and saved as `tune_v15/NG_s*/model.pt`, each reproducing its v13 numbers exactly |
 | E2 | **Z-clamp probe.** Freeze weights and the latent update; hold Z at a grid of gates; measure RT, accuracy, undecided rate, the integration index and the cue/rule build-up | ✅ `hier_switch_perturb.clamp_grid`: softmax contrast ladder and a sigmoid gain × contrast grid, per seed |
-| E3 | **Group sweep.** ≥ 10 seeds × {NG, RNN} plus the ideal observer | ✅ 6 NG (the discoverers) × 6 conditions and 10 RNN × 3 conditions, all recorded and analysed; `hier_switch_group.py aggregate` prints the prediction table. Oracle → inference not repeated at group level. 🟡 **The RNN baseline was replaced on 2026-09-20** (§5d): v16 hedged, so the group now reads ten v17 RNNs on 250–350-trial blocks; their array and sessions are not yet run |
+| E3 | **Group sweep.** ≥ 10 seeds × {NG, RNN} plus the ideal observer | ✅ 6 NG (the discoverers) × 6 conditions and 10 RNN × 3 conditions, all recorded and analysed; `hier_switch_group.py aggregate` prints the prediction table. Oracle → inference not repeated at group level. **The RNN baseline was replaced on 2026-09-20** (§5d): v16 hedged on the paper's blocks, so the group now reads ten v17 RNNs on 250–350-trial blocks, all recorded and analysed. 7 of the 10 learn the task; 3 still hedge. See §5c for the corrected comparison |
 | E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); the latent driven for the first trials (MD activation); momentum; forced errors | ✅ `hier_switch_hooks.py` plus the default-off call sites in `_latent_update_step`; 15 conditions × 6 seeds recorded and analysed. Results in §5c.4–5. **Forced errors are the one part still missing** — they need a dataset knob |
 
 ### Predictions
@@ -340,25 +340,34 @@ gain modulate cue integration": yes, and it is the *only* thing that does.
 - **CueS is nearly absent in NG**: 3 % of tuned units, against 64 % CueL and 33 % Rule. The
   paper's three classes are all substantial in PFC.
 
-**NeuraGEM against the backprop RNN** (10 seeds, same task, same test):
+**NeuraGEM against the backprop RNN.** The RNN column depends entirely on whether its
+blocks are long enough for its weights to re-learn inside them, so both are given. Raw
+steady-state decoding at the end of the cue period; the v17 column is its 7 seeds that learn
+the task (all 10 in brackets where they differ).
 
-| | NG | RNN |
-|---|---|---|
-| steady-state accuracy | 0.878 | 0.502 |
-| undecided rate (\|decision\| < 0.5) | 0.15 | **0.999** |
-| context separation in Z (d′) | 6.08 | 0 (Z never moves) |
-| rule decoding from the hidden state | 0.906 | 0.511 |
-| cue decoding from the hidden state | 0.916 | 0.788 |
-| context decoding from the hidden state | 0.997 | 0.549 |
-| unit classes (fraction of tuned units) | CueS .03 / CueL .64 / Rule .33 | CueS .41 / CueL .58 / Rule .01 |
-| integration index | 1.80 | 1.09 |
+| | NG (6) | RNN v17, 250–350-trial blocks (7) | RNN v16, the paper's blocks (10) |
+|---|---|---|---|
+| steady-state accuracy | 0.878 | 0.811 (all 10: 0.719) | 0.502 |
+| undecided rate (\|decision\| < 0.5) | 0.15 | 0.50 (all 10: 0.65) | **0.999** |
+| context separation in Z (d′) | 6.08 | 0 (Z never moves) | 0 (Z never moves) |
+| rule decoding from the hidden state | 0.906 | 0.632 | 0.511 |
+| cue decoding from the hidden state | 0.916 | 0.853 | 0.788 |
+| context decoding from the hidden state | 0.997 | 0.709 | 0.549 |
+| unit classes (fraction of tuned units) | CueS .03 / CueL .64 / Rule .33 | CueS .25 / CueL .69 / Rule .05 | CueS .41 / CueL .58 / Rule .01 |
+| integration index | 1.80 | 1.17 | 1.09 |
+| trials to switch (decided) | 5.3 | 75.2 | — (coin flips) |
 
-This is Brabeeba's table, and it comes out as he framed it: with plastic weights but no
-latent, the RNN still reads the **cue** out of the pulses, but it has no rule code, no
-context code and no way to switch — on 30–60-trial blocks it hedges on essentially every
-trial (undecided 0.999), so its "accuracy 0.50" and its switch latency are coin flips on a
-near-zero output and should never be quoted as behaviour. NG's context decoding from the
-hidden state is near 1.0 for the trivial reason that Z gates that hidden state.
+Read along the RNN rows rather than down them. **On the paper's own block lengths a
+weights-only network cannot do the task at all**: it hedges on 99.9 % of trials, so its
+"accuracy 0.50" and its switch latency are coin flips on a near-zero output and should never
+be quoted as behaviour. **Given blocks four to ten times longer it can**, and then it grows
+a partial rule and context code — but a weaker one than the latent's, and it takes about
+seventy-five trials to act on a reversal against the latent's five. NG's context decoding is
+near 1.0 for the trivial reason that Z gates that hidden state.
+
+That is the corrected version of what used to be stated here as "the RNN has no rule code,
+no context code and no way to switch". It has all three, on a timescale an order of
+magnitude slower, and only on blocks the paper's design never offers.
 
 **Caveats to carry.** Every NG number is over the six seeds that discovered the contexts —
 4 of 10 seeds are excluded, three because they never learned the task at all. The
@@ -411,10 +420,38 @@ first version of this table gave those components +0.09 on context and made the 
 total; that was an artefact of denying the low-dimensional sources a magnitude channel
 (§6b), and the corrected number is the one above.
 
-**The RNN baseline is the foil that matters.** With the latent update off, its hidden state
-decodes cue +0.29 (10/10) but rule +0.01 and context +0.04, and its units are tuned to 1.45
-variables each. So the mixing in NeuraGEM's hidden state is **not** a generic property of an
-LSTM on this task: it appears only when a latent is gating it. **Caveat (§5d):** those are
+**The RNN baseline, and a claim it corrects.** This paragraph first read: the mixing in
+NeuraGEM's hidden state appears only when a latent is gating it, since the v16 baseline
+decoded cue +0.29 but rule +0.01 and context +0.04 with 1.45 variables per unit. **The v17
+baseline (§5d) shows that was too strong**, and the corrected comparison is more
+interesting:
+
+| hidden state at the end of the cue, decoding minus its own null | cue | rule | context | conflict | vars/unit | steady acc | undecided | trials to switch |
+|---|---|---|---|---|---|---|---|---|
+| NeuraGEM (6 discoverers) | +0.42 | +0.33 | +0.40 | +0.35 | 4.49 | 0.878 | 0.15 | 5.3 |
+| RNN v17, the 7 that learn | +0.34 | +0.09 | +0.16 | +0.13 | 2.95 | 0.811 | 0.50 | 75.2 |
+| RNN v17, the 3 that do not | +0.16 | +0.02 | +0.19 | −0.00 | 2.10 | 0.503 | 1.00 | — |
+| RNN v16, the paper's blocks | +0.29 | +0.01 | +0.04 | +0.12 | 1.45 | 0.502 | 1.00 | — |
+
+**A latent is not necessary for a context code.** Given blocks long enough for its weights to
+re-learn inside them, a backprop RNN acquires one: +0.16 above null in all 7 learners
+(0.145–0.183 per seed). What the latent buys is strength and speed — +0.40 against +0.16,
+and about five trials against seventy-five. On the paper's own 30–60-trial blocks the
+baseline gets no context code at all. So the claim is about the **timescale a mechanism can
+work on**, not about whether weights can represent context.
+
+**Three things to carry when quoting these numbers.**
+1. **The groups are not selected alike.** NeuraGEM's six are the seeds that discovered the
+   contexts (6 of 10); the RNN's ten are all of them, including the 3 that never learn. The
+   figure's green curve is the mean over all ten, so it sits below every individual learner.
+   Matching the rules — learners against discoverers — is the fairer comparison and is the
+   row given above; **decide which one the paper should show before quoting either.**
+2. **Decodable is not used.** The three seeds that never learn decode context at +0.19, as
+   high as the learners, while being undecided on every trial. Report the behavioural
+   measures beside the decoding ones.
+3. **The v16 sessions stay on disk** (`rnn_rc_*`) as the record of the hedge, but `collect()`
+   no longer reads them: `RNN_CONDITIONS` is the v17 triplet, so every group number above
+   for v16 came from reading those files directly. **Caveat (§5d):** those are
 the *hedged* v16 baseline's numbers, a network that was not doing the task. The v17 baseline,
 which behaves on its own blocks, decodes rule 0.64 and context 0.71 at steady state and its
 units carry 2.9 variables (seed 0), so the gap narrows once the RNN has a rule to encode;
@@ -543,14 +580,16 @@ the first five trials after a reversal — the same qualitative pattern as Neura
 tuned units carry 2.9 variables each (v16 1.45, NeuraGEM 4.5), classes CueS .18 / CueL .68
 / Rule .13. So the §5c claim that mixing "appears only when a latent is gating" softens
 once the RNN actually does the task, and the ten-seed numbers should replace the v16 row
-wherever it is quoted (§5b's table, §5c's foil paragraph, the methods doc). Single seed;
-report the group when it lands.
+wherever it is quoted (§5b's table, §5c's foil paragraph, the methods doc). **All three were
+replaced on 2026-09-20 once the group landed**; the group confirms the single seed, with the
+addition that 3 of the 10 seeds never learn the task even on these blocks.
 
-**What is pending.** `./hier_switch/run_tune.sh v17` (10 tasks, ~5 min each) then
+**Done on 2026-09-20** (was pending when §5d was written): `./hier_switch/run_tune.sh v17` then
 `./hier_switch/run_sessions.sh 6-15` (the RNN tasks of `hier_switch_group.py list`: three
-4500-trial sessions each, ~15 min per task), then `aggregate` and the figures. Both are
-arrays and need approval. The v16 sessions stay on disk under `tune_v16_RNN_s*/rnn_rc_*` as
-the record of the hedge.
+4500-trial sessions each, ~15 min per task), then `aggregate` and the figures — all run,
+array 6554896 with 6554897 chained behind it. The v16 sessions stay on disk under
+`tune_v16_RNN_s*/rnn_rc_*` as the record of the hedge, but `collect()` no longer reads them:
+`RNN_CONDITIONS` is the v17 triplet, so a v16 number now has to be read from its files.
 
 ---
 

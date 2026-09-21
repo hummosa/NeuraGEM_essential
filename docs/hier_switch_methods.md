@@ -240,6 +240,17 @@ criterion does *not* show it (4.1, 4.6, 4.3), which is the hedging problem: the 
 near-zero output is a coin flip that can satisfy a "first correct trial" rule by luck, and
 it is why the decided-only criterion is the one plotted.
 
+**The backprop baseline is now a real curve rather than a flat line.** On the blocks it can
+track (250–350 trials, weights plastic) it falls from 0.80 to 0.57 across conflict, below
+NeuraGEM throughout but plainly doing the task, where the earlier baseline on the paper's
+30–60-trial blocks sat at 0.50 everywhere. **Two caveats belong with that green curve.**
+First, **7 of its 10 seeds learn the task and 3 never do**, sitting at 0.50 with an
+undecided rate of 1.00; the curve plotted is the mean over all ten, so it runs below every
+individual learner (whose mean is 0.81). Second, **the two groups are not selected the same
+way**: NeuraGEM's six are the seeds that discovered the contexts, 6 of 10, while the RNN's
+ten are all of them. Matching the rules — learners against discoverers — would raise the
+green curve; both counts are given here so the comparison can be read either way.
+
 ### Row 2 — What is encoded where (`story_2_encoding.pdf`), against Fig 2k–l and 4b
 
 **Ran.** Unforced sessions, all trials of the test phase. Decoders are 5-fold
@@ -270,11 +281,26 @@ hidden state does, and carry context **less than half as strongly** (+0.18 again
 So context is present in the hidden state but not in the directions that dominate its
 variance — which is what arriving through the gate looks like, rather than being computed.
 
-**The baseline is the other half of that argument.** The RNN, which has the same
-architecture with the latent update switched off, decodes cue +0.29 from its hidden state
-(10/10 networks) but rule +0.01 and context +0.04, and its units are tuned to 1.45 variables
-each against NeuraGEM's 4.5. **The mixing is therefore not something an LSTM does on this
-task**; it appears only when a latent is gating the state.
+**What the baseline does, and what that costs the claim.** The earlier version of this
+caption said the mixing appears only when a latent gates the state. **The new baseline shows
+that is too strong.** Given blocks long enough for its weights to re-learn inside them
+(250–350 trials), a backprop RNN with no latent at all does acquire a context code — +0.16
+above its null, in all 7 of the seeds that learn the task, range 0.145 to 0.183 — and a weak
+rule code (+0.09). Its units carry 2.95 variables each. So a latent is **not** necessary for
+context to appear in the hidden state.
+
+What the latent buys is how much and how fast. Against the baseline's +0.16 context and
++0.09 rule, NeuraGEM has +0.40 and +0.33; against 2.95 variables per unit, 4.5; and against
+75 trials to switch, 5.3 — the baseline needs about fourteen times as long, and is undecided
+on half its trials even once it has learned (0.50 against 0.15). **On the paper's own 30–60
+trial blocks the baseline gets no context code at all** (+0.04) and hedges on 99.9 % of
+trials, so the comparison is really about the timescale a mechanism can work on: weights can
+build a context code over tens of trials, a latent builds a stronger one over about five.
+
+One oddity worth keeping. The three baseline seeds that never learn still decode context at
++0.19 — as high as the learners — while being undecided on every trial. **Decodable is not
+the same as used**, which is the argument for reporting the behavioural measures beside the
+decoding ones rather than instead of them.
 
 One column has to be read carefully: the decoders are linear, and the two uncertainties
 are magnitudes, which a signed two-unit signal cannot produce under a linear map. Z scoring
@@ -336,8 +362,11 @@ index is lower in the first five trials than in the steady state, but only by 0.
 paper has it rise. Row 3 says why that is coherent rather than contradictory: cue velocity
 is set by the *gain*, and under the softmax the gain cannot move, so the one measure the
 paper uses to define the exploratory regime is the one measure this model's latent has no
-way to change. The RNN baseline sits at the trial end in n because it is undecided on
-99.9 % of trials, so its RT is not a response time.
+way to change. **The baseline in n is on its own scale**: its blocks are 250–350 trials, so
+the axis is logarithmic and its curve runs to trial 250 where NeuraGEM's stops at 15. It
+starts fast and confident on the old rule, climbs to a peak around trial 40 as its output
+collapses toward zero, and only recovers as its weights re-learn the mapping — a hedge
+lasting tens of trials where the latent's costs about five.
 
 ### Row 5 — The three latent signals (`story_5_latent.pdf`)
 
@@ -431,8 +460,9 @@ unreadable; the numbers behind it are still computed and live in
 
 **Ran.** The unforced test sessions: 6 NG seeds and 10 RNN seeds, frozen weights, 2000
 trials each, Z inferred (NG) or fixed (RNN). *The RNN numbers below are the hedged v16
-baseline's; the v17 baseline (Networks; `rnn_baseline.pdf`) replaces them once its ten seeds
-are recorded.*
+baseline's, kept as the record of what the paper's block lengths do to a weights-only
+network. The v17 baseline (Networks; `rnn_baseline.pdf`) has since been recorded on all ten
+seeds and is what the story figure and the group table use.*
 
 **Plotted.** *(a)* Accuracy on steady-state trials (≥ 11 into a block for NeuraGEM; the
 second half of the block for the RNN) against cue conflict,
@@ -622,7 +652,7 @@ for NeuraGEM, 250 for the RNN.
 the reversal, on a log axis so that both recoveries are readable; *(d)* trials to switch
 under the paper's criterion and its decided-only version, per model.
 
-**See** (seed 0 of the RNN so far; the group is pending). The RNN's first trials after a
+**See** (ten seeds; 7 learn the task, 3 never do — see below). The RNN's first trials after a
 reversal are confident perseverative errors (accuracy 0.07, undecided 0.07 on trial 1),
 then its output collapses into a hedge that peaks around trial 40 (undecided 0.93), and it
 re-learns the mapping through its weights: accuracy is back above 0.85 by trial 80 and the
