@@ -36,8 +36,13 @@ Conditions
     *_rc_low / *_rc_high  the paper's controlled reversals: the first 5 trials of every
                        block forced to 7:2 or 6:3 conflict (config.reversal_conflict). The
                        unforced partner is *_rc_none; the three are paired trial by trial.
-    rnn                the backprop baseline (a v16 model): LU off, weights plastic, as its
-                       own training ran. Never analysed with z_updates.
+    rnn300_rc_*        the backprop baseline as the group uses it (v17 models, trained on
+                       300-trial blocks): LU off, weights plastic at WU_lr 3e-3, on
+                       250-350-trial blocks — the shortest on which a plastic RNN commits
+                       and re-learns instead of hedging (docs/hier_switch_task.md, v17).
+                       4500 trials, ~15 reversals. Never analysed with z_updates.
+    rnn / rnn_rc_*     the v16 baseline on the paper's 30-60 blocks at its trained WU_lr:
+                       the record of the hedge (undecided on 99.9 % of trials).
     sigmoid_zlr*       the softmax replaced by a per-unit sigmoid at test. Z starts at 0,
                        and sigmoid(0) = 0.5 is the same [0.5, 0.5] gate as the uniform
                        softmax start. Weight decay as trained: under the sigmoid it pulls
@@ -77,6 +82,8 @@ NO_SOFTMAX = dict(latent_activation='none', Z_init=[0.5, 0.5], Z_decay=0.0)
 SIGMOID = dict(latent_activation='sigmoid', Z_init=0.0)       # weight decay as trained
 # The reversal-aligned analyses want reversals, not trials: 2000 trials is ~45 blocks.
 LONG = dict(n_trials=2000)
+# The RNN baseline at test: no latent update, weights plastic at 3e-3, 250-350-trial blocks.
+RNN300 = dict(test_no_of_steps_in_latent_space=0, WU_lr=3e-3, block_len_range=(250, 350))
 
 
 def _rc(name, base):
@@ -125,13 +132,20 @@ CONDITIONS = {
     **{f'softmax_mom{mu:g}_rc_none': dict(LONG, reversal_conflict=None,
                                           perturb=dict(kind='momentum', mu=mu, trials=[1, 5]))
        for mu in (0.5, 0.9)},
-    # The RNN baseline (v16 models): no latent update, weights plastic, as it trained.
+    # The RNN baseline (v16 models): no latent update, weights plastic, as it trained. On
+    # the paper's 30-60 blocks it hedges at every weight learning rate (v17 tuning log).
     **_rc('rnn', dict(test_no_of_steps_in_latent_space=0)),
     'rnn': dict(test_no_of_steps_in_latent_space=0),
+    # The RNN baseline the group uses (v17 models): weights plastic at WU_lr 3e-3 on
+    # 250-350-trial blocks, where it perseverates, hedges and re-learns each block through
+    # its weights (~80 trials to switch). 4500 trials for ~15 reversals; the forced
+    # low/high pair as for NeuraGEM. n_trials is in run_test's own units (trials).
+    **{f'rnn300_rc_{k}': dict(RNN300, n_trials=4500, reversal_conflict=v)
+       for k, v in (('none', None), ('low', 'low'), ('high', 'high'))},
 }
 # Which conditions a model type runs when none are named.
 DEFAULTS = dict(NG=[k for k in CONDITIONS if not k.startswith('rnn')],
-                RNN=[k for k in CONDITIONS if k.startswith('rnn')])
+                RNN=[k for k in CONDITIONS if k.startswith('rnn300')])
 
 
 def gate_values(z, cfg):
@@ -293,7 +307,7 @@ def main(path, names):
         te, extra, trials = test_condition(model, cfg, tag, name, CONDITIONS[name])
         rows.append((name, te, extra, trials))
 
-    print(f'\n{tag}  (test: paper blocks, weights frozen)')
+    print(f'\n{tag}  (test sessions; see each condition for its blocks and what is plastic)')
     hdr = (f'{"condition":<20} {"acc":>5} {"steady":>6} {"s1":>5} {"s2":>5} {"s3":>5} '
            f'{"cross":>5} {"Z dp":>5} {"|dec|":>5}  gate (mean, sum)')
     print(hdr)

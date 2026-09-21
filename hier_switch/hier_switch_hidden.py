@@ -68,13 +68,14 @@ def _hidden(sess):
 
 
 def steady_mask(sess, primary=PRIMARY, aligned=True):
-    """Steady-state trials (since ≥ 11) on which the axes are fitted; aligned Z by default.
+    """Steady-state trials (since ≥ the session's steady_since: 11 on the paper's blocks,
+    hier_switch_analyses.block_scale) on which the axes are fitted; aligned Z by default.
 
     A session with no context axis — the RNN baseline, whose Z never moves, and any clamped
     session — has no aligned trials at all, so the aligned filter is dropped there rather
     than leaving an empty mask.
     """
-    m = select(sess, phase=primary, since=(STEADY, 10 ** 9))
+    m = select(sess, phase=primary, since=(sess.get('steady_since', STEADY), 10 ** 9))
     if aligned and sess.get('axis') is not None:
         m = m & sess['aligned']
     return m
@@ -154,7 +155,7 @@ def integration(sess, axes, mask, window=CUE_PERIOD):
                 proj_cue=proj_cue.mean(axis=0).tolist(), proj_late=proj_late.mean(axis=0).tolist())
 
 
-def integration_aligned(sess, axes, window=(-5, 15), blocks=None, primary=PRIMARY,
+def integration_aligned(sess, axes, window=None, blocks=None, primary=PRIMARY,
                         min_trials=8):
     """The integration index and cue velocity at each trial offset from a reversal.
 
@@ -164,7 +165,9 @@ def integration_aligned(sess, axes, window=(-5, 15), blocks=None, primary=PRIMAR
     same block selection `reversal_aligned` uses, so the x axis matches the behavioural
     panels exactly. An offset with fewer than `min_trials` trials is NaN rather than noise.
     """
-    from hier_switch_analyses import _blocks
+    from hier_switch_analyses import _blocks, REV_WINDOW
+    if window is None:                 # the session's own window (block_scale)
+        window = tuple(sess.get('rev_window', REV_WINDOW))
     _, starts, ends = _blocks(sess)
     n, phase = sess['n'], sess['phase']
     keep = sess['reversal'] & ~sess['transient'] & (phase == primary)
@@ -489,7 +492,7 @@ def encoding_table(sess, obs=None, primary=PRIMARY, folds=5, seed=0, n_perm=50):
         return dict(note='too few trials', n=int(mask.sum()))
     variables = encoding_variables(sess, obs)
     sources = encoding_sources(sess, mask)
-    steady = mask & (sess['since'] >= STEADY)
+    steady = mask & (sess['since'] >= sess.get('steady_since', STEADY))
     rng = np.random.default_rng(seed)
     res = dict(n=int(mask.sum()), sources=sorted(sources), variables=list(ENCODING_VARS),
                decoding={}, decoding_null={}, decoding_steady={}, variance={})
@@ -586,7 +589,7 @@ def z_side_table(sess, upd=None, primary=PRIMARY):
     measures both: the context separation of z_in (d′ and decoding), and whether |Δz_err|
     carries the conflict of the trial that produced it.
     """
-    m = select(sess, phase=primary, since=(STEADY, 10 ** 9))
+    m = select(sess, phase=primary, since=(sess.get('steady_since', STEADY), 10 ** 9))
     z = sess['z_in']
     res = dict(n=int(m.sum()))
     if sess.get('axis') is None:            # Z never moved (the RNN, or a clamped session)

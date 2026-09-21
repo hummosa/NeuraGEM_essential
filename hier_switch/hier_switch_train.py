@@ -151,7 +151,9 @@ def run_test(model, cfg, Z_lr=None, run_name=None, n_trials=None, perturb=None, 
     `latent` overrides any other latent-update setting for the test, e.g.
     exponential_increase_steepness=[0] or Z_decay=3e-4. Both are read live: the gradient
     filter is rebuilt from the copy's config when Z is reset below, and Z_decay is read on
-    every step (Z_decay_mode='grad').
+    every step (Z_decay_mode='grad'). Two non-latent overrides are also honoured: `WU_lr`
+    (patched onto the live weight optimizer, for a plastic-weight test) and
+    `block_len_range` (the test stream's block lengths; the RNN baseline uses (250, 350)).
 
     Returns (logger, model_copy, test_cfg). The logger holds one phase, 'Inference only'.
     """
@@ -186,6 +188,13 @@ def run_test(model, cfg, Z_lr=None, run_name=None, n_trials=None, perturb=None, 
         # SGD carries a momentum buffer; a hook may switch it on for a window of trials.
         if 'momentum' in g:
             g['momentum'] = float(getattr(tcfg, 'Z_momentum', 0.0) or 0.0)
+    # The weight optimizer never re-reads config.WU_lr either. It matters only for a test
+    # with plastic weights (the RNN baseline, test_no_of_steps_in_weight_space=1), whose
+    # rate at test is a knob of its own: 3e-3 on 250-350-trial blocks, where 1e-3 only
+    # half-recovers the output and 1e-2 thrashes (docs/hier_switch_task.md, v17).
+    if 'WU_lr' in latent:
+        for g in m.W_optimizer.param_groups:
+            g['lr'] = float(tcfg.WU_lr)
     m.set_Z(z_init_like(m.Z, tcfg.Z_init))
 
     _, _, _, loader = create_datasets_and_loaders(tcfg)

@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 import plot_style
 from plot_style import FigSize, get_model_color, outcome_color, outcome_line
 
-from hier_switch_group import EXPORTS, collect, session_report
+from hier_switch_group import EXPORTS, RNN_BASE, collect, session_report
 
 plot_style.set_plot_style()
 
@@ -43,6 +43,8 @@ STYLES = {'softmax_rc_none': ('-', 'NeuraGEM'), 'softmax_rc_low': ('-', 'low con
           'softmax_rc_high': ('--', 'high conflict'),
           'rnn_rc_none': ('-', 'RNN'), 'rnn_rc_low': ('-', 'RNN, low'),
           'rnn_rc_high': ('--', 'RNN, high'),
+          'rnn300_rc_none': ('-', 'RNN'), 'rnn300_rc_low': ('-', 'RNN, low'),
+          'rnn300_rc_high': ('--', 'RNN, high'),
           'sigmoid_zlr30000': (':', 'sigmoid')}
 COL_OBS = plot_style.get_model_color('bayesian')      # the ideal observer
 COL_NG = get_model_color('neuragem')
@@ -486,15 +488,64 @@ def spec_rt(groups):
 
 
 def spec_rt_reversal(groups):
-    """P6: RT around a reversal — fast perseveration, then a peak where Z is uncertain."""
+    """P6: RT around a reversal — fast perseveration, then a peak where Z is uncertain.
+
+    Each model is drawn over its own trials-since range: 15 for NeuraGEM on the paper's
+    30-60 blocks, the shortest block for the RNN on its 250-350 (block_scale). When the
+    ranges differ by an order of magnitude the axis is log, so both recoveries are
+    readable: the RNN's takes ~100 trials, NeuraGEM's ~5.
+    """
     def panel(ax):
+        longest = 0
         for label, reps in groups.items():
             arr = stack(reps, 'behaviour.rt.by_since')
-            series(ax, np.arange(1, arr.shape[1] + 1), arr, label=label,
-                   color=get_model_color(label), dots=False)
+            n = arr.shape[1] if arr.ndim > 1 else len(arr)
+            series(ax, np.arange(1, n + 1), arr, label=label, color=get_model_color(label),
+                   dots=False, marker='o' if n <= 30 else '')
+            longest = max(longest, n)
+        _log_since(ax, longest)
         ax.set_xlabel('Trials since reversal')
         ax.set_ylabel('RT (timesteps)')
         legend(ax, loc='upper right')
+    return panel
+
+
+def _log_since(ax, longest):
+    """A log axis for trials-since when the models' ranges differ by an order of magnitude."""
+    if longest > 30:
+        ax.set_xscale('log')
+
+
+def spec_since(groups, key='acc', ylabel='Accuracy'):
+    """A behaviour() reversal curve against trials since the reversal, one line per model,
+    each on its own range (k ≥ 1 of its reversal window): 15 trials for NeuraGEM on the
+    paper's blocks, the shortest block for the RNN on its 250-350. Log x when the ranges
+    differ, since the RNN's re-learning takes ~100 trials and NeuraGEM's switch ~5."""
+    def panel(ax):
+        longest = 0
+        for label, reps in groups.items():
+            k = np.asarray(_get(reps[0], 'behaviour.reversal.all.k'), dtype=float)
+            arr = np.atleast_2d(stack(reps, f'behaviour.reversal.all.{key}'))
+            keep = k >= 1
+            band(ax, k[keep], arr[:, keep], label=label, color=get_model_color(label))
+            longest = max(longest, int(keep.sum()))
+        _log_since(ax, longest)
+        if key == 'acc':
+            ax.axhline(0.5, color='k', linewidth=0.5, alpha=0.3)
+        ax.set_xlabel('Trials since reversal')
+        ax.set_ylabel(ylabel)
+        legend(ax, loc='best')
+    return panel
+
+
+def spec_switch_models(groups, criteria=(('switch', 'behaviour'), ('dec_switch', 'decided'))):
+    """Trials to switch per model: the paper's criterion and its decided-only version, each
+    model on its own blocks."""
+    def panel(ax):
+        g = [(stack(reps, f'behaviour.switch.all.{crit}'), f'{label}\n{name}',
+              get_model_color(label))
+             for label, reps in groups.items() for crit, name in criteria]
+        bars(ax, g, ylabel='Trials to switch', connect=False)
     return panel
 
 
@@ -995,7 +1046,7 @@ def group_figures(out_dir=None):
     data = collect()
     out_dir = out_dir or os.path.join(EXPORTS, 'group', 'figures')
     ng = [data[('NG', 'softmax_rc_none')][s] for s in sorted(data.get(('NG', 'softmax_rc_none'), {}))]
-    rnn = [data[('RNN', 'rnn_rc_none')][s] for s in sorted(data.get(('RNN', 'rnn_rc_none'), {}))]
+    rnn = [data[('RNN', RNN_BASE)][s] for s in sorted(data.get(('RNN', RNN_BASE), {}))]
     low = [data[('NG', 'softmax_rc_low')][s] for s in sorted(data.get(('NG', 'softmax_rc_low'), {}))]
     high = [data[('NG', 'softmax_rc_high')][s] for s in sorted(data.get(('NG', 'softmax_rc_high'), {}))]
     if not ng:
@@ -1048,6 +1099,15 @@ def group_figures(out_dir=None):
         figure([spec_manipulation_switch(by_condition), spec_manipulation_cost(by_condition)],
                os.path.join(out_dir, 'manipulations.pdf'), ncol=2,
                panel=FigSize.custom(3.0, 1.6))
+    # The backprop baseline on the blocks it can track (250-350 trials) against NeuraGEM on
+    # the paper's: what a switch looks like when the weights are the only fast variable.
+    if rnn:
+        figure([spec_since(groups, 'acc', 'Accuracy'),
+                spec_since(groups, 'undecided', 'Undecided rate'),
+                spec_since(groups, 'abs_dec', '|decision|'),
+                spec_switch_models(groups)],
+               os.path.join(out_dir, 'rnn_baseline.pdf'), ncol=4,
+               panel=FigSize.custom(1.7, 1.35), letters=True)
     story_figure(out_dir)
 
 
@@ -1075,7 +1135,7 @@ def story_figure(out_dir=None):
     data = collect()
     out_dir = out_dir or os.path.join(EXPORTS, 'group', 'figures')
     pick = lambda key: [data[key][s] for s in sorted(data.get(key, {}))]
-    ng, rnn = pick(('NG', 'softmax_rc_none')), pick(('RNN', 'rnn_rc_none'))
+    ng, rnn = pick(('NG', 'softmax_rc_none')), pick(('RNN', RNN_BASE))
     low, high = pick(('NG', 'softmax_rc_low')), pick(('NG', 'softmax_rc_high'))
     sig = pick(('NG', 'sigmoid_zlr30000'))
     if not ng:

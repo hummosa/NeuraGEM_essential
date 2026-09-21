@@ -16,9 +16,12 @@ results.json beside each session. `analyse` does the second half alone, for sess
 are already on disk. `aggregate` collects every results.json into
 exports/hier_switch/group/group.json and prints the prediction table.
 
-The models: the six v13/v15 NG seeds that discovered the contexts, and the ten v16 RNN
+The models: the six v13/v15 NG seeds that discovered the contexts, and the ten v17 RNN
 baselines (backprop only — no latent update, weights plastic at test, which is its only
-route to adaptation).
+route to adaptation). The RNN is tested on 250-350-trial blocks at WU_lr 3e-3, the shortest
+blocks a plastic RNN re-learns inside; on the paper's 30-60 it hedges at every rate (the v16
+sessions, `rnn_rc_*`, are that record). Its steady state and reversal window scale with its
+blocks (hier_switch_analyses.block_scale).
 """
 
 import json
@@ -56,7 +59,11 @@ NG_MANIPULATIONS = ['sigmoid_rc_none', 'sigmoid_rc_low', 'sigmoid_rc_high',
                     'softmax_blast_rc_low', 'softmax_blast_rc_high',
                     'sigmoid_blast_rc_low', 'sigmoid_blast_rc_high',
                     'softmax_mom0.5_rc_none', 'softmax_mom0.9_rc_none']
-RNN_CONDITIONS = ['rnn_rc_none', 'rnn_rc_low', 'rnn_rc_high']
+#: The RNN baseline: v17 models on their own blocks (hier_switch_test_inference.RNN300).
+#: The v16 sessions on the paper's blocks (`rnn_rc_*`) stay on disk as the record of the hedge.
+RNN_TAG = 'v17'
+RNN_CONDITIONS = ['rnn300_rc_none', 'rnn300_rc_low', 'rnn300_rc_high']
+RNN_BASE = RNN_CONDITIONS[0]
 #: Off until the manipulation sessions have been recorded, so `list` and `task` keep
 #: describing what is on disk. Set HIER_SWITCH_MANIP=1 to include them.
 WITH_MANIPULATIONS = bool(os.environ.get('HIER_SWITCH_MANIP'))
@@ -67,13 +74,13 @@ def models():
     conds = NG_CONDITIONS + (NG_MANIPULATIONS if WITH_MANIPULATIONS else [])
     out = [('NG', s, os.path.join(EXPORTS, 'tune_v15', f'NG_s{s}', 'model.pt'), conds)
            for s in NG_SEEDS]
-    out += [('RNN', s, os.path.join(EXPORTS, 'tune_v16', f'RNN_s{s}', 'model.pt'), RNN_CONDITIONS)
-            for s in RNN_SEEDS]
+    out += [('RNN', s, os.path.join(EXPORTS, f'tune_{RNN_TAG}', f'RNN_s{s}', 'model.pt'),
+             RNN_CONDITIONS) for s in RNN_SEEDS]
     return out
 
 
 def session_dirs(model_type, seed, conditions):
-    tag = f"tune_{'v15' if model_type == 'NG' else 'v16'}_{model_type}_s{seed}"
+    tag = f"tune_{'v15' if model_type == 'NG' else RNN_TAG}_{model_type}_s{seed}"
     return [os.path.join(EXPORTS, 'inference_tests', tag, c) for c in conditions]
 
 
@@ -214,7 +221,7 @@ def predictions(data):
     ng_none = data.get(('NG', 'softmax_rc_none'), {})
     ng_low = data.get(('NG', 'softmax_rc_low'), {})
     ng_high = data.get(('NG', 'softmax_rc_high'), {})
-    rnn_none = data.get(('RNN', 'rnn_rc_none'), {})
+    rnn_none = data.get(('RNN', RNN_BASE), {})
 
     if ng_none:
         seeds, v = _per_seed(ng_none, None, lambda r: r['behaviour']['psychometric']['acc'][0]
@@ -326,10 +333,15 @@ def predictions(data):
                              n_rnn_seeds=int(np.isfinite(v2).sum()), predicted=None,
                              per_seed=dict(zip(map(int, s1), v1.tolist())),
                              rnn_per_seed=dict(zip(map(int, s2), v2.tolist())), note=''))
+        # The RNN's steady state and switch latency are on its own 250-350-trial blocks
+        # (block_scale); NG's are on the paper's 30-60.
         for name, fn in (('accuracy (steady)', lambda r: r['behaviour']['acc_steady']),
+                         ('undecided rate', lambda r: r['behaviour']['undecided']),
                          ('rule decoding at t=16', lambda r: r['hidden']['decoding']['steady_aligned']['rule']['acc'][16]),
                          ('cue decoding at t=16', lambda r: r['hidden']['decoding']['steady_aligned']['cue']['acc'][16]),
-                         ('switch latency', lambda r: r['behaviour']['switch']['all']['switch'])):
+                         ('context decoding at t=16', lambda r: r['hidden']['decoding']['steady_aligned']['context']['acc'][16]),
+                         ('switch latency', lambda r: r['behaviour']['switch']['all']['switch']),
+                         ('switch latency (decided)', lambda r: r['behaviour']['switch']['all']['dec_switch'])):
             s1, v1 = _per_seed(ng_none, None, fn)
             s2, v2 = _per_seed(rnn_none, None, fn)
             rows.append(dict(name=f'NG vs RNN: {name}', mean=float(np.nanmean(v1)),
@@ -337,6 +349,17 @@ def predictions(data):
                              n_rnn_seeds=int(np.isfinite(v2).sum()), predicted=None,
                              per_seed=dict(zip(map(int, s1), v1.tolist())),
                              rnn_per_seed=dict(zip(map(int, s2), v2.tolist())), note=''))
+
+    # The RNN's own Fig 1f: its forced low/high pair, on its own blocks.
+    rnn_low = data.get(('RNN', 'rnn300_rc_low'), {})
+    rnn_high = data.get(('RNN', 'rnn300_rc_high'), {})
+    if rnn_low and rnn_high:
+        seeds = sorted(set(rnn_low) & set(rnn_high))
+        for key, label in (('switch', 'behaviour'), ('dec_switch', 'decided')):
+            v = np.array([rnn_high[s]['behaviour']['switch']['all'][key]
+                          - rnn_low[s]['behaviour']['switch']['all'][key] for s in seeds])
+            rows.append(_sign_row(f'RNN: switch latency, high − low early conflict ({label})',
+                                  np.array(seeds), v, +1, 'on its own 250-350-trial blocks'))
 
     # The gain axis: only live without the softmax.
     for cond in ('sigmoid_zlr30000', 'sigmoid_zlr30000_wd1e-05', 'sigmoid_zlr30000_wd3e-05'):

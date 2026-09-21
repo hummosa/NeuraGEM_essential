@@ -101,7 +101,7 @@ forward. ✅ done · 🟡 partly · ⬜ not started.
 |---|---|---|
 | E1 | **Core session.** Train (passive, then active; discovery) → frozen-weight test on the paper's 30–60 blocks | ✅ 6/10 seeds discover (v13); all six retrained and saved as `tune_v15/NG_s*/model.pt`, each reproducing its v13 numbers exactly |
 | E2 | **Z-clamp probe.** Freeze weights and the latent update; hold Z at a grid of gates; measure RT, accuracy, undecided rate, the integration index and the cue/rule build-up | ✅ `hier_switch_perturb.clamp_grid`: softmax contrast ladder and a sigmoid gain × contrast grid, per seed |
-| E3 | **Group sweep.** ≥ 10 seeds × {NG, RNN} plus the ideal observer | ✅ 6 NG (the discoverers) × 6 conditions and 10 RNN × 3 conditions, all recorded and analysed; `hier_switch_group.py aggregate` prints the prediction table. Oracle → inference not repeated at group level |
+| E3 | **Group sweep.** ≥ 10 seeds × {NG, RNN} plus the ideal observer | ✅ 6 NG (the discoverers) × 6 conditions and 10 RNN × 3 conditions, all recorded and analysed; `hier_switch_group.py aggregate` prints the prediction table. Oracle → inference not repeated at group level. 🟡 **The RNN baseline was replaced on 2026-09-20** (§5d): v16 hedged, so the group now reads ten v17 RNNs on 250–350-trial blocks; their array and sessions are not yet run |
 | E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); the latent driven for the first trials (MD activation); momentum; forced errors | ✅ `hier_switch_hooks.py` plus the default-off call sites in `_latent_update_step`; 15 conditions × 6 seeds recorded and analysed. Results in §5c.4–5. **Forced errors are the one part still missing** — they need a dataset knob |
 
 ### Predictions
@@ -414,7 +414,11 @@ total; that was an artefact of denying the low-dimensional sources a magnitude c
 **The RNN baseline is the foil that matters.** With the latent update off, its hidden state
 decodes cue +0.29 (10/10) but rule +0.01 and context +0.04, and its units are tuned to 1.45
 variables each. So the mixing in NeuraGEM's hidden state is **not** a generic property of an
-LSTM on this task: it appears only when a latent is gating it.
+LSTM on this task: it appears only when a latent is gating it. **Caveat (§5d):** those are
+the *hedged* v16 baseline's numbers, a network that was not doing the task. The v17 baseline,
+which behaves on its own blocks, decodes rule 0.64 and context 0.71 at steady state and its
+units carry 2.9 variables (seed 0), so the gap narrows once the RNN has a rule to encode;
+replace this paragraph with the ten-seed v17 numbers when they land.
 
 **3. The latent's state is persistent and its update is transient.** Aligned on a reversal:
 the position on the context axis goes +1.0 → −0.99 on trial 1 and climbs back over 4–6
@@ -479,12 +483,84 @@ softmax the gain cannot move**. The one measure the paper uses to define the exp
 regime is the one this model's latent has no way to change. Testing that properly means
 training with the sigmoid (§6b), which is still not done.
 
+## 5d. The RNN baseline that behaves (v17, 2026-09-20)
+
+**The problem.** The v16 baseline (the same training as NeuraGEM, latent update off) hedges:
+on 200-trial active blocks its output collapses (|decision| 0.05, training-end accuracy
+0.53) and on the paper's 30–60-trial test blocks it is undecided on 99.9 % of trials. That
+is not a bug to tune away: a network with no state across trials (the hidden state resets
+every trial, Z is fixed) sees the correct side as ±(vis × cue) with an unpredictable sign,
+and the squared-error optimum is literally output 0. Its only route to behaviour is weight
+learning inside a block, and a 30–60-trial block is too short for that at any rate.
+
+**What was tried (seed 0, `hier_switch_test_inference` conditions, LU off, weights plastic).**
+
+| starting weights | test blocks | test WU_lr | late-block acc | \|decision\| late | undecided |
+|---|---|---|---|---|---|
+| v16 (hedged) | 30–60 | 1e-3 … 3e-2 | 0.48–0.52 | 0.06–0.08 | 1.00 |
+| v16 | 30–60 | 1e-1 | 0.48 | 0.58 | 0.47 (Adam thrashing, not tracking) |
+| trained on 300-trial blocks | 30–60 | 1e-3 … 3e-2 | 0.48–0.52 | 0.06–0.16 | 0.98–1.00 |
+| trained on 300 | 100 | 3e-3 / 1e-2 | 0.52 / 0.51 | 0.08 / 0.06 | 1.00 |
+| trained on 300 | 200 | 3e-3 / 1e-2 | 0.61 / 0.54 | 0.14 / 0.07 | 0.97 / 1.00 |
+| trained on 300 | 300 | 1e-3 | 0.68 | 0.28 | 0.83 |
+| **trained on 300** | **300** | **3e-3** | **0.89** | **0.76** | **0.36** |
+| trained on 300 | 300 | 1e-2 | 0.51 | 0.07 | 1.00 |
+| v16 | 300 | 1e-3 / 3e-3 | 0.71 / 0.89 | 0.19 / 0.70 | 0.94 / 0.51 |
+
+A higher test-time weight learning rate never rescues the paper's blocks, from either
+starting point. On 300-trial blocks at 3e-3 the RNN behaves: confident perseverative
+errors on trials 1–20 (accuracy 0.12, 0.03; |decision| 0.76 on trial 1), a hedge over
+trials 30–70 (undecided ≈ 1.0), accuracy above 0.9 from ~trial 80 and the output fully
+regrown by ~trial 140. 1e-2 is worse than 3e-3 at every block length; 1e-3 half-recovers.
+
+**The design (user's call, 2026-09-20).** Retrain the RNN with 300-trial active blocks
+(`tune_v17`: v16 with `train_block_schedule=[(10**9, (300, 300))]`, otherwise identical) so
+it enters the test committed, and test it on **250–350-trial blocks** (a range, mirroring
+NeuraGEM's 30–60) with **weights plastic at `WU_lr` 3e-3**, latent update off. The forced
+low/high early-conflict pair runs on the RNN too (`rnn300_rc_none/low/high`, 4500 trials ≈
+15 reversals each). The comparison sentence becomes: *the RNN needs 250–350-trial blocks and
+~60–80 trials to switch by weight learning; NeuraGEM switches in ~4 on 30–60.*
+
+**What the analyses do with two block scales** (`hier_switch_analyses.block_scale`). A
+session's steady-state start, reversal window and RT-by-since range come from its own
+`block_len_range` in the meta: trial 11 / −5…+15 / 1–15 on the paper's blocks, and the
+second half of the shortest block / −20…+250 / 1–250 on the RNN's. So "steady" means "after
+the switch" for both. `trial_labels` writes `steady_since`, `rev_window` and `n_since` onto
+the session and every mask reads them from there. Panels that draw both models on a
+trials-since axis (`spec_rt_reversal`, the new `spec_since`) put each model on its own range
+and switch to a log axis when the ranges differ by an order of magnitude. The new
+supplementary figure `rnn_baseline.pdf` shows accuracy, undecided rate, |decision| and the
+switch latencies of both models on that axis.
+
+**Seed 0, end to end (the scratch 300-block model, `rnn300_rc_none`, not the v17 array).**
+Steady-state accuracy 0.871 with the psychometric shape NeuraGEM has (0.99 → 0.64 across
+conflict; context gap 0.014); undecided 0.36 overall; decided switch latency 55 trials
+(behavioural criterion 16, coin-flip contaminated as before); the paper's Fig 1f on its own
+reversals is in the paper's direction (decided switch 50 / 53 / 62 trials from the least to
+the most ambiguous start). **Its hidden state now carries the rule**: steady-state decoding
+cue 0.89, rule 0.64, context 0.71 (v16: 0.79 / 0.51 / 0.55), collapsing to 0.53 / 0.51 in
+the first five trials after a reversal — the same qualitative pattern as NeuraGEM, weaker;
+tuned units carry 2.9 variables each (v16 1.45, NeuraGEM 4.5), classes CueS .18 / CueL .68
+/ Rule .13. So the §5c claim that mixing "appears only when a latent is gating" softens
+once the RNN actually does the task, and the ten-seed numbers should replace the v16 row
+wherever it is quoted (§5b's table, §5c's foil paragraph, the methods doc). Single seed;
+report the group when it lands.
+
+**What is pending.** `./hier_switch/run_tune.sh v17` (10 tasks, ~5 min each) then
+`./hier_switch/run_sessions.sh 6-15` (the RNN tasks of `hier_switch_group.py list`: three
+4500-trial sessions each, ~15 min per task), then `aggregate` and the figures. Both are
+arrays and need approval. The v16 sessions stay on disk under `tune_v16_RNN_s*/rnn_rc_*` as
+the record of the hedge.
+
+---
+
 ## 6. How to run things
 
 ```bash
 .venv/bin/python hier_switch/hier_switch_dataset.py            # generator self-check
 .venv/bin/python hier_switch/hier_switch_train.py NG 0         # train + test + panels, seed 0
 ./hier_switch/run_tune.sh <tag> [range]                        # SLURM array from GRIDS[tag]
+./hier_switch/run_tune.sh v17                                  # the RNN baseline retrain (§5d)
 .venv/bin/python hier_switch/hier_switch_tune.py arms <tag>    # seeds grouped by setting
 .venv/bin/python hier_switch/hier_switch_tune.py collect <tag>  # one row per run
 .venv/bin/python hier_switch/show_blocks.py <tag> [run ...]    # per-block convergence
@@ -588,11 +664,15 @@ are in `docs/hier_switch_task.md` (end of the tuning log).
    cannot appear in a softmax-trained model *in principle*. A sigmoid-trained model is the
    only way to find out whether that signature is absent from the mechanism or only from
    this gate.
-4. **The stateful feedback-RNN** (Brabeeba's "thalamocortical RNN trained with normal
-   backprop"): `stateful_hidden=True` across trials plus an input channel carrying the
-   previous outcome, truncated BPTT, and its own tuning. §5b shows what the current RNN
-   lacks — it hedges on 99.9 % of test trials — so this is the baseline that would make the
-   comparison fair. It is a model change: huddle before starting.
+4. **The RNN baseline, finish the swap (§5d).** Run `./hier_switch/run_tune.sh v17`, then
+   `./hier_switch/run_sessions.sh 6-15`, then `aggregate` and the figures, and replace every
+   quoted v16 number (§5b's NG-vs-RNN table, §5c's foil paragraph, the methods doc's Fig. 1
+   and encoding text) with the v17 group. Watch the encoding rows: on seed 0 the behaving
+   RNN's hidden state does carry the rule, so "mixing only under a gating latent" may
+   become "less mixing without one". The **stateful feedback-RNN** (Brabeeba's
+   "thalamocortical RNN trained with normal backprop": `stateful_hidden=True` across trials
+   plus a previous-outcome input channel, truncated BPTT, its own tuning) remains the
+   baseline that could switch inside the paper's blocks; it is a model change, huddle first.
 5. **Per-timestep Z within a trial** (`latent_aggregation_op='none'`) as an MDConflict
    analogue, and the free-response variant (`target_onset`) for an RT that measures
    integration directly. Both are model changes; both were deferred deliberately.
@@ -625,10 +705,15 @@ documents it as built rather than as a plan.
 - **A model pickled before a knob existed does not have it.** `model.pt` carries its whole
   config, so anything reading a new attribute off a saved config needs a `getattr` default
   (that is why `reversal_conflict_levels` lives in the dataset module as well).
-- **The RNN hedges at test, so its accuracy is not behaviour.** On 30–60-trial blocks the
-  v16 baselines are undecided on 99.9 % of trials; `sign(decision)` on a near-zero output
-  makes accuracy 0.5 and the switch criterion fire after ~3 coin flips. Quote the undecided
-  rate with any RNN number.
+- **The RNN hedges on the paper's blocks, so its accuracy there is not behaviour.** On
+  30–60-trial blocks the v16 baselines are undecided on 99.9 % of trials; `sign(decision)`
+  on a near-zero output makes accuracy 0.5 and the switch criterion fire after ~3 coin
+  flips. The group's RNN (v17) runs on 250–350-trial blocks at `WU_lr` 3e-3 instead (§5d),
+  and its steady state and reversal window scale with its blocks (`block_scale`). Quote the
+  undecided rate with any RNN number, and say which blocks.
+- **`run_test` honours `WU_lr` and `block_len_range`** as overrides: the weight learning
+  rate is patched onto the live weight optimizer (it never re-reads the config, like Z_lr),
+  and the block range goes to the test stream. Only a plastic-weight test uses the first.
 - **A session with no context axis** (the RNN, or any clamped session) has no `aligned`
   trials; `steady_mask` drops the aligned filter there rather than returning an empty mask.
 - **Pyright false positives.** Pyright cannot resolve the `hier_switch_*` imports

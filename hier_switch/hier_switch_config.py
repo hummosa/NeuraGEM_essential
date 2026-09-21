@@ -98,7 +98,10 @@ class HierSwitchConfig(Config):
         self.temporal_decay_factor = 0.178
 
         # ── Blocks ────────────────────────────────────────────────────────────
-        self.block_len_range = (30, 60)  # trials per context block, uniform, inclusive
+        # Trials per context block, uniform, inclusive. The paper's. A test session can
+        # override it (run_test(block_len_range=...)): the RNN baseline tests on (250, 350),
+        # the shortest blocks a plastic RNN re-learns inside (docs/hier_switch_task.md, v17).
+        self.block_len_range = (30, 60)
         self.first_context   = None      # None = random; 0 or 1 to pin it
         # Training-stream curriculum over block length: [(until_trial, (lo, hi)), ...] sets
         # the range for blocks that start before until_trial; block_len_range after that and

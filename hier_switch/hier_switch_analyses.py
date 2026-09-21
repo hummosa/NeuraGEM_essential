@@ -185,13 +185,32 @@ def print_block_table(rows, label=''):
 PRIMARY = 'Inference only'     # weights frozen, Z inferred, the paper's 30-60 blocks
 STEADY = 11                    # `since` from which a block counts as steady state
 EARLY_N = 5                    # the paper's early-reversal window (trials 1-5)
+REV_WINDOW = (-5, 15)          # trials around a reversal; k = 1 is the first trial of the block
+
+
+def block_scale(meta):
+    """(steady_since, reversal window, n_since) for a session, from its block length range.
+
+    On the paper's 30-60-trial blocks the steady state starts at trial 11 (STEADY), the
+    reversal-aligned curves run from 5 trials before a reversal to 15 after (REV_WINDOW),
+    and RT by trials-since covers 1-15. The RNN baseline runs on 250-350-trial blocks, the
+    shortest it can re-learn inside (docs/hier_switch_task.md, v17), and switches in ~80
+    trials there; so its steady state is the second half of the shortest block and its
+    window runs to that block's end. Scaling the three together keeps "steady" meaning
+    "after the switch" for both models. A session recorded before block_len_range was in
+    the meta is on the paper's blocks.
+    """
+    lo = int(meta.get('block_len_range', [30, 60])[0])
+    if lo <= 60:
+        return STEADY, REV_WINDOW, 15
+    return lo // 2, (-20, lo), lo
 
 # Latent settings a session was run with, when its files do not say (the config defaults).
 _DEFAULT_META = dict(model_type='NG', Z_lr=1e4, Z_decay=3e-6, latent_activation='softmax',
                      softmax_temp=0.5, rt_threshold=0.5, lu_steps=1, wu_steps=0,
                      response_start_timestep=19, trial_len=25, n_pulses=16,
                      pulse_noise_std=0.5, reversal_conflict=None, z_restart=False,
-                     Z_momentum=0.0, perturb=None,
+                     Z_momentum=0.0, perturb=None, WU_lr=1e-3, block_len_range=[30, 60],
                      conflict_counts=[[9, 0], [8, 1], [7, 2], [6, 3], [5, 4]])
 
 
@@ -444,11 +463,15 @@ def trial_labels(sess, primary=PRIMARY):
     levels = np.array([non / dom for dom, non in meta['conflict_counts']])
     lab['conf_level'] = np.abs(sess['conflict'][:, None] - levels[None]).argmin(axis=1)
     use = (phase == primary) & ~lab['transient']
+    # The session's own steady-state start and reversal window (block_scale); every later
+    # analysis reads these off the session rather than the module constants.
+    steady_n, rev_win, n_since = block_scale(meta)
+    lab.update(steady_since=int(steady_n), rev_window=list(rev_win), n_since=int(n_since))
 
     # ── Z relative to the context axis ──
     zin = sess['z_in'].astype(float)
     ok = np.isfinite(zin).all(axis=1)
-    steady = use & ok & (since >= STEADY)
+    steady = use & ok & (since >= steady_n)
     lab.update(axis=None, mid=np.nan, d=np.nan, proj_in=np.full(n, np.nan),
                held=np.full(n, -1))
     if (steady & (ctx == 0)).any() and (steady & (ctx == 1)).any():
@@ -508,7 +531,7 @@ def trial_labels(sess, primary=PRIMARY):
     lab['pre_switch'] = lab['reversal'] & ~(since >= np.nan_to_num(lab['switch_trial'], nan=np.inf))
 
     # ── Conflict-weighted error (the paper's ε_CW) ──
-    st = use & (since >= STEADY)
+    st = use & (since >= steady_n)
     p_tab = np.array([corr[st & (lab['conf_level'] == k)].mean() if (st & (lab['conf_level'] == k)).any()
                       else np.nan for k in range(len(levels))])
     lab['p_c_table'] = np.minimum(p_tab, 0.99)
@@ -628,7 +651,7 @@ def z_update_table(sess, upd, by=('state', 'err', 'conf_level'), position=None):
     if position == 'early':
         ok &= sess['since'] <= EARLY_N
     elif position == 'steady':
-        ok &= sess['since'] >= STEADY
+        ok &= sess['since'] >= sess.get('steady_since', STEADY)
     keys = dict(state=sess['stale'].astype(int), err=sess['err'].astype(int),
                 conf_level=sess['conf_level'], context=sess['context'].astype(int))
     cols = [keys[b] for b in by]
@@ -650,16 +673,16 @@ def z_update_table(sess, upd, by=('state', 'err', 'conf_level'), position=None):
 # A1-A4: behaviour
 # ══════════════════════════════════════════════════════════════════════════════
 
-REV_WINDOW = (-5, 15)      # trials around a reversal; k = 1 is the first trial of the block
-
-
-def reversal_aligned(sess, values, window=REV_WINDOW, blocks=None, primary=PRIMARY):
+def reversal_aligned(sess, values, window=None, blocks=None, primary=PRIMARY):
     """`values` averaged at each offset from a reversal. k = 1 is the block's first trial,
-    k ≤ 0 the trials before it (k = 0 is the last trial of the previous block).
+    k ≤ 0 the trials before it (k = 0 is the last trial of the previous block). The default
+    window is the session's own (block_scale): REV_WINDOW on the paper's blocks.
 
     Returns (k, mean, sem, n). Offsets that would leave the block's phase, run past the
     session, or reach back beyond the previous block are dropped.
     """
+    if window is None:
+        window = tuple(sess.get('rev_window', REV_WINDOW))
     block, starts, ends = _blocks(sess)
     n, phase = sess['n'], sess['phase']
     keep = sess['reversal'] & ~sess['transient'] & (phase == primary)
@@ -694,7 +717,8 @@ def behaviour(sess, primary=PRIMARY, criterion_n=3):
     """A1-A4 in one dict: psychometric, reversal-aligned curves, switch latency, RT.
 
     A1 psychometric   accuracy / undecided rate / RT by conflict level, steady state
-                      (since ≥ 11), per context — they should be mirror images
+                      (since ≥ steady_since: 11 on the paper's blocks, block_scale), per
+                      context — they should be mirror images
     A2 reversal       accuracy, Z on the true context's side, |decision|, undecided and RT
                       from 5 trials before to 15 after a reversal, split by early_class,
                       plus the three switch latencies per split
@@ -704,7 +728,8 @@ def behaviour(sess, primary=PRIMARY, criterion_n=3):
                       decided-only companion, since an undecided trial has no honest RT
     """
     m = select(sess, phase=primary)
-    steady = m & (sess['since'] >= STEADY)
+    steady = m & (sess['since'] >= sess.get('steady_since', STEADY))
+    n_since = int(sess.get('n_since', 15))
     corr = sess['correct'].astype(bool)
     has_rt = 'rt' in sess
     rt = sess['rt'] if has_rt else np.full(sess['n'], np.nan)
@@ -754,8 +779,8 @@ def behaviour(sess, primary=PRIMARY, criterion_n=3):
         res.setdefault('switch', {})[label] = _switch_stats(sess, blk, primary, criterion_n)
 
     res['rt'] = dict(
-        by_since=[mean(rt[m & (sess['since'] == k)]) for k in range(1, 16)],
-        undecided_by_since=[mean(~dec[m & (sess['since'] == k)]) for k in range(1, 16)],
+        by_since=[mean(rt[m & (sess['since'] == k)]) for k in range(1, n_since + 1)],
+        undecided_by_since=[mean(~dec[m & (sess['since'] == k)]) for k in range(1, n_since + 1)],
         err_early=mean(rt[m & ~corr & (sess['since'] <= 2)]),
         err_steady=mean(rt[steady & ~corr]),
         err_early_decided=mean(rt[m & ~corr & dec & (sess['since'] <= 2)]),
@@ -919,8 +944,8 @@ def latent(sess, obs, upd=None, primary=PRIMARY):
     prev_conf = np.r_[np.nan, sess['conflict'][:-1].astype(float)]
     res['uncertainty']['r_conflict_early'] = _corr(unc[early], sess['conflict'][early])
     res['uncertainty']['r_prev_conflict_early'] = _corr(unc[early], prev_conf[early])
-    res['uncertainty']['r_conflict_steady'] = _corr(unc[m & (sess['since'] >= STEADY)],
-                                                    sess['conflict'][m & (sess['since'] >= STEADY)])
+    res['uncertainty']['r_conflict_steady'] = _corr(unc[m & (sess['since'] >= sess.get('steady_since', STEADY))],
+                                                    sess['conflict'][m & (sess['since'] >= sess.get('steady_since', STEADY))])
     # Fig 1m at the level the model can express it: a block whose first trials were
     # ambiguous should reach a *lower* peak of Z uncertainty (the errors are discounted).
     _, starts, ends = _blocks(sess)
@@ -960,7 +985,7 @@ def latent(sess, obs, upd=None, primary=PRIMARY):
         r_window=_corr(g5[m], sess['eps_cw'][m]),
         slope_window=float(_ols(g5[m], sess['eps_cw'][m][:, None])[0][0]),
         r2_window=_ols(g5[m], sess['eps_cw'][m][:, None])[1],
-        mean_eps_cw=float(np.nanmean(sess['eps_cw'][m & (sess['since'] >= STEADY)])),
+        mean_eps_cw=float(np.nanmean(sess['eps_cw'][m & (sess['since'] >= sess.get('steady_since', STEADY))])),
         g_contrast_by_conf=[float(np.nanmean(g_contrast[m & sess['err'] & (sess['conf_level'] == c)]))
                             for c in range(len(sess['p_c_table']))],
         g_contrast_by_conf_correct=[float(np.nanmean(g_contrast[m & ~sess['err'] & (sess['conf_level'] == c)]))

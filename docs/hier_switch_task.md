@@ -88,7 +88,7 @@ All three models share one architecture.
 | | Training | Test |
 |---|---|---|
 | **NG** | WU + LU from scratch, Z self-inferred | weights frozen, LU on |
-| **RNN** | LU off; Z stays at `Z_init` | weights plastic (it has no other route to adaptation) |
+| **RNN** | LU off; Z stays at `Z_init`; active blocks of 300 trials (v17) | weights plastic at `WU_lr` 3e-3 on 250–350-trial blocks (it has no other route to adaptation, and on the paper's 30–60 it hedges at every rate — v17 below) |
 | **Oracle** | Z = true context, one-hot | weights frozen, LU on (must infer Z) |
 
 **Latent settings, and why:**
@@ -412,3 +412,32 @@ toward that middle gate, not toward silence.
 - **Figures.** The comparison figure is at
   `exports/hier_switch/inference_tests/tune_v15_NG_s0/inference_summary.pdf`; each
   condition's `panels_full.pdf` and `panels_test.pdf` are in its own folder.
+
+**v17: the RNN baseline that behaves** (2026-09-20; the full account is
+`docs/hier_switch_handoff.md` §5d). v16 hedges — on 200-trial active blocks its output
+collapses to |decision| 0.05 and on the paper's 30–60 test blocks it is undecided on 99.9 %
+of trials — because a network with no state across trials sees the correct side as
+±(vis × cue) with an unpredictable sign, and the squared-error optimum is output 0. Two
+levers, seed 0, latent update off, weights plastic (`hier_switch_test_inference` conditions,
+`run_test(WU_lr=…, block_len_range=…)`):
+
+- **A higher test-time `WU_lr` on the paper's blocks: fails.** From the v16 weights, 1e-3 to
+  3e-2 leave |decision| at 0.06–0.08 and the undecided rate at 1.00; 1e-1 makes the output
+  large (0.58) but accuracy is 0.48 — Adam thrashing. From weights retrained on 300-trial
+  blocks (committed at the end of training: late-block 0.60–0.93, |decision| 0.31) the
+  same: undecided 0.98–1.00 at every rate.
+- **Longer test blocks: works at 300, at 3e-3.** Late-block accuracy / |decision| /
+  undecided — 100-trial blocks: 0.52 / 0.08 / 1.00; 200: 0.61 / 0.14 / 0.97; 300 at 1e-3:
+  0.68 / 0.28 / 0.83; **300 at 3e-3: 0.89 / 0.76 / 0.36**; 300 at 1e-2: 0.51 / 0.07 / 1.00.
+  At 300 and 3e-3: confident perseverative errors on trials 1–20 (accuracy 0.12, 0.03;
+  |decision| 0.76 on trial 1), a hedge over trials 30–70 (undecided ≈ 1), accuracy above 0.9
+  from ~trial 80, the output regrown by ~trial 140. The v16 weights also recover on 300-trial
+  blocks at 3e-3 (0.89 late-block, ~50 trials slower to regrow).
+
+**Design:** `tune_v17` retrains the ten RNN seeds with 300-trial active blocks
+(`train_block_schedule=[(10**9, (300, 300))]`, otherwise v16), saved before the test; the
+group tests them on 250–350-trial blocks (a range, mirroring the paper's 30–60) with
+`WU_lr` 3e-3, as `rnn300_rc_none/low/high` (4500 trials each). The analyses scale the steady
+state and the reversal window with the block length (`hier_switch_analyses.block_scale`).
+Seed 0 end to end (scratch model): steady 0.871, decided switch 55 trials, and its hidden
+state now decodes the rule (0.64) and the context (0.71) at steady state.

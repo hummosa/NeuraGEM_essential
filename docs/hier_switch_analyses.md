@@ -16,7 +16,7 @@ uncertainty processing drives flexible switching*, Nature 637:127 (2025).
 ```
 model.pt ──► hier_switch_test_inference.py ──► session.npz ──► load_session ──► trial_labels
   (v15 NG,      one test session per            (trials +         (dict of         (adds the
-   v16 RNN)     named condition, weights        per-timestep       arrays +         trial table)
+   v17 RNN)     named condition, weights        per-timestep       arrays +         trial table)
                 frozen, Z restarted)            outputs,          'meta')              │
                                                 pulses, hidden,                        ▼
                                                 recovered dL/dZ)         behaviour / latent /
@@ -90,7 +90,10 @@ Three facts the whole pipeline rests on:
 
 **Conditions** (`hier_switch_test_inference.CONDITIONS`): `softmax` as trained; the
 `nosoftmax_*` and `sigmoid_*` ladders from the phase-1 open thread; the paired
-`*_rc_none / _rc_low / _rc_high` triplets; and `rnn` for the v16 baselines.
+`*_rc_none / _rc_low / _rc_high` triplets; `rnn300_rc_*` for the v17 RNN baselines (latent
+update off, weights plastic at `WU_lr` 3e-3, 250–350-trial blocks, 4500 trials — the
+shortest blocks a plastic RNN re-learns inside; handoff §5d); and `rnn` / `rnn_rc_*` for the
+v16 baselines on the paper's blocks, kept as the record of the hedge.
 
 **The paired triplets** are the paper's controlled reversals. With
 `config.reversal_conflict = 'low' | 'high'`, the first 5 trials of every *test* block are
@@ -110,7 +113,8 @@ start-up block of a Z-restarted session is dropped unless `include_transient=Tru
 | `block`, `block_len`, `pos_from_end` | block index (a block starts at `since == 1` or at a phase boundary), its length, trials left in it |
 | `reversal`, `transient`, `complete` | the block began with a real reversal; it is the start-up block of a restarted session; it ended in a reversal rather than being truncated |
 | `err`, `rule`, `conf_level` | `~correct`; `cue × ctx_sign` (+1 = attend vision); 0-4 |
-| `axis`, `mid`, `d` | the context axis: the direction between the two contexts' mean `z_in` over steady-state trials (`since ≥ 11`) of the primary phase, the midpoint's projection, and the prototype distance |
+| `steady_since`, `rev_window`, `n_since` | the session's own block scale (`block_scale`, from `meta['block_len_range']`): the `since` from which a block is steady state, the reversal-aligned window and the RT-by-since range — 11 / (−5, 15) / 15 on the paper's 30–60 blocks, `lo // 2` / (−20, lo) / lo on longer ones (the RNN's 250–350: 125 / (−20, 250) / 250). Every steady-state mask and every reversal-aligned curve reads these, so "steady" means "after the switch" for both models |
+| `axis`, `mid`, `d` | the context axis: the direction between the two contexts' mean `z_in` over steady-state trials (`since ≥ steady_since`) of the primary phase, the midpoint's projection, and the prototype distance |
 | `proj_in`, `held`, `aligned`, `stale` | `z_in` on that axis; the side it sits on (−1 if Z is NaN or there is no axis); whether that side is the true context |
 | `z_evidence` | `(proj_in − mid)/(d/2)` signed toward the true context: +1 on the true prototype, −1 on the other, 0 in the middle. The graded `aligned` |
 | `contrast_in`, `gain_in`, `gate_*` | `(z₀ − z₁)/2` and `mean(z)` of `z_in`, raw and in gate units |
@@ -402,7 +406,8 @@ works from the repo root). Run with `.venv/bin/python`.
 | path | what it is |
 |---|---|
 | `exports/hier_switch/tune_v15/NG_s{0,1,3,5,6,9}/model.pt` | the six trained NG networks that discovered the contexts (whole pickled models; `.config` travels with them) |
-| `exports/hier_switch/tune_v16/RNN_s{0..9}/model.pt` | the ten backprop baselines, saved *before* their plastic-weight test phase |
+| `exports/hier_switch/tune_v17/RNN_s{0..9}/model.pt` | the ten backprop baselines the group uses (300-trial active blocks), saved *before* their plastic-weight test phase; pending the v17 array (handoff §5d) |
+| `exports/hier_switch/tune_v16/RNN_s{0..9}/model.pt` | the earlier baselines (200-trial blocks), which hedge; their `rnn_rc_*` sessions are the record of that |
 | `exports/hier_switch/tune_v13/NG_s{0..9}/trials.npz` | the original 10-seed run: per-trial arrays only (no hidden states, no pulses) |
 | `exports/hier_switch/inference_tests/<tag>/<condition>/session.npz` | a recorded test session — everything in §2. `<tag>` is e.g. `tune_v15_NG_s3` |
 | `…/<condition>/results.json` | every analysis number for that session (`session_report`) |
@@ -439,7 +444,7 @@ m = select(sess, phase=PRIMARY, err=True, stale=True, conf_level=[3, 4])
 | `z_updates(sess)` | per-trial `dz`, `dz_err`, `dz_decay`, `s`, `tipped`, `dgain`, `dgate_gain`, `ok` |
 | `z_update_table(sess, upd, by=('state','err','conf_level'))` | those quantities per cell, with n and SEM |
 | `behaviour(sess)` | psychometric, reversal-aligned curves, the three switch latencies, RT |
-| `reversal_aligned(sess, values, window=(-5,15), blocks=None)` | any per-trial array averaged around reversals |
+| `reversal_aligned(sess, values, window=None, blocks=None)` | any per-trial array averaged around reversals; the default window is the session's own `rev_window` |
 | `latent(sess, obs, upd)` | belief vs observer, uncertainty peaks, update-rule regressions, ε_CW |
 | `normative_table(sess, upd, obs)` | the model's update against the observer's, per cell |
 | `hier_switch_observer.ideal_observer(sess)` | cue posterior, context belief, its own choices, `p_c`, switch latency |
@@ -517,8 +522,12 @@ Builders take **a list of per-seed reports** (a single session is a list of one)
 
 - **The seed is the unit.** Six NG seeds, ten RNN. Report per-seed values and how many carry
   the predicted sign; single-session effects have failed to survive here before.
-- **The RNN hedges on 99.9 % of test trials**, so its accuracy (~0.50) and its switch latency
-  are coin flips on a near-zero output. Always quote its undecided rate.
+- **The RNN hedges on the paper's blocks** (v16: undecided on 99.9 % of trials, so accuracy
+  ~0.50 and its switch latency are coin flips on a near-zero output). The group's RNN (v17)
+  runs on 250–350-trial blocks at `WU_lr` 3e-3, where it perseverates, hedges and re-learns
+  (~55–80 trials to switch, decided criterion). Its `steady_since` is 125 and its window
+  −20…+250, not 11 and −5…+15: never compare a "steady" number across the two models without
+  saying so. Always quote the undecided rate, and the block length.
 - **A clamped or RNN session has no context axis**, so `aligned`, `s` and `tipped` do not
   exist there; `steady_mask` drops the aligned filter for them and `z_updates` refuses
   outright on a session with the latent update off.

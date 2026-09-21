@@ -213,6 +213,19 @@ GRIDS = {
                  n_train_trials=5000, save_model=True,
                  tests=[dict(label='test', test_no_of_steps_in_latent_space=0)])
             for sd in range(10)],
+    # v17: the RNN baseline that behaves. v16 hedges: on 200-trial active blocks its output
+    # collapses (|decision| 0.05) and no test-time weight learning rate rescues it on the
+    # paper's 30-60 blocks (1e-3..3e-2 all undecided on 98-100 % of trials; 1e-1 thrashes).
+    # Trained on 300-trial active blocks it re-learns each block through its weights and
+    # enters the test committed; tested on 250-350-trial blocks with WU_lr 3e-3 it
+    # perseverates, hedges and re-learns (~80 trials to switch, 0.89 late-block accuracy on
+    # seed 0). Same passive phase and trial count as v16; only the block length differs.
+    'v17': [dict(name=f'RNN_s{sd}', model='RNN', seed=sd, n_passive_trials=4000,
+                 n_train_trials=5000, train_block_schedule=[(10**9, (300, 300))],
+                 save_model=True,
+                 tests=[dict(label='test', test_no_of_steps_in_latent_space=0, WU_lr=3e-3,
+                             block_len_range=(250, 350))])
+            for sd in range(10)],
 }
 _CURRICULUM_1 = [(3000, (3000, 3000)), (6000, (200, 300))]
 _LONG_BLOCKS = [(3000, (3000, 3000)), (10**9, (1000, 1000))]
@@ -234,7 +247,8 @@ COMMON = {'v1': dict(n_test_trials=1500, n_train_trials=8000),
           'v13': dict(n_test_trials=1000),
           'v14': dict(n_test_trials=1000),
           'v15': dict(n_test_trials=1000),
-          'v16': dict(n_test_trials=1000)}
+          'v16': dict(n_test_trials=1000),
+          'v17': dict(n_test_trials=3000)}       # ~10 of its 250-350-trial blocks
 
 
 def grid(tag):

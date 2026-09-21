@@ -36,7 +36,16 @@ is the only thing that crosses trials**. Two models differ in what may change:
   task carries what binary reward would.
 - **RNN baseline.** Identical, with the latent update switched off, so Z stays at the
   uniform gate for good and the weights are the only adaptive variable; they stay plastic at
-  test, since that is its only route to adaptation.
+  test, since that is its only route to adaptation. A network with no state across trials
+  cannot do this task on the paper's 30–60-trial blocks at any weight learning rate: the
+  correct side is ±(vis × cue) with a sign it cannot predict, the squared-error optimum is
+  output zero, and a plastic RNN on those blocks hedges on 99.9 % of trials (the v16
+  baseline). The baseline reported here (v17) is therefore trained on 300-trial active
+  blocks, the length on which its weights re-learn each reversal, and **tested on 250–350-
+  trial blocks with a weight learning rate of 3e-3** — the shortest blocks and the rate at
+  which it commits, perseverates and re-learns rather than hedging. Its steady state is the
+  second half of a block and its reversal window runs to trial 250; the definitions scale
+  with the block length so that "steady" means "after the switch" for both models.
 
 Training was fixed in phase 1: 2 × 2000 passive trials (weights only, Z held) to learn the
 task at all, then 5000 trials on 200-trial blocks with the latent update on. 6 of 10 seeds
@@ -45,7 +54,8 @@ All ten RNN seeds are used.
 
 **Test sessions.** Weights are frozen, Z is restarted at the uniform gate and inferred
 trial by trial, and the network runs 2000 fresh trials on the paper's 30–60-trial blocks
-(≈ 45 reversals) drawn from a separate RNG stream. The first block is discarded as a
+(≈ 45 reversals) drawn from a separate RNG stream. (The RNN baseline instead runs 4500
+trials on 250–350-trial blocks, ≈ 15 reversals, with its weights plastic; see Networks.) The first block is discarded as a
 start-up transient. Each seed was run three times as a **paired triplet**: with the first
 five trials of every block forced to low conflict (7:2), forced to high conflict (6:3), or
 left as drawn. The forced level is drawn as usual and then overwritten, so the random
@@ -420,9 +430,12 @@ unreadable; the numbers behind it are still computed and live in
 *Its third panel, reversal-aligned RT, is now story panel n and is no longer written here.*
 
 **Ran.** The unforced test sessions: 6 NG seeds and 10 RNN seeds, frozen weights, 2000
-trials each, Z inferred (NG) or fixed (RNN).
+trials each, Z inferred (NG) or fixed (RNN). *The RNN numbers below are the hedged v16
+baseline's; the v17 baseline (Networks; `rnn_baseline.pdf`) replaces them once its ten seeds
+are recorded.*
 
-**Plotted.** *(a)* Accuracy on steady-state trials (≥ 11 into a block) against cue conflict,
+**Plotted.** *(a)* Accuracy on steady-state trials (≥ 11 into a block for NeuraGEM; the
+second half of the block for the RNN) against cue conflict,
 with the ideal observer's probability of reading the cue correctly as the ceiling. *(b)* RT
 against conflict. *(c)* RT against trials since the reversal. Lines are means over seeds ±
 SEM, thin lines individual seeds.
@@ -597,3 +610,23 @@ clamped gain; dots are seeds.
 rate 1.00 at gain −1), too much and both units saturate so the contrast between them stops
 meaning anything. "Turn the gain up" and "commit to a context" are separate controls, and
 only the first one changes integration speed.
+
+### Fig. 10 — The backprop baseline on the blocks it can track (`rnn_baseline.pdf`)
+
+**Ran.** The unforced sessions of both models: NeuraGEM on the paper's 30–60-trial blocks
+with weights frozen and Z inferred; the RNN (v17) on 250–350-trial blocks with its weights
+plastic at 3e-3 and no latent update. Each model's curves run over its own block: 15 trials
+for NeuraGEM, 250 for the RNN.
+
+**Plotted.** *(a)* Accuracy, *(b)* undecided rate and *(c)* |decision| against trials since
+the reversal, on a log axis so that both recoveries are readable; *(d)* trials to switch
+under the paper's criterion and its decided-only version, per model.
+
+**See** (seed 0 of the RNN so far; the group is pending). The RNN's first trials after a
+reversal are confident perseverative errors (accuracy 0.07, undecided 0.07 on trial 1),
+then its output collapses into a hedge that peaks around trial 40 (undecided 0.93), and it
+re-learns the mapping through its weights: accuracy is back above 0.85 by trial 80 and the
+output is fully regrown by about trial 200. Its decided switch takes ~55 trials against
+NeuraGEM's ~4.6. That is the comparison the paper's blocks could not make: with the weights
+as the only fast variable, a reversal costs the network a hedge and tens of trials of
+re-learning; with a latent to move, it costs a handful.
