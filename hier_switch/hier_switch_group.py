@@ -57,8 +57,7 @@ NG_MANIPULATIONS = ['sigmoid_rc_none', 'sigmoid_rc_low', 'sigmoid_rc_high',
                     'softmax_lu3_rc_low', 'softmax_lu3_rc_high',
                     'softmax_lu10_rc_low', 'softmax_lu10_rc_high',
                     'softmax_blast_rc_low', 'softmax_blast_rc_high',
-                    'sigmoid_blast_rc_low', 'sigmoid_blast_rc_high',
-                    'softmax_mom0.5_rc_none', 'softmax_mom0.9_rc_none']
+                    'sigmoid_blast_rc_low', 'sigmoid_blast_rc_high']
 #: The RNN baseline: v17 models on their own blocks (hier_switch_test_inference.RNN300).
 #: The v16 sessions on the paper's blocks (`rnn_rc_*`) stay on disk as the record of the hedge.
 RNN_TAG = 'v17'
@@ -480,20 +479,6 @@ def _manipulation_rows(data, criteria=(('dec_switch', 'decided'), ('z_switch', '
                 rows.append(_sign_row(
                     f'Manipulation [{split} conflict]: {label} — extra trials to switch ({crit})',
                     np.array(seeds), v, expect))
-    # Momentum: what it does to the two latent signals, not to behaviour.
-    ctrl = data.get(('NG', 'softmax_rc_none'), {})
-    for mu in ('0.5', '0.9'):
-        g = data.get(('NG', f'softmax_mom{mu}_rc_none'), {})
-        if not g or not ctrl:
-            continue
-        seeds = sorted(set(g) & set(ctrl))
-        for key, what in (('step', 'the update |Δz| on the context axis'),
-                          ('grad', 'the raw |dL/dZ|')):
-            v = np.array([np.nanmax(g[s]['latent']['traces'][key]['mean'])
-                          - np.nanmax(ctrl[s]['latent']['traces'][key]['mean']) for s in seeds])
-            rows.append(_sign_row(f'Momentum {mu}: peak of {what}, minus the control',
-                                  np.array(seeds), v, +1,
-                                  'does a run of errors build on itself?'))
     return rows
 
 

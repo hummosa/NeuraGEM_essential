@@ -185,9 +185,6 @@ def run_test(model, cfg, Z_lr=None, run_name=None, n_trials=None, perturb=None, 
     for g in m.Z_optimizer.param_groups:
         g['lr'] = float(tcfg.Z_lr)
         g['weight_decay'] = opt_decay
-        # SGD carries a momentum buffer; a hook may switch it on for a window of trials.
-        if 'momentum' in g:
-            g['momentum'] = float(getattr(tcfg, 'Z_momentum', 0.0) or 0.0)
     # The weight optimizer never re-reads config.WU_lr either. It matters only for a test
     # with plastic weights (the RNN baseline, test_no_of_steps_in_weight_space=1), whose
     # rate at test is a knob of its own: 3e-3 on 250-350-trial blocks, where 1e-3 only

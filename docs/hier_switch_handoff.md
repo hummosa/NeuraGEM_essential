@@ -35,9 +35,9 @@ one stage was built:
   dissociation. See §5c.
 - **Reversal-aligned versions** of the integration index and cue velocity, and of the latent,
   its update and its gradient.
-- **E4, the manipulations, is built and run** (`hier_switch_hooks.py`): 15 conditions × 6
-  seeds, 90 sessions, array 6551481. Silencing the latent update reproduces the paper's
-  ACC→MD result and driving it gives the converse, graded. See §5c.4 and §5c.5.
+- **E4, the manipulations, is built and run** (`hier_switch_hooks.py`): 13 conditions × 6
+  seeds, array 6551481. Silencing the latent update reproduces the paper's ACC→MD result
+  and driving it to (1, 1) gives the converse. See §5c.4.
 
 ---
 
@@ -102,7 +102,7 @@ forward. ✅ done · 🟡 partly · ⬜ not started.
 | E1 | **Core session.** Train (passive, then active; discovery) → frozen-weight test on the paper's 30–60 blocks | ✅ 6/10 seeds discover (v13); all six retrained and saved as `tune_v15/NG_s*/model.pt`, each reproducing its v13 numbers exactly |
 | E2 | **Z-clamp probe.** Freeze weights and the latent update; hold Z at a grid of gates; measure RT, accuracy, undecided rate, the integration index and the cue/rule build-up | ✅ `hier_switch_perturb.clamp_grid`: softmax contrast ladder and a sigmoid gain × contrast grid, per seed |
 | E3 | **Group sweep.** ≥ 10 seeds × {NG, RNN} plus the ideal observer | ✅ 6 NG (the discoverers) × 6 conditions and 10 RNN × 3 conditions, all recorded and analysed; `hier_switch_group.py aggregate` prints the prediction table. Oracle → inference not repeated at group level. **The RNN baseline was replaced on 2026-09-20** (§5d): v16 hedged on the paper's blocks, so the group now reads ten v17 RNNs on 250–350-trial blocks, all recorded and analysed. 7 of the 10 learn the task; 3 still hedge. See §5c for the corrected comparison |
-| E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); the latent driven for the first trials (MD activation); momentum; forced errors | ✅ `hier_switch_hooks.py` plus the default-off call sites in `_latent_update_step`; 15 conditions × 6 seeds recorded and analysed. Results in §5c.4–5. **Forced errors are the one part still missing** — they need a dataset knob |
+| E4 | **Perturbations.** Latent update off for the first 4 post-reversal trials (ACC→MD silencing); the latent driven to (1, 1) for the first trial (MD activation); forced errors | ✅ `hier_switch_hooks.py` plus the default-off call sites in `_latent_update_step`; 13 conditions × 6 seeds recorded and analysed. Results in §5c.4. **Forced errors are the one part still missing** — they need a dataset knob |
 
 ### Predictions
 
@@ -497,21 +497,6 @@ is a reset to maximal uncertainty, worth −1.37 trials. Under the sigmoid both 
 (13.90 trials against the softmax's 4.61, at 0.69 steady accuracy against 0.88), so quote
 the raw pair rather than the difference alone.
 
-**5. Momentum does not make the error signal ramp — it cannot.** The question was whether
-giving the latent update a memory would let a run of errors build on itself, the way the
-paper's cortical error signal does over consecutive errors. It does not. At μ = 0.5 the
-peak update is barely changed (+0.03, 4/6) and switching is slightly faster (4.86 against
-5.35); at μ = 0.9 the peak update is **lower** (−0.09, 1/6) and switching is **slower**
-(6.17). The raw gradient is unchanged to four decimal places by construction — momentum
-changes the step, not the gradient — and its peak falls if anything.
-
-The reason is structural and worth keeping: **this error signal is self-limiting.** It
-exists because Z is in the wrong place, and it drives Z to the right place, so anything that
-makes Z move faster removes the very errors that would have made the signal grow. A ramp
-over consecutive errors needs a signal that accumulates *without* acting, which a gradient
-on the thing it is correcting cannot be. If the ACC-like ramp matters to the story, it needs
-a separate accumulator that does not feed back on Z within the window.
-
 **Still weak, and the explanation has been corrected.** The paper's exploration-regime
 signature barely appears: the integration index falls by only 0.079 ± 0.025 in the first
 five post-reversal trials (5/6) and the cue velocity does not move (+0.001 ± 0.011, 4/6).
@@ -698,12 +683,13 @@ are in `docs/hier_switch_task.md` (end of the tuning log).
    so it did not come along with the rest. Lowest priority of the open items, but it is the
    one manipulation in the paper with no analogue here.
 
-   Two results from E4 worth carrying into whatever comes next. **The dose-response is
+   One result from E4 worth carrying into whatever comes next: **the dose-response is
    monotone** (0×, 1×, 3×, 10× of the latent update → 9.07, 4.61, 3.68, 2.80 trials to
    switch), which makes the latent update the switch's rate-limiting step rather than one
-   contributor among several. And **momentum cannot make the error signal ramp**, because
-   the signal is self-limiting: it exists only while Z is wrong and it drives Z to be right.
-   An ACC-like accumulation needs something that integrates without acting.
+   contributor among several. The story figure now shows only the two ends of that ladder —
+   the update switched off, and the latent driven to (1, 1) — which are the two
+   manipulations the write-up commits to; the ladder itself stays in `manipulations.pdf`
+   and the group table.
 
 2. **The weak results, if they matter to the story.** Fig 1m has no analogue here (§5b) and
    the exploration-regime signatures are weak. Both are reported as they are. If the

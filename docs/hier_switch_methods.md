@@ -181,13 +181,8 @@ signal survives the silencing of its output. **Both latent units are driven to 1
 first post-reversal feedback and the gradient takes over from there. Under the softmax this
 is a reset to the uniform gate, because the softmax is shift-invariant; under the sigmoid
 both gates open to 0.73 and it is a genuine gain boost, so it is run on both and each panel
-says which. **The latent update is given momentum** for the window. This last one is a
-question rather than a control: the model's latent is persistent where the paper's thalamic
-switch response is transient, and the paper's cortical error signal builds up over
-consecutive errors in a way a memoryless gradient cannot, so momentum is the smallest change
-that would let it build up the same way. Every manipulation runs on the forced low- and
-high-conflict sessions, so each is compared with its own unperturbed partner within seed and
-within trial stream.
+says which. Every manipulation runs on the forced low- and high-conflict sessions, so each
+is compared with its own unperturbed partner within seed and within trial stream.
 
 **Figure conventions.** Hue is the model (NeuraGEM, RNN, ideal observer;
 `plot_style.get_model_color`). **Outcome gets a hue and a marker of its own** — correct is
@@ -206,9 +201,9 @@ significance tests are used.
 
 ## The story figure (`story.pdf`)
 
-One figure, six rows of four panels, lettered a–x, with each row also written on its own
-(`story_1_behaviour.pdf` … `story_6_manipulations.pdf`) so a row can be reworked without
-rebuilding the rest. It is larger than a single panel preset on purpose: it is the whole argument, and
+One figure, five rows of four panels, lettered a–t, with each row also written on its own
+(`story_1_behaviour.pdf` … `story_5_latent.pdf`) so a row can be reworked without rebuilding
+the rest. It is larger than a single panel preset on purpose: it is the whole argument, and
 `docs/figure_style.md` allows that for a figure that summarises this much, provided the
 reason is stated. Six networks throughout; the seed is the unit, every mean carries its SEM
 across seeds and one faint line or dot per seed. A legend appears only where it says
@@ -439,72 +434,59 @@ starts fast and confident on the old rule, climbs to a peak around trial 40 as i
 collapses toward zero, and only recovers as its weights re-learn the mapping — a hedge
 lasting tens of trials where the latent's costs about five.
 
-### Row 5 — The three latent signals (`story_5_latent.pdf`)
+### Row 5 — The latent, and moving it (`story_5_latent.pdf`), against Fig 4h and 5d
 
-**Ran.** Unforced sessions; t uses the sigmoid-at-test condition, the only one where the
-gain exists as an axis, and is labelled accordingly. It holds the context less well than the
+**Ran.** Unforced sessions for q and s; the forced low-conflict triplet and its two
+perturbed partners for r, each manipulation acting on the trials just after a reversal and
+then stopping, as the paper's optogenetics does; and for t the sigmoid-at-test condition,
+the only one where the gain exists as an axis. It holds the context less well than the
 softmax (0.70 against 0.88 steady-state accuracy) — the point of the panel is the axis, not
 the performance.
 
 **Plotted.** All aligned on the reversal. *(q)* The latent's position on the context axis
-(+1 = the true context's prototype) with the ideal observer's belief. *(r)* The size of the
-trial's own latent update along that axis. *(s)* The size of the raw error gradient.
-*(t)* The gain, the mean of the two latent units.
+(+1 = the true context's prototype) with the ideal observer's belief. *(r)* The same
+position under the two manipulations, on the low-conflict reversals: unperturbed, with the
+latent update switched off for trials 1–4, and with the latent driven to (1, 1) at the first
+feedback. *(s)* The size of the raw error gradient. *(t)* The gain, the mean of the two
+latent units, on the sigmoid-at-test condition.
+
+An earlier version of this row also plotted the size of the trial's own latent update beside
+the gradient. It was dropped: on an unperturbed trial the step *is* the gradient times the
+learning rate, so the two panels were the same curve up to a scale factor and one of them
+was decoration.
 
 **See.** **The state is persistent and its update is transient**, which is this model's
 answer to a tension in the paper: there, the thalamic context signal is a brief switch
 response, while here the latent is the one thing that crosses trials and so cannot be brief.
 Panel q shows the state — sitting at +1.0, thrown to −0.99 on the first post-reversal trial,
-and climbing back over four to six trials, tracking the observer a little more slowly.
-Panels r and s show what moves it, and both are sharp: the update is 0.10 of the distance
-between the prototypes in the steady state, rises to 0.56 at trial 2 and is back near
-baseline by trial 8; the gradient does the same, 7.5e-6 → 4.4e-5 at trial 2 → 1.7e-5 by
-trial 6. **So the transient and the persistent signal are both here, as the derivative and
-the integral of one another** — not a correspondence the paper draws, and available only
-because the update and the state are separately measurable in a model. Panel t is the cost
+and climbing back over four to six trials, tracking the observer a little more slowly. Panel
+s shows what moves it, and it is sharp where the state is slow: the gradient runs 7.5e-6 at
+baseline, 4.4e-5 at trial 2, and 1.7e-5 by trial 6. **So the transient and the persistent
+signal are both here, as the derivative and the integral of one another** — not a
+correspondence the paper draws, and available only because the error and the state are
+separately measurable in a model.
+
+**Panel r is the causal half of the same picture.** Switching the latent update off for four
+trials pins the state on the old context for exactly those four trials before it begins to
+move, which is what the +4.46-trial switch delay looks like from the inside. Driving the
+latent to (1, 1) instead — the uniform gate, since the softmax is shift-invariant — starts
+it from no commitment rather than the wrong one, and it reaches the new context sooner than
+the unperturbed run. The latency numbers for every manipulation, including the
+learning-rate ladder, are in `manipulations.pdf` and the group table.
+
+**What those manipulations do to behaviour.** Switching off the latent update for four
+trials nearly doubles the switch latency — 9.07 trials against 4.61, +4.46 ± 0.19, in 6 of 6
+networks — which is the paper's ACC→MD silencing result (Fig 4h) in a model where nothing
+else was touched. Driving the latent the other way gives the converse: −1.37 trials under
+the softmax, where (1, 1) is a reset to the uniform gate, and −7.85 under the sigmoid, where
+both units open and it is a real gain boost (that arm's control is genuinely slow, 13.90
+trials at 0.69 steady accuracy, so the raw pair belongs beside the difference). Steady-state
+accuracy is 0.88 in every softmax arm, so none of this is a manipulation breaking the
+network. Panel t is the cost
 of the gain axis when it exists: after a reversal the burst of errors pushes the gain down
 (+0.03 before, −0.33 by trial 5) and the correct trials that follow do not restore it. Under
 the softmax this panel would be a flat line at zero, and that is the reason the softmax is
 used.
-
-### Row 6 — Manipulating the switch (`story_6_manipulations.pdf`), against Fig 4h and 5d
-
-**Ran.** Each manipulation acts on the first few trials after a reversal and then stops, as
-the paper's optogenetics does, and each runs on the forced low- and high-conflict sessions
-so it is compared with its own unperturbed partner within network and within trial stream.
-15 conditions × 6 networks, 90 sessions.
-
-**Plotted.** *(u)* Extra trials to switch against that same session unperturbed, one
-low/high pair per manipulation; positive is slower. *(v)* What the latent itself does, on
-the low-conflict reversals: its position on the context axis under no manipulation, under
-the update being switched off, and under being driven to (1, 1). *(w)* The size of the
-latent's update and *(x)* of the raw gradient, with momentum at 0.5 and 0.9 against none.
-
-**See.** **Switching off the latent update for four trials nearly doubles the switch
-latency** — 9.07 trials against 4.61, +4.46 ± 0.19, in 6 of 6 networks — which is the
-paper's ACC→MD silencing result (Fig 4h) in a model where nothing else was touched. Panel v
-shows why: the latent simply sits on the old context for the four silenced trials and only
-then begins to move. Driving the update the other way gives the converse and does so
-**monotonically**: ×3 and ×10 reach 3.68 and 2.80 trials, so across 0×, 1×, 3×, 10× the
-latency runs 9.07, 4.61, 3.68, 2.80. Steady-state accuracy is 0.88 in every arm, so none of
-this is a manipulation breaking the network. The graded version has no counterpart in the
-paper, which never stimulated ACC, and is ours.
-
-**Driving the latent to (1, 1) means different things under the two gates, and the sizes
-say so.** Under the softmax it is a reset to the uniform gate, because the softmax is
-shift-invariant, and it is worth −1.37 trials. Under the sigmoid both units open and it is a
-real gain boost, worth −7.85 — though that arm's control is genuinely slow (13.90 trials at
-0.69 steady accuracy), so the raw pair belongs beside the difference.
-
-**Momentum does not make the error signal ramp.** At 0.5 the peak update is unchanged and
-switching is marginally faster (4.86 against 5.35); at 0.9 the peak update is *lower* and
-switching is *slower* (6.17). The raw gradient (x) is unchanged by construction — momentum
-changes the step, not the gradient — and its peak falls if anything. The reason is
-structural: **this error signal is self-limiting.** It exists because the latent is in the
-wrong place and it drives the latent to the right place, so anything that makes the latent
-move faster removes the very errors that would have made the signal grow. An accumulation
-over consecutive errors, of the kind the paper's cortical signal shows, needs something that
-integrates *without* acting on what it is integrating.
 
 ---
 

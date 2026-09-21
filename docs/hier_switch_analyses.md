@@ -64,9 +64,8 @@ Run it:
 | `pulses` | (n, 16, 3) | the noisy frames the model saw — the observer reads these |
 | `hidden` | (n, 25, 64) | float16; only with `record_hidden` |
 | `grad` | (n, 2) | the pooled error gradient, recovered from Z (below) |
-| `lu_scale`, `clamped`, `z_momentum` | (n,) | 1 / False / 0 unless a trial hook set them |
-| `grad_eff` | (n, 2) | the step actually taken, in gradient units: `−Δz/Z_lr`. Equal to `grad` under a plain SGD step; with momentum on, `grad_eff − grad` is what the velocity added |
-| `meta` | json | model, condition, Z_lr, Z_decay, `Z_momentum`, activation, temperature, rt_threshold, seed, `reversal_conflict`, `perturb` (the trial hook's spec), whether Z restarted |
+| `lu_scale`, `clamped` | (n,) | 1 / False unless a trial hook set them |
+| `meta` | json | model, condition, Z_lr, Z_decay, activation, temperature, rt_threshold, seed, `reversal_conflict`, `perturb` (the trial hook's spec), whether Z restarted |
 
 **Two routes to `grad`.** A recorded session now saves the gradient the optimizer actually
 saw (`logger.gradients_corrections`, minus the decay term it carries), which is exact
@@ -306,7 +305,6 @@ the session's meta:
 | `dict(kind='lu_scale', k=0, trials=[1, 4])` | multiplies the latent learning rate | ACC→MD silencing |
 | `dict(kind='lu_scale', k=3 or 10, trials=[1, 5])` | the same, upward | **ours, not theirs** — the paper never stimulated ACC |
 | `dict(kind='z_set', z=[1, 1], trials=[1, 1])` | drives both latent units at the first feedback, then lets the gradient take over | MD activation (SSFO) |
-| `dict(kind='momentum', mu=0.9, trials=[1, 5])` | gives the latent update a memory for the window | — |
 
 Three things to know.
 
@@ -317,29 +315,12 @@ Three things to know.
 - **Z = (1, 1) is not the same move under the two gates.** The softmax is shift-invariant,
   so (1, 1) is the *uniform* gate: a reset to maximal uncertainty. Under the sigmoid both
   units open to 0.73, which is a genuine gain boost. Both are run, and each panel says which.
-- **Momentum's buffer is cleared when a window opens**, because Z is one Parameter for the
-  whole session and would otherwise carry velocity from the previous reversal.
 
-Trials the hook touched are marked `lu_scale`, `clamped` and `z_momentum`, and `z_updates`
-excludes them — a scaled, clamped or momentum-carrying Δz is not a clean measurement of
-"what this trial's error taught Z". They stay in behaviour, which is what the manipulation
-is asking about.
+Trials the hook touched are marked `lu_scale` and `clamped`, and `z_updates` excludes them
+— a scaled or clamped Δz is not a clean measurement of "what this trial's error taught Z".
+They stay in behaviour, which is what the manipulation is asking about.
 
-**Momentum is a question, not a control.** Z here is persistent where the paper's MD switch
-response is transient, and the paper's ACC signal builds up over consecutive errors, which
-a memoryless gradient cannot do. Momentum is the smallest change that would let the latent
-update build up the same way, so the panels show what it does to Z, to the update and to
-the gradient around a reversal, rather than comparing it against a matched control.
-
-**The answer turned out to be no, for a structural reason.** At μ = 0.9 the peak update is
-*lower* than without momentum and switching is *slower*; the raw gradient is unchanged by
-construction and its peak falls if anything. This error signal is self-limiting: it exists
-only while Z is in the wrong place and it drives Z to the right place, so anything that
-makes Z move faster removes the errors that would have made the signal grow. An
-accumulation over consecutive errors needs a quantity that integrates without acting on
-what it integrates — which a gradient on the thing it corrects cannot be.
-
-**These sessions exist**: 15 conditions × 6 seeds, recorded and analysed, listed in
+**These sessions exist**: 13 conditions × 6 seeds, recorded and analysed, listed in
 `hier_switch_group.NG_MANIPULATIONS`. `./hier_switch/run_manipulations.sh` re-runs them and
 skips whatever is already on disk.
 

@@ -125,13 +125,6 @@ CONDITIONS = {
     **_manip('softmax_blast', dict(), dict(kind='z_set', z=[1.0, 1.0], trials=[1, 1])),
     **_manip('sigmoid_blast', dict(SIGMOID, Z_lr=3e4),
              dict(kind='z_set', z=[1.0, 1.0], trials=[1, 1])),
-    # Momentum: not a control for anything, a question. Z is persistent where the paper's MD
-    # is transient, and the paper's ACC builds up over consecutive errors. Momentum is the
-    # one change that would make the latent update build up the same way, so the panels show
-    # what it does to Z, to the update and to the gradient around a reversal.
-    **{f'softmax_mom{mu:g}_rc_none': dict(LONG, reversal_conflict=None,
-                                          perturb=dict(kind='momentum', mu=mu, trials=[1, 5]))
-       for mu in (0.5, 0.9)},
     # The RNN baseline (v16 models): no latent update, weights plastic, as it trained. On
     # the paper's 30-60 blocks it hedges at every weight learning rate (v17 tuning log).
     **_rc('rnn', dict(test_no_of_steps_in_latent_space=0)),

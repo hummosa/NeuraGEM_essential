@@ -20,18 +20,11 @@ Three kinds, each a plain dict so it survives json and travels in a session's me
     dict(kind='z_set',   z=[1, 1], trials=[1, 1]) the MD-activation analogue: drive both
                                                   latent units, then let the gradient take
                                                   over from there.
-    dict(kind='momentum', mu=0.9, trials=[1, 5])  give the latent update a memory, so a run
-                                                  of errors builds on itself the way the
-                                                  paper's ACC signal does.
 
 **What k = 0 does and does not stop.** It multiplies the optimiser's learning rate, so Z
 does not move; the gradient is still computed, still pooled and still logged. That is the
 point — in the paper the ACC error signal survives the silencing of its output to MD, and
 here the logged `grad` is exactly that surviving signal.
-
-**Why momentum needs its buffer cleared on entry.** Z is one Parameter for the whole
-session, so the optimiser's momentum buffer would otherwise carry velocity from the
-previous reversal's window into this one. It is zeroed whenever a window opens.
 
     .venv/bin/python hier_switch/hier_switch_hooks.py        # self-test on a trained model
 """
@@ -47,7 +40,7 @@ for _p in (_HERE, _ROOT):
 
 import numpy as np
 
-KINDS = ('lu_scale', 'z_set', 'momentum')
+KINDS = ('lu_scale', 'z_set')
 
 
 class TrialHook:
@@ -58,9 +51,9 @@ class TrialHook:
     context it is handed, so it needs nothing from the dataset.
 
     It also records, per trial, what it did: `lu_scale` (the factor the learning rate was
-    multiplied by), `clamped` (Z was overwritten, so the trial's Δz is not an update) and
-    `momentum`. Those three arrays travel into `session.npz`, and the analyses exclude the
-    trials they mark from anything that reads a latent update as an update.
+    multiplied by) and `clamped` (Z was overwritten, so the trial's Δz is not an update).
+    Both arrays travel into `session.npz`, and the analyses exclude the trials they mark
+    from anything that reads a latent update as an update.
     """
 
     def __init__(self, spec):
@@ -72,11 +65,10 @@ class TrialHook:
         self.spec, self.kind = spec, kind
         self.lo, self.hi = int(lo), int(hi)
         self.k = float(spec.get('k', 1.0))
-        self.mu = float(spec.get('mu', 0.0))
         self.z = np.asarray(spec.get('z', [0.0, 0.0]), dtype=float)
         self._prev_ctx, self._since = None, 0
         self._active, self._base_lr = False, None
-        self.lu_scale, self.clamped, self.momentum = [], [], []
+        self.lu_scale, self.clamped = [], []
 
     @classmethod
     def from_spec(cls, spec):
@@ -90,23 +82,15 @@ class TrialHook:
         ctx = self._context(context_ids)
         self._since = 1 if (self._prev_ctx is None or ctx != self._prev_ctx) else self._since + 1
         self._prev_ctx = ctx
-        opening = self._in_window() and not self._active
         self._active = self._in_window()
         g = model.Z_optimizer.param_groups[0]
         if self._base_lr is None:
             self._base_lr = float(g['lr'])
-        scale, mom = 1.0, float(g.get('momentum', 0.0) or 0.0)
+        scale = 1.0
         if self._active and self.kind == 'lu_scale':
             scale = self.k
             g['lr'] = self._base_lr * self.k
-        elif self._active and self.kind == 'momentum':
-            mom = self.mu
-            g['momentum'] = self.mu
-            if opening:
-                # A fresh window must not inherit velocity from the previous reversal's.
-                model.Z_optimizer.state.clear()
         self.lu_scale.append(scale)
-        self.momentum.append(mom)
         self.clamped.append(False)
 
     def post(self, model, config):
@@ -114,8 +98,6 @@ class TrialHook:
         g = model.Z_optimizer.param_groups[0]
         if self.kind == 'lu_scale':
             g['lr'] = self._base_lr
-        elif self.kind == 'momentum' and not self._active:
-            g['momentum'] = 0.0
         if self._active and self.kind == 'z_set':
             import torch
             with torch.no_grad():
@@ -146,8 +128,7 @@ class TrialHook:
     def arrays(self, n=None):
         """The per-trial record, trimmed or padded to `n` trials."""
         out = dict(lu_scale=np.asarray(self.lu_scale, dtype=np.float32),
-                   clamped=np.asarray(self.clamped, dtype=bool),
-                   z_momentum=np.asarray(self.momentum, dtype=np.float32))
+                   clamped=np.asarray(self.clamped, dtype=bool))
         if n is None:
             return out
         for k, v in out.items():
@@ -230,15 +211,6 @@ def _self_test():
     off_it = np.abs(zs['z'][nxt] - zs['z_in'][nxt]).max()
     print(f"{'OK ' if at and off_it > 0 else 'FAIL'} z_set puts Z at (1, 1) on "
           f"{hit.sum()} trials, and the next trial moves off it (max |Δz| {off_it:.2e})")
-
-    mom, arr = go(perturb=dict(kind='momentum', mu=0.9, trials=[1, 5]))
-    fin = np.isfinite(mom['z_in']).all(axis=1) & np.isfinite(base['z_in']).all(axis=1)
-    inwin = (arr['z_momentum'] > 0) & fin
-    a = float(np.abs(mom['z'][inwin] - mom['z_in'][inwin]).mean())
-    b = float(np.abs(base['z'][inwin] - base['z_in'][inwin]).mean())
-    ratio = a / b if b else float('nan')
-    print(f"{'OK ' if a > b else 'FAIL'} momentum ran on {inwin.sum()} of {mom['n']} trials; "
-          f"mean |Δz| in the window {a:.3e} against {b:.3e} without it ({ratio:.2f}x)")
 
 
 if __name__ == '__main__':

@@ -210,7 +210,7 @@ _DEFAULT_META = dict(model_type='NG', Z_lr=1e4, Z_decay=3e-6, latent_activation=
                      softmax_temp=0.5, rt_threshold=0.5, lu_steps=1, wu_steps=0,
                      response_start_timestep=19, trial_len=25, n_pulses=16,
                      pulse_noise_std=0.5, reversal_conflict=None, z_restart=False,
-                     Z_momentum=0.0, perturb=None, WU_lr=1e-3, block_len_range=[30, 60],
+                     perturb=None, WU_lr=1e-3, block_len_range=[30, 60],
                      conflict_counts=[[9, 0], [8, 1], [7, 2], [6, 3], [5, 4]])
 
 
@@ -254,7 +254,7 @@ def session_arrays(logger, cfg):
     if trace:
         res['hidden'] = np.concatenate(trace, axis=0).reshape(n, L, -1)
     # The gradient as the optimizer saw it. Recovering it from Δz only works while the step
-    # is a plain one; under a perturbed latent update (lr scaled, momentum on, Z overwritten)
+    # is a plain one; under a perturbed latent update (lr scaled, or Z overwritten)
     # it does not, and the k = 0 case is exactly the one where the gradient still matters.
     gc = getattr(logger, 'gradients_corrections', None)
     if gc:
@@ -289,13 +289,8 @@ def save_session(path, trials, arrays, meta):
         d['hidden'] = arrays['hidden'].astype(np.float16)
     d['lu_scale'] = np.asarray(arrays.get('lu_scale', np.ones(n)), dtype=np.float32)
     d['clamped'] = np.asarray(arrays.get('clamped', np.zeros(n, bool)), dtype=bool)
-    d['z_momentum'] = np.asarray(arrays.get('z_momentum', np.zeros(n)), dtype=np.float32)
     d['grad'] = _grad_or_nan(trials['z'], trials['z_in'], meta, d['lu_scale'], d['clamped'],
                              arrays.get('grad_logged'), trials['z_in'])
-    # The step actually taken, expressed in gradient units. Under a plain SGD step this is
-    # the gradient again; with momentum on it is the gradient plus the velocity carried from
-    # earlier trials, so `grad_eff - grad` is exactly what the momentum added.
-    d['grad_eff'] = (-(trials['z'] - trials['z_in']) / meta['Z_lr']).astype(np.float32)
     np.savez_compressed(path, meta=np.array(json.dumps(meta, default=float)), **d)
 
 
@@ -354,7 +349,6 @@ def load_session(path):
     n = len(d['correct'])
     d.setdefault('lu_scale', np.ones(n, np.float32))
     d.setdefault('clamped', np.zeros(n, bool))
-    d.setdefault('z_momentum', np.zeros(n, np.float32))
     if 'grad' not in d:
         d['grad'] = _grad_or_nan(d['z'], d['z_in'], meta, d['lu_scale'], d['clamped'])
     d['phase'] = d['phase'].astype(str)
@@ -617,11 +611,10 @@ def z_updates(sess, primary=PRIMARY):
     dz_decay = -meta['Z_lr'] * meta['Z_decay'] * zin
     dz_err = dz - dz_decay
     finite = np.isfinite(z).all(1) & np.isfinite(zin).all(1)
-    # A trial whose update was scaled, given momentum, or overwritten is not a clean
-    # measurement of "what this trial's error taught Z", so it is excluded here while
-    # staying in behaviour.
+    # A trial whose update was scaled or overwritten is not a clean measurement of "what
+    # this trial's error taught Z", so it is excluded here while staying in behaviour.
     ok = (select(sess, phase=primary) & finite & (sess['held'] >= 0)
-          & ~sess['clamped'] & (sess['lu_scale'] == 1) & (sess['z_momentum'] == 0))
+          & ~sess['clamped'] & (sess['lu_scale'] == 1))
     n = sess['n']
     res = dict(dz=dz, dz_decay=dz_decay, dz_err=dz_err, ok=ok, s=np.full(n, np.nan),
                s_decay=np.full(n, np.nan), tipped=np.zeros(n, bool))
@@ -995,8 +988,8 @@ def latent(sess, obs, upd=None, primary=PRIMARY):
     # ── Reversal-aligned traces of the three latent signals ──
     # The MD/ACC reading of the model: Z is the persistent context code, the per-trial step
     # is the transient that carries the switch, and the raw gradient is the error signal
-    # that drives it. Plotted together around a reversal, they are what the momentum and
-    # latent-update manipulations move.
+    # that drives it. Plotted together around a reversal, they are what the latent-update
+    # manipulations move.
     dz = sess['z'].astype(float) - sess['z_in'].astype(float)
     ax = sess['axis']
     if ax is not None:
@@ -1091,7 +1084,7 @@ def synthetic_session(blen=20, n_blocks=4, seed=0):
                 conflict=levels[conf_level], cue=np.where(rng.random(n) < 0.5, 1.0, -1.0),
                 vis=np.where(rng.random(n) < 0.5, 1.0, -1.0), out=out,
                 decision=np.where(correct, 0.8, -0.8),
-                phase=np.array([PRIMARY] * n), lu_scale=np.ones(n), z_momentum=np.zeros(n),
+                phase=np.array([PRIMARY] * n), lu_scale=np.ones(n),
                 clamped=np.zeros(n, bool),
                 meta={**_DEFAULT_META, 'Z_lr': Z_lr, 'Z_decay': Z_decay})
     sess['grad'] = recover_grad(z, z_in, Z_lr, Z_decay)

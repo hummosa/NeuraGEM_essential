@@ -1203,6 +1203,7 @@ def group_figures(out_dir=None):
     story_figure(out_dir, gate='both')
 
 
+
 #: The two switch criteria the story figure shows. The raw behavioural one is contaminated
 #: by hedging (an undecided trial's sign is a coin flip), so the story uses the decided-only
 #: version of the paper's criterion and the latent one; all three stay in switch_latency.pdf.
@@ -1252,6 +1253,14 @@ def story_figure(out_dir=None, gate='softmax'):
     split = ({'NeuraGEM': [merge_splits(a, b) for a, b in zip(low, high)]}
              if low and high else groups)
     cells = clamp_cells_on_disk('sigmoid')
+    # The two manipulations the story commits to: silencing the latent update, and driving
+    # the latent to (1, 1). Shown on the low-conflict reversals, each against its own
+    # unperturbed partner. The latency numbers for every manipulation, including the
+    # learning-rate ladder, stay in manipulations.pdf and the group table.
+    mech = {k: v for k, v in (
+        ('control', pick(('NG', 'softmax_rc_low'))),
+        ('update off', pick(('NG', 'softmax_lu0_rc_low'))),
+        ('Z→(1,1)', pick(('NG', 'softmax_blast_rc_low')))) if v}
     # Row 4's population measures, under whichever gate(s) the toggle names.
     gate_groups = {label: pick(('NG', cond)) for cond, label in REVERSAL_GATES[gate]}
     gate_groups = {k: v for k, v in gate_groups.items() if v} or {'NeuraGEM': ng}
@@ -1294,36 +1303,18 @@ def story_figure(out_dir=None, gate='softmax'):
             nolegend(spec_integration_reversal(gate_groups, 'index', 'Integration index')),
             relegend(spec_integration_reversal(gate_groups, 'cue_velocity', 'Cue velocity'),
                      loc='best', fontsize='xx-small')]),
+        # The latent, what perturbing it does, and the error that drives it. The per-trial
+        # update |Δz| used to sit here beside the gradient; it was dropped because the two
+        # are the same curve up to a scale factor — the step *is* the gradient times the
+        # learning rate on an unperturbed trial — so one of them was decoration.
         ('story_5_latent', [
             relegend(spec_z_belief({'NeuraGEM': ng}), loc='lower right'),
-            nolegend(spec_trace({'NeuraGEM': ng}, 'step', 'ΔZ toward the true context\n(|update|)')),
+            relegend(spec_trace(mech, 'z_evidence', 'Z on the context axis'),
+                     loc='lower right', fontsize='xx-small') if mech else None,
             nolegend(spec_trace({'NeuraGEM': ng}, 'grad', '|dL/dZ| (context axis)')),
             nolegend(spec_trace({'sigmoid at test': sig} if sig else {'NeuraGEM': ng}, 'gain',
                                 'Z gain (mean of the units)'))]),
     ]
-    # Row 6, the manipulations, appears only once those sessions exist (run_manipulations.sh);
-    # until then the story figure is the five rows above. by_condition carries every NG
-    # condition on disk, so the row builds itself as soon as the data lands.
-    by_condition = {cond: [d[s] for s in sorted(d)]
-                    for (model, cond), d in data.items() if model == 'NG'}
-    if _manip_pairs(by_condition):
-        mom = {f'momentum {mu}': pick(('NG', f'softmax_mom{mu}_rc_none')) for mu in ('0.5', '0.9')}
-        mom = {k: v for k, v in mom.items() if v}
-        traces = {'no momentum': ng, **mom}
-        # What the latent itself does under the two manipulations that move it most, on the
-        # low-conflict reversals. The raw-latency version of the cost panel is in
-        # manipulations.pdf, where it has the width for 20 bars.
-        mech = {k: v for k, v in (
-            ('control', pick(('NG', 'softmax_rc_low'))),
-            ('update off', pick(('NG', 'softmax_lu0_rc_low'))),
-            ('Z→(1,1)', pick(('NG', 'softmax_blast_rc_low')))) if v}
-        rows.append(('story_6_manipulations', [
-            rotate_xticks(nolegend(spec_manipulation_cost(by_condition)), 30),
-            relegend(spec_trace(mech, 'z_evidence', 'Z on the context axis'),
-                     loc='lower right'),
-            relegend(spec_trace(traces, 'step', 'ΔZ toward the true context\n(|update|)'),
-                     loc='upper right'),
-            nolegend(spec_trace(traces, 'grad', '|dL/dZ| (context axis)'))]))
 
     panel = FigSize.custom(1.7, 1.35)
     for name, panels in rows:
