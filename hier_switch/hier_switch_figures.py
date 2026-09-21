@@ -224,7 +224,7 @@ def spec_reversal(groups, key='acc', ylabel='Accuracy'):
             ax.axhline(0.5, color='k', linewidth=0.5, alpha=0.3)
         ax.set_xlabel('Trials from reversal')
         ax.set_ylabel(ylabel)
-        legend(ax, loc='lower right')
+        legend(ax, loc='lower right', fontsize='x-small')
     return panel
 
 
@@ -396,16 +396,22 @@ def spec_normative(reports):
     return panel
 
 
-def spec_eps_cw(reports):
-    """B4: the pooled |dL/dZ| by conflict — the ACC-like conflict-weighted error."""
+def spec_eps_cw(reports, outcomes=OUTCOMES):
+    """B4: the pooled |dL/dZ| by conflict — the ACC-like conflict-weighted error.
+
+    `outcomes` defaults to both, but the story figure passes errors alone: the correct-trial
+    line is flat and about ten times smaller, so it compresses the axis without carrying
+    anything the caption cannot say in a clause.
+    """
     def panel(ax):
-        for correct, name in OUTCOMES:
+        for correct, name in outcomes:
             key = 'g_contrast_by_conf_correct' if correct else 'g_contrast_by_conf'
             series(ax, CONFLICT, stack(reports, f'latent.eps_cw.{key}'), label=name,
                    **outcome_line(correct))
         ax.set_xlabel('Cue conflict')
-        ax.set_ylabel('|dL/dZ| (context axis)')
-        legend(ax, loc='upper right')
+        ax.set_ylabel('|dL/dZ| on errors')
+        if len(outcomes) > 1:
+            legend(ax, loc='upper right')
     return panel
 
 
@@ -659,6 +665,54 @@ def spec_clamp_gain(cells, d=1.0, measure='cue_velocity', ylabel='Cue velocity')
 # The story figure's panels
 # ══════════════════════════════════════════════════════════════════════════════
 
+#: A baseline seed counts as having learned the task if its steady-state accuracy clears
+#: this. The v17 RNN is bimodal — 7 of 10 seeds reach 0.76-0.88 and 3 sit at 0.50 with an
+#: undecided rate of 1.00 — so a mean over all ten describes no actual network.
+LEARNED = 0.6
+
+
+def learners(reports, thresh=LEARNED):
+    """The seeds that learned the task, or all of them if none can be judged.
+
+    NeuraGEM's group is already selected this way: its six are the seeds that discovered
+    the contexts, out of ten. Applying the same rule to the baseline is what makes the two
+    comparable; reporting the baseline's failures pooled with its successes would compare
+    a selected group against an unselected one.
+    """
+    ok = [r for r in reports if _get(r, 'behaviour.acc_steady', 0.0) > thresh]
+    return ok or reports
+
+
+def psychometric(x, a1, a2, a3):
+    """The paper's psychometric function, Pcorrcue(x) = 0.5 + a1·10^(−0.5)/(1+10^(a2(a3−x))).
+
+    `a1` is the asymptote above chance, `a2` the slope and `a3` the threshold. The paper
+    fits this to accuracy against cue conflict; drawing the same curve through our points
+    is what makes the comparison a like-for-like one, because a fitted sigmoid and five
+    points joined by straight lines look quite different even when they are the same data.
+    """
+    return 0.5 + a1 * 10 ** -0.5 / (1.0 + 10 ** (a2 * (a3 - x)))
+
+
+def fit_psychometric(x, y):
+    """Least-squares fit of the paper's function. Returns (params, xx, yy) for drawing, or
+    None when it will not converge — a flat or two-point curve, typically a failed seed."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    if ok.sum() < 4 or np.ptp(y[ok]) < 1e-6:
+        return None
+    try:
+        from scipy.optimize import curve_fit
+        # a2 is negative here: accuracy falls as conflict rises, where the paper's x runs
+        # the other way. Bounds keep the asymptote in [0, 1.6] so 0.5 + a1·10^-0.5 ≤ 1.
+        par, _ = curve_fit(psychometric, x[ok], y[ok], p0=[1.4, -4.0, 0.5],
+                           bounds=([0.0, -50.0, -1.0], [1.6, 0.0, 2.0]), maxfev=20000)
+    except Exception:
+        return None
+    xx = np.linspace(min(x[ok]), max(x[ok]), 100)
+    return par, xx, psychometric(xx, *par)
+
+
 def nolegend(p):
     """The same panel without its legend.
 
@@ -748,9 +802,15 @@ def spec_psychometric_ctx(groups):
                 # The contrast this panel is about is within the main model, so only its two
                 # curves are named; a baseline gets its own name once and no context split.
                 key = name if label == main else (label if k == 0 else None)
-                series(ax, CONFLICT, stack(reps, f'behaviour.psychometric.acc_ctx.{k}'),
-                       label=key, color=col if k == 0 else shade(col), ls=ls,
+                arr = stack(reps, f'behaviour.psychometric.acc_ctx.{k}')
+                c = col if k == 0 else shade(col)
+                # Points with their spread, and the paper's fitted sigmoid through them
+                # rather than straight segments between the five levels.
+                series(ax, CONFLICT, arr, label=key, color=c, ls='none',
                        dots=(label == main), marker='o' if k == 0 else 's')
+                fit = fit_psychometric(CONFLICT, np.nanmean(np.atleast_2d(arr), axis=0))
+                if fit is not None:
+                    ax.plot(fit[1], fit[2], color=c, linestyle=ls, linewidth=1.0, zorder=2)
         first = next(iter(groups.values()))
         series(ax, CONFLICT, stack(first, 'observer.p_c'), label='ideal observer',
                color=COL_OBS, ls=':', marker='', dots=False)
@@ -762,7 +822,9 @@ def spec_psychometric_ctx(groups):
     return panel
 
 
-def spec_switch_vs_early_conflict(groups, criterion='dec_switch'):
+def spec_switch_vs_early_conflict(groups, criteria=(('switch', 'any sign flip'),
+                                                    ('dec_switch', 'decided'),
+                                                    ('z_switch', 'Z side'))):
     """The paper's Fig 1f on uncontrolled reversals: switch latency against how ambiguous
     the block's first five trials happened to be.
 
@@ -771,19 +833,31 @@ def spec_switch_vs_early_conflict(groups, criterion='dec_switch'):
     conflict and see whether latency rises with it.
     """
     def panel(ax):
+        # Three criteria, because they disagree and the disagreement is the point.
+        # "Any sign flip" is the paper's rule on the sign of the output alone — the trial
+        # the network tips to the other rule, which is all a binary choice needs.
+        # "Decided" additionally requires |output| past threshold, so a coin flip on a
+        # near-zero output cannot satisfy it. "Z side" asks when the latent crossed to the
+        # true context and never touches the output, so hedging cannot reach it at all.
+        # The sign criterion is flat in conflict while the other two rise together, which
+        # is what a criterion contaminated by chance sign flips looks like.
         for label, reps in groups.items():
+            col = get_model_color(label)
             x = np.nanmean(stack(reps, 'behaviour.by_early_conf.conflict'), axis=0)
-            series(ax, x, stack(reps, f'behaviour.by_early_conf.{criterion}'),
-                   label=label, color=get_model_color(label))
+            styles = (('-', 'o', shade(col, 0.6)), ('--', 's', col), (':', '^', col))
+            for (crit, name), (ls, mk, c) in zip(criteria, styles):
+                series(ax, x, stack(reps, f'behaviour.by_early_conf.{crit}'),
+                       label=name if len(groups) == 1 else f'{label}, {name}',
+                       color=c, ls=ls, marker=mk, dots=False)
         first = next(iter(groups.values()))
         x = np.nanmean(stack(first, 'behaviour.by_early_conf.conflict'), axis=0)
         obs = stack(first, 'behaviour.by_early_conf.observer')
         if np.isfinite(obs).any():
-            series(ax, x, obs, label='ideal observer', color=COL_OBS, ls='--', marker='s',
+            series(ax, x, obs, label='ideal observer', color=COL_OBS, ls=':', marker='',
                    dots=False)
         ax.set_xlabel('Cue conflict of the first 5 trials')
         ax.set_ylabel('Trials to switch')
-        legend(ax, loc='upper left')
+        legend(ax, loc='upper left', fontsize='x-small')
     return panel
 
 
@@ -882,7 +956,7 @@ def spec_decoding_timecourse(reports, which=('cue', 'rule')):
                 arr = stack(reports, f'hidden.decoding.{cond}.{name}.acc')
                 col = COL_NG if f == 1.0 else shade(COL_NG)
                 band(ax, np.arange(arr.shape[1]), arr, color=col, ls=ls,
-                     label=f'{name}, {tag}')
+                     label=name if tag == 'steady' else f'{name}, early')
         ax.axhline(0.5, color='k', linewidth=0.5, alpha=0.3)
         ax.axvspan(1, 16, color='0.85', alpha=0.35, linewidth=0, zorder=0)
         ax.set_xlabel('Timestep (grey: the cue)')
@@ -1046,14 +1120,18 @@ def group_figures(out_dir=None):
     data = collect()
     out_dir = out_dir or os.path.join(EXPORTS, 'group', 'figures')
     ng = [data[('NG', 'softmax_rc_none')][s] for s in sorted(data.get(('NG', 'softmax_rc_none'), {}))]
-    rnn = [data[('RNN', RNN_BASE)][s] for s in sorted(data.get(('RNN', RNN_BASE), {}))]
+    rnn = learners([data[('RNN', RNN_BASE)][s] for s in sorted(data.get(('RNN', RNN_BASE), {}))])
     low = [data[('NG', 'softmax_rc_low')][s] for s in sorted(data.get(('NG', 'softmax_rc_low'), {}))]
     high = [data[('NG', 'softmax_rc_high')][s] for s in sorted(data.get(('NG', 'softmax_rc_high'), {}))]
     if not ng:
         raise SystemExit('no NG reports on disk yet: run hier_switch_group.py task first')
     groups = {'NeuraGEM': ng}
     if rnn:
-        groups['RNN'] = rnn
+        # NeuraGEM's six are the seeds that discovered the contexts, out of ten. The
+        # baseline is selected the same way, or the figure would put a selected group
+        # against an unselected one: 7 of its 10 seeds learn the task and 3 sit at chance,
+        # and a mean over all ten runs below every network that works.
+        groups['RNN'] = learners(rnn)
     # The rc_low / rc_high pair carries the split, so behaviour panels merge the two
     # sessions' splits into the one NeuraGEM entry.
     split = {'NeuraGEM': [merge_splits(a, b) for a, b in zip(low, high)]} if low and high else groups
@@ -1091,8 +1169,9 @@ def group_figures(out_dir=None):
     if cells:
         figure([spec_clamp_gain(cells, 1.0, 'cue_velocity', 'Cue velocity'),
                 spec_clamp_gain(cells, 1.0, 'index', 'Integration index'),
-                spec_clamp_gain(cells, 1.0, 'acc_match', 'Accuracy\n(gate matches context)')],
-               os.path.join(out_dir, 'clamp_sigmoid_gain.pdf'))
+                spec_clamp_gain(cells, 1.0, 'acc_match', 'Accuracy\n(gate matches context)'),
+                spec_clamp_gain(cells, 1.0, 'rt', 'RT (timesteps)')],
+               os.path.join(out_dir, 'clamp_sigmoid_gain.pdf'), ncol=4)
     by_condition = {cond: [d[s] for s in sorted(d)]
                     for (model, cond), d in data.items() if model == 'NG'}
     if _manip_pairs(by_condition):
@@ -1142,7 +1221,11 @@ def story_figure(out_dir=None):
         raise SystemExit('no NG reports on disk yet: run hier_switch_group.py task first')
     groups = {'NeuraGEM': ng}
     if rnn:
-        groups['RNN'] = rnn
+        # NeuraGEM's six are the seeds that discovered the contexts, out of ten. The
+        # baseline is selected the same way, or the figure would put a selected group
+        # against an unselected one: 7 of its 10 seeds learn the task and 3 sit at chance,
+        # and a mean over all ten runs below every network that works.
+        groups['RNN'] = learners(rnn)
     split = ({'NeuraGEM': [merge_splits(a, b) for a, b in zip(low, high)]}
              if low and high else groups)
     cells = clamp_cells_on_disk('sigmoid')
@@ -1158,19 +1241,24 @@ def story_figure(out_dir=None):
                      bbox_to_anchor=(-0.02, 1.0), columnspacing=0.6, handlelength=1.0,
                      fontsize='xx-small'),
             relegend(spec_switch_vs_early_conflict({'NeuraGEM': ng}), loc='upper left'),
-            rotate_xticks(nolegend(spec_switch(split, STORY_CRITERIA))),
-            nolegend(spec_reversal(split, 'acc', 'Accuracy'))]),
+            rotate_xticks(relegend(spec_switch(split, STORY_CRITERIA), loc='lower left',
+                                   bbox_to_anchor=(-0.02, 1.0), ncol=2, fontsize='xx-small',
+                                   columnspacing=0.6, handlelength=1.0)),
+            spec_reversal(split, 'acc', 'Accuracy')]),
         ('story_2_encoding', [
             spec_decoding_matrix(ng, sources=STORY_SOURCES),
-            nolegend(spec_decoding_timecourse(ng)),
-            relegend(spec_eps_cw(ng), loc='upper right'),
+            relegend(spec_decoding_timecourse(ng), loc='lower right', fontsize='xx-small'),
+            # Errors only: the correct-trial line is flat and ten times smaller.
+            nolegend(spec_eps_cw(ng, outcomes=((False, 'error'),))),
             spec_encoding_variance(ng)]),
+        # The full gain × contrast grid is five lines per panel and hard to read at this
+        # width; the cut through it at a committed contrast carries the result — gain moves
+        # the cue velocity, contrast does not — and the grid stays in clamp_sigmoid.pdf.
         ('story_3_gate', [
-            nolegend(spec_clamp_grid(cells, 'acc_match', 'Accuracy\n(gate matches context)')),
-            nolegend(spec_clamp_grid(cells, 'rt', 'RT (timesteps)')),
-            nolegend(spec_clamp_grid(cells, 'index', 'Integration index')),
-            relegend(spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity'),
-                     loc='center left', bbox_to_anchor=(1.02, 0.5))]),
+            spec_clamp_gain(cells, 1.0, 'acc_match', 'Accuracy\n(gate matches context)'),
+            spec_clamp_gain(cells, 1.0, 'rt', 'RT (timesteps)'),
+            spec_clamp_gain(cells, 1.0, 'index', 'Integration index'),
+            spec_clamp_gain(cells, 1.0, 'cue_velocity', 'Cue velocity')]),
         ('story_4_reversal', [
             nolegend(spec_reversal(split, 'undecided', 'Undecided rate')),
             relegend(spec_rt_reversal(groups), loc='upper right'),

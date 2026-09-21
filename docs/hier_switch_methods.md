@@ -220,11 +220,14 @@ dashed a high-conflict one, in every panel that makes the split.
 **Ran.** Unforced test sessions for a and b; the paired forced-conflict triplet for c and d.
 
 **Plotted.** *(a)* Steady-state accuracy against cue conflict, one curve per context, with
-the ideal observer's cue accuracy as the ceiling and the RNN baseline in green.
+the ideal observer's cue accuracy as the ceiling and the RNN baseline in green. Points are
+the five conflict levels; the curves through them are **the paper's own psychometric
+function**, `Pcorrcue(x) = 0.5 + α₁·10^(−0.5)/(1 + 10^(α₂(α₃ − x)))`, fitted by least
+squares, so the shape can be compared with Fig 1e rather than with five straight segments.
 *(b)* Trials to switch against the conflict of the block's first five trials, reversals
-split into three equal-count bins per seed. *(c)* Trials to switch on the forced low/high
-pairs, under the decided-only and latent criteria, with the observer. *(d)* Reversal-aligned
-accuracy.
+split into three equal-count bins per seed, **under three criteria**. *(c)* Trials to switch
+on the forced low/high pairs, under the decided-only and latent criteria, with the observer.
+*(d)* Reversal-aligned accuracy.
 
 **See.** Accuracy falls from 0.98 to 0.68 as the cue becomes ambiguous, tracking the
 observer's ceiling (1.00 → 0.70) just below it. **The two contexts are close but not
@@ -235,21 +238,62 @@ relative to training rather than to the raw label. Panel b is **the paper's Fig 
 reversals nobody controlled**: the more ambiguous the first five trials happened to be, the
 longer the network stays on the old rule — 4.6, 5.3 and 6.1 trials across the three bins,
 with every one of the six networks slower in the most ambiguous bin than in the least. The
-ideal observer pays the same cost on the same trials (2.6, 2.9, 3.5). The raw behavioural
-criterion does *not* show it (4.1, 4.6, 4.3), which is the hedging problem: the sign of a
-near-zero output is a coin flip that can satisfy a "first correct trial" rule by luck, and
-it is why the decided-only criterion is the one plotted.
+ideal observer pays the same cost on the same trials (2.6, 2.9, 3.5).
+
+**Panel b now shows all three criteria, because they disagree and the disagreement settles
+which to believe.** Across the three conflict bins:
+
+| criterion | least → most ambiguous | change |
+|---|---|---|
+| any sign flip (the paper's rule on the output's sign) | 4.12, 4.59, 4.27 | +0.15 |
+| decided (the same, with \|output\| past threshold) | 4.62, 5.34, 6.07 | +1.45 |
+| Z side (the latent crossed to the true context) | 4.00, 4.68, 4.94 | +0.94 |
+| ideal observer | 2.59, 2.93, 3.49 | +0.90 |
+
+A sign flip is indeed all a binary choice needs, and on that criterion the effect vanishes
+(+0.15, and the six networks split three up, three down). But **the latent-side criterion
+never touches the output at all** — it asks when Z crossed to the true context — so hedging
+cannot reach it, and it rises by +0.94, within noise of the ideal observer's own +0.90.
+Two measures that cannot be contaminated agree; the one that can is flat. That is the
+signature of chance sign flips: when the output sits near zero its sign is a coin flip,
+which satisfies a "first correct trial" rule early and equally often whatever the conflict
+was. So the effect is real, and the sign criterion is the one to distrust — but it is
+plotted, because the reader should see that and not take it on assertion.
+
+**Why the low/high gap in panel d is smaller than the paper's, and what would widen it.**
+Not the conflict levels: the forced pair is 7:2 and 6:3, which is the paper's own 0.28 and
+0.5. The reason is the **pulse noise**. At σ = 0.5 those two levels are both nearly
+solvable, and that is true of an optimal reader and not only of this model — the ideal
+observer reads the cue correctly on 99.1 % of 7:2 trials and 93.0 % of 6:3 trials, a gap of
+just 0.06, against the model's own 0.94 and 0.85. A manipulation that costs the *optimal*
+observer six points of cue accuracy cannot produce a large behavioural separation in
+anything. The animals lose far more between the same two levels, so their effective sensory
+noise is higher than σ = 0.5.
+
+Two ways to widen it, neither done here. **Raise `pulse_noise_std`**, which makes the
+paper's own levels bite and is the faithful fix, but changes the task and needs every model
+retrained. **Or force the extremes instead**, 8:1 against 5:4: that is test-only, costs a
+dozen sessions and no retraining, and widens the observer's gap from 0.06 to 0.30 — but it
+is no longer the paper's manipulation, and would have to be labelled as ours.
 
 **The backprop baseline is now a real curve rather than a flat line.** On the blocks it can
-track (250–350 trials, weights plastic) it falls from 0.80 to 0.57 across conflict, below
-NeuraGEM throughout but plainly doing the task, where the earlier baseline on the paper's
-30–60-trial blocks sat at 0.50 everywhere. **Two caveats belong with that green curve.**
-First, **7 of its 10 seeds learn the task and 3 never do**, sitting at 0.50 with an
-undecided rate of 1.00; the curve plotted is the mean over all ten, so it runs below every
-individual learner (whose mean is 0.81). Second, **the two groups are not selected the same
-way**: NeuraGEM's six are the seeds that discovered the contexts, 6 of 10, while the RNN's
-ten are all of them. Matching the rules — learners against discoverers — would raise the
-green curve; both counts are given here so the comparison can be read either way.
+track (250–350 trials, weights plastic) it runs 0.92 → 0.61 across conflict, below NeuraGEM
+throughout but plainly doing the task, where the earlier baseline on the paper's 30–60-trial
+blocks sat at 0.50 everywhere. **Both groups are selected the same way**: NeuraGEM's six are
+the seeds that discovered the contexts (6 of 10) and the baseline's seven are the seeds that
+learned the task (7 of 10, the other three sitting at 0.50 with an undecided rate of 1.00).
+Pooling the baseline's failures with its successes would put an unselected group against a
+selected one and drag its curve below every network that works.
+
+**On the shape, and on the conflict levels.** The paper's Fig 1e is a sigmoid and ours was
+a set of joined points; fitting their function to our points closes most of that gap
+(slope α₂ ≈ −2.5, threshold α₃ ≈ 0.70 for NeuraGEM, ≈ 0.63 for the baseline). **The
+conflict levels are not the difference.** The paper uses 16 pulses of which 9 are
+informative, exactly as here, and with 9 informative pulses the five splits 9:0, 8:1, 7:2,
+6:3, 5:4 are the complete enumeration of ways one type can hold a strict majority — there
+is no sixth level to choose. The x axis is the ratio of non-dominant to dominant pulses,
+which is the paper's definition and is why the levels sit unevenly at 0, 0.125, 0.286, 0.5
+and 0.8 rather than at equal spacings.
 
 ### Row 2 — What is encoded where (`story_2_encoding.pdf`), against Fig 2k–l and 4b
 
@@ -261,8 +305,9 @@ seven variables jointly and credits each only with what it uniquely explains.
 state, from the hidden state cut to two principal components (hollow), from the latent Z,
 and from the error gradient on Z. *(f)* Cue and rule decoding from the hidden state per
 timestep, steady state against the first five trials after a reversal. *(g)* The size of the
-gradient on Z against cue conflict, correct trials against errors. *(h)* The variance
-decomposition, one stacked bar per signal.
+gradient on Z against cue conflict, **on error trials**; the correct-trial line is flat and
+about ten times smaller, so it is left to this sentence rather than compressing the axis.
+*(h)* The variance decomposition, one stacked bar per signal.
 
 **See.** **The hidden state mixes and the latent does not.** The hidden state decodes all
 four variables well above its null (cue +0.42, rule +0.33, context +0.40, conflict +0.35;
@@ -328,12 +373,16 @@ selects, read off behaviour; hidden-state measures pool both halves of the sessi
 see identical inputs.
 
 **Plotted.** *(i)* Accuracy, *(j)* RT, *(k)* integration index and *(l)* cue velocity
-against the clamped contrast, one line per clamped gain.
+against the **clamped gain**, at a committed contrast of +1. This is the cut through the
+grid rather than the grid itself: five lines per panel is more than a panel this wide can
+carry, and the cut is what the grid is there to show. The full 4 × 5 grid, including the
+contrast axis, is `clamp_sigmoid.pdf`.
 
 **See.** **Gain and contrast do different jobs.** Opening the gate speeds the hidden state's
 integration of the cue — cue velocity 0.126 → 0.188 → 0.231 → 0.257 from gain −1 to +2,
-monotonically — and raises the integration index (1.09 → 1.61). Moving the contrast does not
-touch the cue velocity at all: 0.200 to 0.201 across the whole ladder. What the contrast
+monotonically in 6 of 6 networks — and raises the integration index (1.09 → 1.61). Moving
+the contrast instead does not touch the cue velocity at all: 0.200 to 0.201 across its whole
+ladder, which is the other half of the dissociation and is why these panels vary the gain. What the contrast
 sets is which context is applied and how decisive the answer is (accuracy 0.61 → 0.83,
 undecided 0.79 → 0.25). Accuracy is non-monotonic in gain and peaks near 0 to +1: too little
 and the network is undecided on nearly every trial, too much and both units saturate so the

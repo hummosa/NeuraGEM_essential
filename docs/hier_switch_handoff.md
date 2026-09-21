@@ -441,11 +441,11 @@ baseline gets no context code at all. So the claim is about the **timescale a me
 work on**, not about whether weights can represent context.
 
 **Three things to carry when quoting these numbers.**
-1. **The groups are not selected alike.** NeuraGEM's six are the seeds that discovered the
-   contexts (6 of 10); the RNN's ten are all of them, including the 3 that never learn. The
-   figure's green curve is the mean over all ten, so it sits below every individual learner.
-   Matching the rules — learners against discoverers — is the fairer comparison and is the
-   row given above; **decide which one the paper should show before quoting either.**
+1. **The groups are now selected alike** (settled 2026-09-20). NeuraGEM's six are the seeds
+   that discovered the contexts (6 of 10); the baseline's seven are the seeds that learned
+   the task (7 of 10). `hier_switch_figures.learners()` applies the rule, and every figure
+   uses it, so the green curve is no longer dragged below every network that works by the
+   three that never learn. The all-ten row is kept above for reference.
 2. **Decodable is not used.** The three seeds that never learn decode context at +0.19, as
    high as the learners, while being undecided on every trial. Report the behavioural
    measures beside the decoding ones.
