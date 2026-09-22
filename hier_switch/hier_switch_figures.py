@@ -717,15 +717,29 @@ LEARNED = SELECTION_FRAC * CEILING[NOISE]
 
 
 def learners(reports, thresh=LEARNED):
-    """The seeds that learned the task, or all of them if none can be judged.
+    """The seeds that learned the task, or all of them if none can be *judged*.
 
     NeuraGEM's group is already selected this way: its six are the seeds that discovered
     the contexts, out of ten. Applying the same rule to the baseline is what makes the two
     comparable; reporting the baseline's failures pooled with its successes would compare
     a selected group against an unselected one.
+
+    Three cases, and the middle one is the reason this is not a one-liner. If some seeds
+    pass, use them. If every seed carries the measure and none passes, the baseline did
+    not learn the task at this noise level: return nothing, so the caller drops it. The
+    fallback to *all* reports is only for the case where no seed carries the measure at
+    all — that is "cannot judge", not "judged and failed", and quietly pooling a set of
+    chance-level networks under the label "RNN" would state the opposite of the result.
     """
-    ok = [r for r in reports if _get(r, 'behaviour.acc_steady', 0.0) > thresh]
-    return ok or reports
+    judged = [r for r in reports if not np.isnan(_get(r, 'behaviour.acc_steady'))]
+    ok = [r for r in judged if _get(r, 'behaviour.acc_steady', 0.0) > thresh]
+    if ok or not judged:
+        return ok or reports
+    best = max(_get(r, 'behaviour.acc_steady') for r in judged)
+    print(f'WARNING: no baseline seed clears acc_steady > {thresh:.3f} (best {best:.3f} of '
+          f'{len(judged)} seeds) — dropping the baseline instead of pooling seeds that did '
+          'not learn the task')
+    return []
 
 
 def psychometric(x, a1, a2, a3):
