@@ -265,11 +265,21 @@ observer six points of cue accuracy cannot produce a large behavioural separatio
 anything. The animals lose far more between the same two levels, so their effective sensory
 noise is higher than σ = 0.5.
 
-Two ways to widen it, neither done here. **Raise `pulse_noise_std`**, which makes the
-paper's own levels bite and is the faithful fix, but changes the task and needs every model
-retrained. **Or force the extremes instead**, 8:1 against 5:4: that is test-only, costs a
-dozen sessions and no retraining, and widens the observer's gap from 0.06 to 0.30 — but it
-is no longer the paper's manipulation, and would have to be labelled as ours.
+Two ways to widen it. **Raise `pulse_noise_std`**, which makes the paper's own levels bite
+and is the faithful fix, but changes the task and needs every model retrained. **Or force
+the extremes instead**, 8:1 against 5:4: that is test-only, costs a dozen sessions and no
+retraining, and widens the observer's gap from 0.06 to 0.30 — but it is no longer the
+paper's manipulation, and would have to be labelled as ours.
+
+The first is being done, at σ = 0.6, and `docs/hier_switch_noise.md` is the record. Two
+things are already settled by the calibration and do not depend on how the models turn
+out. The observer's gap between the paper's two levels roughly doubles, from 0.061 at
+σ = 0.5 to 0.095 at σ = 0.6, for 0.029 of ceiling. And **no noise level reaches the
+paper's ~0.20 gap** with 9 informative pulses: the gap saturates near 0.12 around
+σ = 0.8–0.9 and then shrinks, because past that the low-conflict end collapses too. That
+is a property of an optimal reader, so it bounds what retraining can produce, and it means
+some of the remaining distance from the paper is not sensory noise at all. Every number in
+this document is from the σ = 0.5 tree unless it says otherwise.
 
 **The backprop baseline is now a real curve rather than a flat line.** On the blocks it can
 track (250–350 trials, weights plastic) it runs 0.92 → 0.61 across conflict, below NeuraGEM

@@ -614,7 +614,20 @@ array 6554896 with 6554897 chained behind it. The v16 sessions stay on disk unde
 .venv/bin/python hier_switch/hier_switch_figures.py story      # only the story figure
 .venv/bin/python hier_switch/hier_switch_hooks.py              # trial-hook self-test
 ./hier_switch/run_manipulations.sh                             # E4: the ~90 new sessions
+
+# the cue-noise sweep (docs/hier_switch_noise.md)
+HIER_SWITCH_LEVEL=n06 ./hier_switch/run_sessions.sh            # a level other than noise 0.5
+.venv/bin/python hier_switch/hier_switch_tune.py arms v18 --save   # write selection.json
+HIER_SWITCH_PROBE=1 ./hier_switch/run_sessions.sh              # noise 0.6 on the trained 0.5 nets
+.venv/bin/python hier_switch/hier_switch_group.py probe        # read that back, paired
 ```
+
+- **`HIER_SWITCH_LEVEL`** (`n05` default, `n06`) picks the cue-noise level: which tune tags
+  to read, and where the group table and figures land. It does **not** namespace anything
+  physical — the tune tag does that, because both session writers derive it from the
+  model's own path. So `run_tune.sh v18` needs no level set, and a level set wrongly costs
+  a regeneration rather than a run. `docs/hier_switch_noise.md` has the rest, including the
+  two guards that make a mismatch fail loudly (`check_level`, `level_tags`).
 
 - **Python** is the repo `.venv` (it links to `~/venvs/neo`). System python has no torch.
 - **Runtime:** one seed (passive + active + test) takes ~5–6 min on a SLURM node. The login
@@ -715,6 +728,15 @@ are in `docs/hier_switch_task.md` (end of the tuning log).
 5. **Per-timestep Z within a trial** (`latent_aggregation_op='none'`) as an MDConflict
    analogue, and the free-response variant (`target_onset`) for an RT that measures
    integration directly. Both are model changes; both were deferred deliberately.
+6. **The cue-noise sweep — in progress, `docs/hier_switch_noise.md`.** `pulse_noise_std`
+   was set once to 0.5 and never tuned, and it is why panel d's low/high split is weaker
+   than the paper's: at 0.5 both forced levels are nearly solvable *for an optimal reader*,
+   whose own gap is 0.061. Raising it to 0.6 roughly doubles that to 0.095 for 0.029 of
+   ceiling. The machinery is in place (levels, relative selection, the two guards) and
+   `v18` / `v19` are the noise-0.6 grids. The calibration also bounds the answer: the
+   observer's gap peaks near 0.12 around σ 0.8–0.9 and then shrinks, so **no noise level
+   reaches the paper's ~0.20 gap** with 9 informative pulses. Read the noise doc before
+   quoting any σ 0.5 number as if it were the model's, and before re-running anything.
 
 The B5 spec that used to sit here (§7a) is now `docs/hier_switch_analyses.md` §4, which
 documents it as built rather than as a plan.
