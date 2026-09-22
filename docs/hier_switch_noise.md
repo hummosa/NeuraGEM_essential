@@ -393,11 +393,47 @@ What to look at, and what would count:
   `hier_switch_dataset.py`, `hier_switch_observer.py` (all five ceilings),
   `hier_switch_hooks.py`.
 
+## What the 0.6 result says about going further
+
+**Noise 0.8–0.9 is not worth running for the gap, and the σ 0.6 numbers are why.** A third
+level costs two `GRIDS` entries, two `COMMON` entries and one `LEVELS` row, so the
+machinery is not the obstacle — the argument is:
+
+- The observer's gap at σ 0.8–0.9 is 0.118–0.120 against 0.095 at σ 0.6. At most another
+  0.025, and the model now tracks the observer rather than exceeding it, so expect roughly
+  0.12 where the paper shows ~0.20.
+- Yield already halved at σ 0.6 (conditional discovery 86 % → 50 %). At σ 0.8 the screen
+  would likely have to run 40+ seeds to land six discoverers, and the group would be
+  selected from a thinner and more atypical tail.
+- Steady accuracy already stopped separating discoverers at σ 0.6. Further out the
+  selection rests on Z d′ alone, which is a weaker basis for a group than two agreeing
+  criteria.
+- The RNN baseline is already gone at σ 0.6, so there would be nothing to compare against.
+
+**The more promising direction is the one the calibration points at.** The gap is bounded
+by the *number of informative pulses*, not by their noise: with 9 informative pulses an
+optimal reader cannot lose more than ~0.12 between conflict 0.29 and 0.5 at any noise.
+Fewer informative pulses moves that bound directly, and is the knob to calibrate next if
+closing the distance to Fig 1e matters.
+
+It is not a one-line change, though. `n_informative` (`hier_switch_config.py:71`) is
+coupled to `conflict_counts` by an assertion that every pair sums to it with a strict
+majority (`:313`), so a smaller value needs a new ladder — and the paper's 7:2 and 6:3 do
+not exist below 9, so the forced levels would stop being the paper's and would have to be
+labelled as ours. `hier_switch_observer.ceiling` takes the config's ladder as given, so
+calibrate the candidate ladders first, exactly as this level was calibrated, and decide on
+the observer's gap before training anything.
+
 ## Deferred
 
-Noise 0.8–0.9 (the gap optimum) pending the 0.6 result; any cross-noise comparison figure;
-re-tuning `Z_lr`, the passive-phase length or the RNN's block length. All were fixed at
+Re-tuning `Z_lr`, the passive-phase length or the RNN's block length. All were fixed at
 σ 0.5 and may be suboptimal there too, but changing them alongside the noise would confound
 the comparison. Change one thing.
 
-A third level is two `GRIDS` entries, two `COMMON` entries and one `LEVELS` row.
+The RNN's test `WU_lr` is the one case where a retune is arguably owed rather than
+deferred, since its current value was chosen at a noise level the baseline no longer
+works at — see the diagnostic above before deciding.
+
+A cross-noise comparison figure: nothing here needs one yet, because the interesting
+numbers are single values per level rather than curves. The tables in this document are
+the comparison.
