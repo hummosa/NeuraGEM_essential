@@ -739,14 +739,23 @@ are in `docs/hier_switch_task.md` (end of the tuning log).
    that moves that bound is the *number* of informative pulses, not their variance — and
    below 9 the paper's 7:2 and 6:3 do not exist, so the forced levels would become ours.
 
-   Three things came out of it that outlive the negative result. The **reversal split
+   Four things came out of it that outlive the negative result. The **reversal split
    story is now supported at two noise levels**: the behavioural criterion stayed flat
    (+0.212 → −0.049) while the latent-side one tightened onto the normative value (+0.606
    → +0.903 against the observer's +0.854), which is what §5c's account of that measure
-   predicts. **NeuraGEM is robust** — steady accuracy rose as a fraction of ceiling, 0.951
-   → 0.958. And **the RNN baseline is not**: 2 of 20 seeds clear the learner bar, pooled
-   undecided 0.923, and `hier_switch/rnn_wu_probe.py` shows its test `WU_lr` of 3e-3 is
-   still the optimum, so that is the task rather than a stale knob. Do not retune it.
+   predicts. **The causal result (§7.1, the E4 dose-response) survives intact** — silencing
+   the update costs +4.40 trials against +4.46, the 0×/1×/3×/10× ladder is monotone at both
+   levels, every row 6/6 — and the stimulation arms *strengthen* (×10: −1.81 → −2.58)
+   because the unperturbed model sits further above the normative latency at σ 0.6 (2.44
+   trials against 1.62) while ×10 lands on normative at both. **NeuraGEM is robust** —
+   steady accuracy rose as a fraction of ceiling, 0.951 → 0.958. And **the RNN baseline is
+   not**: 2 of 20 seeds clear the learner bar, pooled undecided 0.923, and
+   `hier_switch/rnn_wu_probe.py` shows its test `WU_lr` of 3e-3 is still the optimum, so
+   that is the task rather than a stale knob. Do not retune it.
+
+   Taken together the latent machinery moved *toward* normative on two independent measures
+   while the behavioural read-out stayed flat, which points at the read-out rather than the
+   latent as what keeps the model's behaviour from separating like the animals'.
 
    Also worth knowing: discovery and task performance **come apart** at σ 0.6. Steady
    accuracy no longer separates discoverers from failures (a 0.005 boundary margin against
