@@ -15,6 +15,10 @@ sbatch --parsable --array=$RANGE <<EOS
 #SBATCH --output=./slurm/hsw-%A_%a.out
 #SBATCH --error=./slurm/hsw-%A_%a.err
 #SBATCH --time=0-01:00:00
+# As the other three wrappers do. Each task asks for one CPU, but torch defaults to one
+# thread per core on the node, and slurm packs several tasks onto a node — the v18 array
+# landed seven on node2344 and ran at half speed against the v13 timings.
+export OMP_NUM_THREADS=1
 source \$HOME/load_python_venv.sh
 cd $(pwd)
 python hier_switch/hier_switch_tune.py run $TAG
