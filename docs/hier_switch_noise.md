@@ -232,12 +232,27 @@ thing that might change, and that is the question `v18` / `v19` exist to answer.
 ### Yield and selection (stage 1–2)
 
 **6 of 20 seeds discovered the contexts, against 6 of 10 at σ 0.5** — the rate halves,
-from 60 % to 30 %. The passive phase is also harder: 12 of 20 learned the task at all,
-against 7 of 10. Selected: `(1, 6, 9, 17, 18, 19)`, written to
-`exports/hier_switch/tune_v18/selection.json`.
+from 60 % to 30 %. Selected: `(1, 6, 9, 17, 18, 19)`, written to
+`exports/hier_switch/tune_v18/selection.json`, which also carries the ceiling, both
+coefficients, the separation below and the full 20-seed table.
 
-So the group is the same size as σ 0.5's, and every group statistic rests on the same
-n = 6. That was the stated floor, and the run sits exactly on it.
+The group is therefore the same size as σ 0.5's, and every group statistic rests on the
+same n = 6. That was the stated floor, and the run sits exactly on it.
+
+Splitting the yield by where a seed failed says more than the headline rate, because the
+two phases fail for different reasons:
+
+| | σ 0.5 | σ 0.6 |
+|---|---|---|
+| learned the task at all (passive phase) | 7 / 10 = 70 % | 12 / 20 = 60 % |
+| **discovered the contexts, given it learned the task** | **6 / 7 = 86 %** | **6 / 12 = 50 %** |
+| discovered the contexts overall | 6 / 10 = 60 % | 6 / 20 = 30 % |
+
+Learning the task at all is only slightly harder. What falls is the **conditional** rate:
+of the networks that learned the task, 86 % went on to discover the context structure at
+σ 0.5 and half do at σ 0.6. The noise is not mainly making the task too hard to learn; it
+is making the latent structure harder to find in a network that has learned the task. That
+is the same decoupling the separation table below shows from the other direction.
 
 **Steady accuracy has stopped separating discoverers from failures.** This is the more
 interesting half, and it is what the boundary-separation check is for:
