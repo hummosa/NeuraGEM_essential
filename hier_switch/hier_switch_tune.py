@@ -376,11 +376,41 @@ def collect(tag):
               + f' | {str(te.get("cross_trial", "")):>5}')
 
 
-#: Below this, the two populations are no longer cleanly separated and the threshold is
-#: doing real discrimination rather than telling learners from chance. `arms --save`
-#: refuses to pick a group in that case: at noise 0.5 the gap is 0.178, so a run that
-#: comes back with 0.06 is telling you something about the noise level, not about the rule.
+#: Below this, the kept and cut seeds are no longer separated on any criterion, and the
+#: threshold is doing real discrimination rather than telling learners from chance.
+#: `arms --save` refuses to pick a group in that case.
 MIN_GAP = 0.10
+
+
+def separation(rows):
+    """How cleanly the kept seeds separate from the cut ones, per criterion.
+
+    Measured **at the decision boundary** — the lowest kept value against the highest cut
+    one — and not as the largest gap anywhere in the sorted list. Those are the same thing
+    only when the rule happens to cut at the widest gap, which it does at noise 0.5 and
+    does not at 0.6: there the widest gap in steady accuracy falls between two seeds that
+    are both cut, and the boundary itself is 0.005 wide.
+
+    A negative margin means that criterion does not separate the groups at all: some seed
+    it cut scores above one it kept. That is not by itself wrong when the rule is a
+    conjunction — the other criterion may be carrying the decision — but it means the
+    criterion is not the one doing the work, and the caller should know which is.
+
+    Margins are also given relative to the criterion's range over all seeds, because a
+    d-prime margin and an accuracy-ratio margin are not on the same scale.
+    """
+    sel = [r for r in rows if r['found']]
+    cut = [r for r in rows if not r['found']]
+    if not sel or not cut:
+        return {}
+    out = {}
+    for key in ('ratio', 'z_dprime'):
+        vals = [r[key] for r in rows]
+        span = max(vals) - min(vals)
+        lo, hi = min(r[key] for r in sel), max(r[key] for r in cut)
+        out[key] = dict(lowest_kept=lo, highest_cut=hi, margin=lo - hi,
+                        relative=(lo - hi) / span if span else float('nan'))
+    return out
 
 
 def _tag_noise(tag):
@@ -446,37 +476,37 @@ def arms(tag, save=False):
         print(f'{arm:<26} {len(hit):>4} / {len(rs):<3} {sum(r["passive_ok"] for r in rs):>4} / {len(rs):<3} | '
               f'{"":17}{m("acc"):5.2f} {m("steady"):6.2f} {m("cross"):5.1f}')
 
-    # The distribution the threshold sits in. If it is bimodal the exact coefficient does
-    # not matter; if it is not, no coefficient is defensible and that is the finding.
+    # The distribution the threshold sits in. If the two groups separate cleanly the exact
+    # coefficient does not matter; if they do not, no coefficient is defensible and that is
+    # the finding.
     order = sorted(rows, key=lambda r: -r['ratio'])
     print(f'\n{"seed":>5} {"steady":>7} {"ratio":>7} {"Z dp":>6}  selected')
-    prev = None
-    gaps = []
     for r in order:
-        if prev is not None:
-            gaps.append((prev - r['ratio'], prev, r['ratio']))
-        prev = r['ratio']
         print(f"{r['seed']:>5} {r['steady']:7.4f} {r['ratio']:7.4f} {r['z_dprime']:6.2f}  "
               f"{'yes' if r['found'] else 'no'}{'' if r['passive_ok'] else '   (passive failed)'}")
-    gap, above, below = max(gaps, default=(float('nan'), float('nan'), float('nan')))
-    print(f'\nlargest gap in ratio: {gap:.3f} (between {above:.3f} and {below:.3f}); '
-          f'the rule sits at {SELECTION_FRAC:.3f}')
+
+    margins = separation(rows)
+    print(f'\n{"criterion":<12} {"lowest kept":>12} {"highest cut":>12} {"margin":>8} {"/ range":>8}')
+    for key, m in margins.items():
+        print(f'{key:<12} {m["lowest_kept"]:12.3f} {m["highest_cut"]:12.3f} '
+              f'{m["margin"]:+8.3f} {m["relative"]:8.3f}')
+    best = max((m['relative'] for m in margins.values()), default=float('nan'))
 
     seeds = sorted(r['seed'] for r in rows if r['found'])
     if not save:
         print(f'\nwould select {tuple(seeds)} ({len(seeds)} of {len(rows)}); '
               f'pass --save to write selection.json')
         return seeds
-    if not np.isfinite(gap) or gap < MIN_GAP:
+    if not np.isfinite(best) or best < MIN_GAP:
         raise SystemExit(
-            f'\nlargest gap {gap:.3f} < {MIN_GAP}: the seeds do not separate into '
-            'discoverers and failures at this noise level, so no threshold picks a group '
-            'that means anything. Look at the distribution above before selecting.')
+            f'\nbest relative margin {best:.3f} < {MIN_GAP}: on neither criterion do the '
+            'kept and cut seeds separate, so no threshold picks a group that means '
+            'anything. Look at the distribution above before selecting.')
     out = os.path.join(root, 'selection.json')
     with open(out, 'w') as f:
         json.dump(dict(ng_seeds=seeds, pulse_noise_std=sigma, ceiling=ceil,
                        selection_frac=SELECTION_FRAC, passive_frac=PASSIVE_FRAC,
-                       steady_threshold=bar, largest_gap=gap,
+                       steady_threshold=bar, separation=margins,
                        table=[{k: r[k] for k in
                                ('seed', 'steady', 'ratio', 'z_dprime', 'found', 'passive_ok')}
                               for r in order]), f, indent=1, default=float)

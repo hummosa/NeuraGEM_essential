@@ -591,6 +591,10 @@ def aggregate(out_dir=None):
 PROBE_MEASURES = [
     ('accuracy, conflict 0.29', lambda d: d['none']['behaviour']['psychometric']['acc'][2]),
     ('accuracy, conflict 0.50', lambda d: d['none']['behaviour']['psychometric']['acc'][3]),
+    # The headline: the accuracy separation between the paper's two forced levels, which
+    # is what raising the noise is meant to widen.
+    ('conflict gap (0.29 - 0.50)', lambda d: (d['none']['behaviour']['psychometric']['acc'][2]
+                                              - d['none']['behaviour']['psychometric']['acc'][3])),
     ('steady accuracy', lambda d: d['none']['behaviour']['acc_steady']),
     ('trials to switch, low early conflict', lambda d: d['low']['behaviour']['switch']['all']['switch']),
     ('trials to switch, high early conflict', lambda d: d['high']['behaviour']['switch']['all']['switch']),
