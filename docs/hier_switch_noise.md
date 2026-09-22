@@ -371,6 +371,28 @@ What to look at, and what would count:
 
 ---
 
+## What was checked
+
+- **The noise-0.5 tree is untouched.** With the whole noise-0.6 tree on disk — its
+  sessions, its 120 clamp cells per activation, its group table — `group.json` and all 24
+  figures regenerate **byte-identically** to a snapshot taken before any of this was
+  written, with `SOURCE_DATE_EPOCH` pinned so the comparison is exact. That is the check
+  worth repeating whenever a level is added; the two figure runs are about a minute each.
+- **The levels cannot pool.** With both sets of clamp tags present, the n05 reader returns
+  120 cells from six `tune_v15_*` tags and the n06 reader 120 from six `tune_v18_*`. Before
+  `level_tags`, both callers took everything `os.listdir` returned.
+- **A mismatched model is refused.** `check_level` on a `tune_v18` model under `n05` exits
+  with the noise it found against the noise the level wants, before recording anything.
+- **Sessions carry their noise.** `load_session(...)['meta']['pulse_noise_std']` is 0.6 for
+  the v18 sessions and still 0.5 for the v15 ones, so the ideal observer recalibrates per
+  session rather than assuming a ceiling.
+- **The selection rule reproduces the old one.** `arms v13` under the relative rule selects
+  exactly `(0, 1, 3, 5, 6, 9)`, and the relative `LEARNED` reclassifies none of the ten v17
+  seeds.
+- Self-tests pass: `hier_switch_analyses.py`, `hier_switch_hidden.py`,
+  `hier_switch_dataset.py`, `hier_switch_observer.py` (all five ceilings),
+  `hier_switch_hooks.py`.
+
 ## Deferred
 
 Noise 0.8–0.9 (the gap optimum) pending the 0.6 result; any cross-noise comparison figure;
