@@ -195,13 +195,72 @@ never reach the group table or the figures.
 
 ### Result
 
-_Pending: array 6592751._
+Six seeds, all paired. `hier_switch_group.py probe`:
+
+| measure | σ 0.5 | σ 0.6 | change | sem | seeds w/ sign |
+|---|---|---|---|---|---|
+| accuracy, conflict 0.29 | 0.938 | 0.901 | −0.036 | 0.005 | 6 / 6 |
+| accuracy, conflict 0.50 | 0.854 | 0.799 | −0.056 | 0.008 | 6 / 6 |
+| **conflict gap (0.29 − 0.50)** | **0.084** | **0.103** | **+0.019** | 0.011 | 4 / 6 |
+| steady accuracy | 0.878 | 0.848 | −0.030 | 0.003 | 6 / 6 |
+| trials to switch, low early conflict | 4.09 | 4.45 | +0.36 | 0.144 | 5 / 6 |
+| trials to switch, high early conflict | 4.30 | 4.68 | +0.39 | 0.246 | 5 / 6 |
+| **switch cost (high − low)** | **0.212** | **0.235** | **+0.023** | 0.250 | 3 / 6 |
+
+**The psychometric moves, the reversal split does not.** Accuracy falls at both
+conflict levels in every seed, and falls more at the harder one, so the conflict gap
+widens from 0.084 to 0.103. But the switch cost — the reversal latency after a
+high-conflict start minus a low-conflict one — is unchanged: +0.023 trials against a
+standard error of 0.250, with 3 of 6 seeds going each way. Both latencies rise by about
+0.37 trials; their difference does not.
+
+Two things worth keeping straight. The conflict gap's +0.019 is smaller than the
+observer's own +0.034 over the same change, so the model's gap goes from *exceeding* the
+observer's at σ 0.5 (0.084 against 0.061) to roughly matching it at σ 0.6 (0.103 against
+0.095). And 0.103 undershoots the 0.12–0.15 projected from scaling the σ 0.5 excess.
+
+**What this does and does not license.** It is the network's inference mechanism meeting a
+harder cue at weights that were shaped by an easier one. It says the psychometric
+responds to noise immediately while the reversal split does not, at fixed weights. It does
+not say what a network *grown* under the noise does — the representation it learns is the
+thing that might change, and that is the question `v18` / `v19` exist to answer.
 
 ---
 
 ## Results at noise 0.6
 
-_Pending: v18 screening submitted as array 6592764._
+### Yield and selection (stage 1–2)
+
+**6 of 20 seeds discovered the contexts, against 6 of 10 at σ 0.5** — the rate halves,
+from 60 % to 30 %. The passive phase is also harder: 12 of 20 learned the task at all,
+against 7 of 10. Selected: `(1, 6, 9, 17, 18, 19)`, written to
+`exports/hier_switch/tune_v18/selection.json`.
+
+So the group is the same size as σ 0.5's, and every group statistic rests on the same
+n = 6. That was the stated floor, and the run sits exactly on it.
+
+**Steady accuracy has stopped separating discoverers from failures.** This is the more
+interesting half, and it is what the boundary-separation check is for:
+
+| criterion | lowest kept | highest cut | margin | / range |
+|---|---|---|---|---|
+| σ 0.5, steady / ceiling | 0.884 | 0.705 | +0.179 | 0.355 |
+| σ 0.5, Z d′ | 2.019 | 0.398 | +1.621 | 0.545 |
+| σ 0.6, steady / ceiling | 0.925 | 0.920 | **+0.005** | **0.011** |
+| σ 0.6, Z d′ | 1.873 | 1.253 | +0.619 | 0.224 |
+
+At σ 0.5 both criteria separate the two groups. At σ 0.6 only the latent one does. Seeds
+12 and 0 reach 0.92 and 0.80 of ceiling with Z d′ of 1.25 and 0.76 — they do the task
+well **without the latent separating the contexts**. The selection is still defensible,
+but it is being made by Z, and should be described that way rather than by quoting an
+accuracy threshold.
+
+Worth saying plainly: at σ 0.5 "discovered the contexts" and "got good at the task" were
+the same seeds, and that coincidence is what made the accuracy rule look sufficient. It
+was never the criterion doing the work — Z d′ separated more cleanly at σ 0.5 too (0.545
+against 0.355). Raising the noise pulled the two apart and made that visible.
+
+_Stages 3–7 pending._
 
 What to look at, and what would count:
 
