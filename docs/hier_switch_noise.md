@@ -275,7 +275,81 @@ the same seeds, and that coincidence is what made the accuracy rule look suffici
 was never the criterion doing the work — Z d′ separated more cleanly at σ 0.5 too (0.545
 against 0.355). Raising the noise pulled the two apart and made that visible.
 
-_Stages 3–7 pending._
+### The headline: the conflict gap widened, the reversal split did not
+
+Group table: `exports/hier_switch/group/n06/group.json`, figures in
+`exports/hier_switch/group/n06/figures/`. n = 6 NeuraGEM seeds at each level.
+
+**The accuracy gap between the paper's two forced levels went 0.084 → 0.101**, and that is
+essentially all of what the higher noise bought:
+
+| | @ conflict 0.29 | @ 0.50 | gap | steady / ceiling |
+|---|---|---|---|---|
+| σ 0.5, trained (v15) | 0.938 | 0.854 | 0.084 ± 0.019 | 0.951 |
+| σ 0.6, **probe** (v15 weights) | 0.901 | 0.799 | 0.103 | — |
+| σ 0.6, trained (v18) | 0.919 | 0.818 | **0.101 ± 0.009** | 0.958 |
+| ideal observer, σ 0.5 → 0.6 | | | 0.061 → 0.095 | |
+
+**Training under the noise bought nothing over merely testing at it** — 0.101 against the
+probe's 0.103. The gap is set by the sensory noise, not by what the network learned under
+it. And 0.101 undershoots the 0.12–0.15 projected from scaling the σ 0.5 excess, for a
+reason the numbers make plain: at σ 0.5 the model's gap exceeded the observer's by 0.023,
+and at σ 0.6 it exceeds it by 0.006. The model tracks the optimal gap and has lost the
+margin above it. Since the observer's own gap peaks near 0.12 around σ 0.8–0.9, **the
+paper's ~0.20 gap is not reachable by raising the noise in this task design.** Whatever
+else separates the animals from the model here, it is not sensory noise alone.
+
+Worth being clear that this is a negative result for the intervention, not for the model.
+NeuraGEM held up: steady accuracy fell 0.878 → 0.856 but *rose* as a fraction of ceiling,
+0.951 → 0.958, and its undecided rate is unchanged (0.151 → 0.149).
+
+**The reversal split — the reason for the run — did not appear.** The behavioural
+criterion went the wrong way, and the latent-side one, which was already solid, tightened
+onto the normative value:
+
+| P2, switch latency high − low early conflict | σ 0.5 | σ 0.6 |
+|---|---|---|
+| behaviour (first correct trial) | +0.212, 4/6 | **−0.049, 2/6** |
+| Z side (when Z crossed to the true context) | +0.606, 6/6 | **+0.903, 6/6** |
+| decided (output committed) | +0.659, 6/6 | +0.829, 5/6 |
+| the ideal observer's own size | +1.074 | +0.854 |
+
+At σ 0.5 the model's latent split undershot the observer's (0.606 against 1.074); at σ 0.6
+it matches it (0.903 against 0.854). So the higher noise made the latent switching *more*
+normative while leaving the behavioural read-out as flat as it was. That is consistent
+with the account already in `docs/hier_switch_methods.md` — the behavioural criterion is
+contaminated by chance sign flips when the output sits near zero, and it is the measure to
+distrust — and it is now supported at two noise levels rather than one.
+
+Everything else carried over. Every 6/6 row at σ 0.5 is still 6/6 (the conflict weighting
+B3/B5, the gradient tracking ε_CW, the rule-decoding drop, the RT rows, the encoding
+table, Z demixing). Two rows improved: `B5 P(tipped | error) falls with conflict` went
+2/6 → 5/6 and the integration index 4/6 → 6/6.
+
+### The RNN baseline collapsed
+
+This is the one place where σ 0.6 broke something outright.
+
+| | σ 0.5 (v17, n=10) | σ 0.6 (v19, n=20) |
+|---|---|---|
+| seeds clearing the learner bar | 6–7 of 10 | **2 of 20** |
+| steady accuracy, pooled | 0.719 | 0.562 |
+| **undecided rate, pooled** | 0.653 | **0.923** |
+| undecided rate, the seeds that pass | — | 0.699 |
+| switch latency (decided) | 75 trials | 148 trials |
+| rule decoding at t = 16 | 0.603 | 0.556 |
+
+It hedges on 92 % of trials, and the two seeds that clear the bar still hedge on 70 %. A
+baseline of n = 2 hedging networks is too thin to put in a figure, and the NG-vs-RNN rows
+at σ 0.6 should be read as "the baseline does not do this task at this noise" rather than
+as a comparison of two working models.
+
+Before treating that as a fact about the task: `RNN300`'s test `WU_lr` of 3e-3 and its
+250–350-trial blocks were tuned at σ 0.5, as the shortest blocks on which a plastic RNN
+commits. `hier_switch/rnn_wu_probe.py` runs one trained seed at several rates to say
+whether the rate is the cause. Result below.
+
+_Stages 3–6 done; stage 7 (manipulations) pending._
 
 What to look at, and what would count:
 
