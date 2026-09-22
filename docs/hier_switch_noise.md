@@ -36,6 +36,13 @@ reaches the paper's ~0.20 gap with 9 informative pulses.** The distance from Fig
 sensory noise alone, and the knob that would move the bound is the number of informative
 pulses, not their variance — see the last section.
 
+What survived the change is worth as much as what did not. The paper's causal result and
+its converse hold intact at both levels, with a monotone dose-response; NeuraGEM's steady
+accuracy *rose* as a fraction of ceiling; and the latent machinery moved **toward**
+normative on two independent measures while the behavioural read-out stayed flat — so
+whatever keeps the model's behaviour from separating like the animals' is downstream of the
+latent, not in it. The RNN baseline, by contrast, stopped working altogether.
+
 Read "Results at noise 0.6" for the numbers. Nothing in the σ 0.5 tree changed.
 
 ## What noise can buy: the ideal-observer calibration
@@ -391,7 +398,42 @@ this task at σ 0.6. Whether some *other* baseline could — a longer block, or 
 feedback-RNN in `docs/hier_switch_handoff.md` §7.4 — is a separate question and a model
 change.
 
-_Stages 3–6 done; stage 7 (manipulations) pending._
+### The causal result holds, and the stimulation side strengthens
+
+All 13 manipulation conditions, so the dose-response is comparable with σ 0.5 rather than
+a subset. Switch latency, decided criterion, low-conflict reversals, 6 seeds each:
+
+| what was done to the latent update | σ 0.5 | vs control | σ 0.6 | vs control |
+|---|---|---|---|---|
+| **off** for trials 1–4 (the paper's ACC→MD silencing) | 9.07 | +4.46, 6/6 | 10.06 | +4.40, 6/6 |
+| unperturbed | 4.61 | — | 5.66 | — |
+| **×3** for trials 1–5 (ours) | 3.68 | −0.93, 6/6 | 3.98 | **−1.68**, 6/6 |
+| **×10** for trials 1–5 (ours) | 2.80 | −1.81, 6/6 | 3.08 | **−2.58**, 6/6 |
+| **Z driven to (1, 1)** at the first feedback | 3.24 | −1.37, 6/6 | 3.59 | **−2.07**, 6/6 |
+| *the ideal observer, for scale* | *2.99* | | *3.22* | |
+
+Every row is 6/6 at both levels and the dose-response across 0×, 1×, 3×, 10× is monotone
+at both (10.06, 5.66, 3.98, 3.08 at σ 0.6). **The paper's Fig 4h result and its converse
+survive the noise change intact** — silencing the update roughly doubles the latency,
+driving it roughly halves it.
+
+What *changed* is the size of the stimulation effect: ×3 went −0.93 → −1.68, ×10
+−1.81 → −2.58, and the (1,1) drive −1.37 → −2.07, while silencing cost the same ~4.4
+trials at both levels. The observer column says why, and it is a measurement rather than a
+story: the unperturbed model sits 1.62 trials above the normative latency at σ 0.5 and
+2.44 above it at σ 0.6, and the ×10 arm lands 0.19 and 0.14 trials *below* normative
+respectively. **Stimulation saturates at the normative latency at both noise levels**, so
+it buys more where the unperturbed network had further to go. The gain of the latent update
+is what sets how close to optimal the switch is, and ×10 is already at the ceiling of what
+that buys.
+
+That also sharpens the headline. The higher noise moved the latent machinery *toward*
+normative on two independent measures — the high-vs-low split (+0.606 → +0.903 against the
+observer's +0.854) and now the absolute latency under stimulation — while leaving the
+behavioural read-out flat. Whatever keeps the model's behaviour from separating like the
+animals' is downstream of the latent, not in it.
+
+_All stages done._
 
 What to look at, and what would count:
 
