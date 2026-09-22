@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 import plot_style
 from plot_style import FigSize, get_model_color, outcome_color, outcome_line
 
-from hier_switch_group import EXPORTS, NOISE, OUT_DIR, RNN_BASE, collect, session_report
+from hier_switch_group import EXPORTS, LEVEL, NOISE, OUT_DIR, RNN_BASE, collect, session_report
 from hier_switch_observer import CEILING, SELECTION_FRAC
 from hier_switch_perturb import level_tags
 
@@ -1298,6 +1298,11 @@ def story_figure(out_dir=None, gate='softmax'):
     paired = paired_by_seed(data, ('NG', 'softmax_rc_low'), ('NG', 'softmax_rc_high'))
     split = {'NeuraGEM': paired} if paired else groups
     cells = clamp_cells_on_disk('sigmoid')
+    if not cells:
+        # spec_clamp_grid draws an empty panel rather than failing, so row 3 would come out
+        # blank with nothing to say why. Usually it means the sigmoid clamp grid has not
+        # been run for this level: ./hier_switch/run_clamp.sh.
+        print(f'WARNING: no sigmoid clamp cells for level {LEVEL} — story row 3 will be blank')
     # The two manipulations the story commits to: silencing the latent update, and driving
     # the latent to (1, 1). Shown on the low-conflict reversals, each against its own
     # unperturbed partner. The latency numbers for every manipulation, including the
