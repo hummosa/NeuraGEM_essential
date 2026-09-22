@@ -347,7 +347,32 @@ as a comparison of two working models.
 Before treating that as a fact about the task: `RNN300`'s test `WU_lr` of 3e-3 and its
 250–350-trial blocks were tuned at σ 0.5, as the shortest blocks on which a plastic RNN
 commits. `hier_switch/rnn_wu_probe.py` runs one trained seed at several rates to say
-whether the rate is the cause. Result below.
+whether the rate is the cause.
+
+**It is not.** `rnn_wu_probe.py v19 6`, against the σ 0.5 sweep in
+`docs/hier_switch_handoff.md` §5d (same seed index, same 300-trial-trained starting
+weights):
+
+| test `WU_lr` | σ 0.5: acc / undecided | σ 0.6: acc / steady / undecided / \|dec\| |
+|---|---|---|
+| 1e-3 | 0.68 / 0.83 | 0.539 / 0.545 / 0.959 / 0.117 |
+| **3e-3** (the setting in use) | **0.89 / 0.36** | **0.633 / 0.646 / 0.760 / 0.308** |
+| 1e-2 | 0.51 / 1.00 | 0.494 / 0.492 / 0.999 / 0.053 |
+| 3e-2 | 0.48–0.52 | 0.494 / 0.494 / 0.772 / 0.339 |
+
+**The optimum is in the same place at both noise levels, and the whole curve has dropped.**
+3e-3 is the unique best on accuracy at σ 0.6 as it was at σ 0.5, with 1e-3 and 1e-2 worse
+on either side; peak accuracy fell 0.89 → 0.63 and hedging roughly doubled, 0.36 → 0.76.
+3e-2 reproduces the thrashing signature the σ 0.5 log recorded at 1e-1 — undecided drops
+to 0.77 and |decision| rises to 0.34, but accuracy sits at chance, so it commits and
+commits wrongly, which is worse than hedging.
+
+So the baseline's failure at σ 0.6 is a fact about the task at this noise, not a stale
+hyperparameter, and **the rate should not be retuned**: there is nothing better to move it
+to. The honest statement is that a plastic-weight RNN on 250–350-trial blocks does not do
+this task at σ 0.6. Whether some *other* baseline could — a longer block, or the stateful
+feedback-RNN in `docs/hier_switch_handoff.md` §7.4 — is a separate question and a model
+change.
 
 _Stages 3–6 done; stage 7 (manipulations) pending._
 
@@ -430,9 +455,8 @@ Re-tuning `Z_lr`, the passive-phase length or the RNN's block length. All were f
 σ 0.5 and may be suboptimal there too, but changing them alongside the noise would confound
 the comparison. Change one thing.
 
-The RNN's test `WU_lr` is the one case where a retune is arguably owed rather than
-deferred, since its current value was chosen at a noise level the baseline no longer
-works at — see the diagnostic above before deciding.
+Retuning the RNN's test `WU_lr` is **settled, not deferred**: the diagnostic above shows
+3e-3 is still the optimum at σ 0.6, so there is nothing to move it to.
 
 A cross-noise comparison figure: nothing here needs one yet, because the interesting
 numbers are single values per level rather than curves. The tables in this document are
