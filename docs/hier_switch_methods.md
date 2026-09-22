@@ -271,15 +271,24 @@ the extremes instead**, 8:1 against 5:4: that is test-only, costs a dozen sessio
 retraining, and widens the observer's gap from 0.06 to 0.30 — but it is no longer the
 paper's manipulation, and would have to be labelled as ours.
 
-The first is being done, at σ = 0.6, and `docs/hier_switch_noise.md` is the record. Two
-things are already settled by the calibration and do not depend on how the models turn
-out. The observer's gap between the paper's two levels roughly doubles, from 0.061 at
-σ = 0.5 to 0.095 at σ = 0.6, for 0.029 of ceiling. And **no noise level reaches the
-paper's ~0.20 gap** with 9 informative pulses: the gap saturates near 0.12 around
-σ = 0.8–0.9 and then shrinks, because past that the low-conflict end collapses too. That
-is a property of an optimal reader, so it bounds what retraining can produce, and it means
-some of the remaining distance from the paper is not sensory noise at all. Every number in
-this document is from the σ = 0.5 tree unless it says otherwise.
+**The first was done, at σ = 0.6, and it is not enough.** `docs/hier_switch_noise.md` is
+the record; the outcome in one line is that the model's gap went 0.084 → 0.101 while the
+observer's went 0.061 → 0.095, so the model spent the margin it had over optimal (0.023 at
+σ = 0.5, 0.006 at σ = 0.6) rather than gaining ground. Retraining under the noise bought
+nothing over merely testing at it (0.101 against 0.103), so the gap is set by the sensory
+noise and not by what the network learns under it.
+
+And **no noise level reaches the paper's ~0.20 gap** with 9 informative pulses: an optimal
+reader's gap saturates near 0.12 around σ = 0.8–0.9 and then shrinks, because past that
+the low-conflict end collapses too. Since the model now tracks the observer, that bounds
+the whole approach — **some of the remaining distance from the paper is not sensory noise
+at all.** The quantity that moves the bound is the *number* of informative pulses rather
+than their variance, which is a larger task change and would stop the forced levels being
+the paper's; the noise doc's last section sets out what it would take.
+
+Every number in this document is from the σ = 0.5 tree unless it says otherwise. The
+σ = 0.6 group table and figures are `exports/hier_switch/group/n06/`, and every claim in
+this section that was measured at both levels held at both.
 
 **The backprop baseline is now a real curve rather than a flat line.** On the blocks it can
 track (250–350 trials, weights plastic) it runs 0.92 → 0.61 across conflict, below NeuraGEM
