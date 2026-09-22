@@ -21,6 +21,23 @@ the paper's own conflict levels bite, rather than substituting more extreme ones
 
 It also changes the task and needs every model retrained, which is what this sweep costs.
 
+### The answer, up front
+
+σ 0.6 was run in full. **It does what the calibration said it would, and that is not
+enough.** The gap between the paper's two forced levels went 0.084 → 0.101, and training
+under the noise bought nothing over merely testing at it. The reversal split that motivated
+the run did not appear on the behavioural criterion; the latent-side criterion, already
+solid, tightened onto the normative value. The yield halved and the RNN baseline stopped
+working.
+
+The useful part is the bound. An optimal reader's gap peaks near 0.12 at σ 0.8–0.9 and then
+shrinks, and the model now tracks the observer rather than exceeding it, so **no noise level
+reaches the paper's ~0.20 gap with 9 informative pulses.** The distance from Fig 1e is not
+sensory noise alone, and the knob that would move the bound is the number of informative
+pulses, not their variance — see the last section.
+
+Read "Results at noise 0.6" for the numbers. Nothing in the σ 0.5 tree changed.
+
 ## What noise can buy: the ideal-observer calibration
 
 Measured with `hier_switch_observer.ceiling(sigma, n_trials=20000)` — a fresh test stream,
