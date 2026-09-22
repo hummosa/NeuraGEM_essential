@@ -728,15 +728,32 @@ are in `docs/hier_switch_task.md` (end of the tuning log).
 5. **Per-timestep Z within a trial** (`latent_aggregation_op='none'`) as an MDConflict
    analogue, and the free-response variant (`target_onset`) for an RT that measures
    integration directly. Both are model changes; both were deferred deliberately.
-6. **The cue-noise sweep — in progress, `docs/hier_switch_noise.md`.** `pulse_noise_std`
-   was set once to 0.5 and never tuned, and it is why panel d's low/high split is weaker
-   than the paper's: at 0.5 both forced levels are nearly solvable *for an optimal reader*,
-   whose own gap is 0.061. Raising it to 0.6 roughly doubles that to 0.095 for 0.029 of
-   ceiling. The machinery is in place (levels, relative selection, the two guards) and
-   `v18` / `v19` are the noise-0.6 grids. The calibration also bounds the answer: the
-   observer's gap peaks near 0.12 around σ 0.8–0.9 and then shrinks, so **no noise level
-   reaches the paper's ~0.20 gap** with 9 informative pulses. Read the noise doc before
-   quoting any σ 0.5 number as if it were the model's, and before re-running anything.
+6. **The cue-noise sweep — run at σ 0.6, and closed. `docs/hier_switch_noise.md`.**
+   `pulse_noise_std` was set once to 0.5 and never tuned, and it was the leading
+   explanation for panel d's low/high split being weaker than the paper's. **It is not the
+   explanation, or not all of it.** The model's gap went 0.084 → 0.101 while an optimal
+   reader's went 0.061 → 0.095, so the model spent the margin it had over optimal rather
+   than gaining ground; retraining under the noise bought nothing over merely testing at
+   it. And the observer's gap peaks near 0.12 around σ 0.8–0.9 and then shrinks, so **no
+   noise level reaches the paper's ~0.20 gap** with 9 informative pulses. The quantity
+   that moves that bound is the *number* of informative pulses, not their variance — and
+   below 9 the paper's 7:2 and 6:3 do not exist, so the forced levels would become ours.
+
+   Three things came out of it that outlive the negative result. The **reversal split
+   story is now supported at two noise levels**: the behavioural criterion stayed flat
+   (+0.212 → −0.049) while the latent-side one tightened onto the normative value (+0.606
+   → +0.903 against the observer's +0.854), which is what §5c's account of that measure
+   predicts. **NeuraGEM is robust** — steady accuracy rose as a fraction of ceiling, 0.951
+   → 0.958. And **the RNN baseline is not**: 2 of 20 seeds clear the learner bar, pooled
+   undecided 0.923, and `hier_switch/rnn_wu_probe.py` shows its test `WU_lr` of 3e-3 is
+   still the optimum, so that is the task rather than a stale knob. Do not retune it.
+
+   Also worth knowing: discovery and task performance **come apart** at σ 0.6. Steady
+   accuracy no longer separates discoverers from failures (a 0.005 boundary margin against
+   0.179 at σ 0.5) while Z d′ still does, and two seeds reach 0.92 and 0.80 of ceiling with
+   a latent that never separates the contexts. Any future selection rule should lean on
+   Z d′, not on accuracy. Read the noise doc before quoting any σ 0.5 number as if it were
+   the model's, and before re-running anything.
 
 The B5 spec that used to sit here (§7a) is now `docs/hier_switch_analyses.md` §4, which
 documents it as built rather than as a plan.
