@@ -1353,20 +1353,28 @@ def story_figure(out_dir=None, gate='softmax'):
             spec_encoding_variance(ng)]),
         # The full grid: one line per clamped gain, against the clamped contrast. Both
         # axes have to be visible for the dissociation to be one — the gain lines separate
-        # in cue velocity and lie on top of each other in nothing else. The negative
-        # contrast is dropped as the mirror of its positive twin (DROP_NEGATIVE_CONTRAST).
-        # Panel i is plain accuracy on one named task, scored the same way at every cell,
-        # so a gate that imposes nothing is free to sit at chance and a gate pointing the
-        # wrong way is free to go below it. Which task is "A" is fixed once per network
-        # (clamp_cells_on_disk) because the unit-to-context labelling is arbitrary. The
-        # companion figure scoring task B is clamp_<act>_taskB.pdf and is its mirror.
+        # in cue velocity and lie on top of each other in nothing else.
+        #
+        # Panel i keeps the negative contrast and the other three drop it. That is not an
+        # inconsistency: panel i is the one panel where the sign *means* something. It is
+        # plain accuracy on one named task, scored the same way at every cell, so a gate
+        # pointing the wrong way is free to fall below chance and the reader should see it
+        # do so. Which task is "A" is fixed once per network (clamp_cells_on_disk) because
+        # the unit-to-context labelling is arbitrary; the companion figure scoring task B
+        # is clamp_<act>_taskB.pdf and is its mirror. In the other three the negative half
+        # is the mirror of its positive twin and costs width for nothing.
+        #
         # |decision| replaces RT, which depends on the crossing threshold we picked and
         # pins every never-crossing cell at the trial length.
         ('story_3_gate', [
-            nolegend(spec_clamp_grid(cells, 'acc_task_a', 'Accuracy on task A')),
-            nolegend(spec_clamp_grid(cells, 'abs_decision', '|decision|')),
-            nolegend(spec_clamp_grid(cells, 'index', 'Integration index')),
-            relegend(spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity'),
+            nolegend(spec_clamp_grid(cells, 'acc_task_a', 'Accuracy on task A',
+                                     drop_negative=False)),
+            nolegend(spec_clamp_grid(cells, 'abs_decision', '|decision|',
+                                     drop_negative=True)),
+            nolegend(spec_clamp_grid(cells, 'index', 'Integration index',
+                                     drop_negative=True)),
+            relegend(spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity',
+                                     drop_negative=True),
                      loc='center left', bbox_to_anchor=(1.0, 0.5), fontsize='xx-small')]),
         (f'story_4_reversal{gate_tag}', [
             nolegend(spec_reversal(split, 'undecided', 'Undecided rate')),
