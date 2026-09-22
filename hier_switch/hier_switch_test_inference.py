@@ -113,6 +113,12 @@ CONDITIONS = {
     # The sigmoid at its best setting, as a forced-conflict triplet: the only gate where the
     # gain is a live axis, so it is where "drive both units" is a gain move and not a reset.
     **_rc('sigmoid', dict(SIGMOID, Z_lr=3e4)),
+    # The same triplet on a noisier cue, at the weights the model already trained with. The
+    # dataset reads pulse_noise_std live, so this is the trained network's inference
+    # mechanism meeting a harder cue — not a network grown under one, which needs retraining
+    # (tune_v18). Its value is that it is paired: the same seeds, the same weights, and a
+    # stimulus stream whose noise vector is the sigma-0.5 one scaled by 1.2.
+    **_rc('softmax_n06', dict(pulse_noise_std=0.6)),
     # ── The manipulations (hier_switch_hooks), each on the forced low/high pair ──
     # Every one acts on the trials just after a reversal and then stops, as the paper's
     # optogenetics does. `lu0` is ACC→MD silencing (Fig 4h): the gradient is still computed
@@ -136,8 +142,9 @@ CONDITIONS = {
     **{f'rnn300_rc_{k}': dict(RNN300, n_trials=4500, reversal_conflict=v)
        for k, v in (('none', None), ('low', 'low'), ('high', 'high'))},
 }
-# Which conditions a model type runs when none are named.
-DEFAULTS = dict(NG=[k for k in CONDITIONS if not k.startswith('rnn')],
+# Which conditions a model type runs when none are named. The noise-0.6 probe is left out:
+# it is a diagnostic on a specific question, named explicitly when it is wanted.
+DEFAULTS = dict(NG=[k for k in CONDITIONS if not k.startswith(('rnn', 'softmax_n06'))],
                 RNN=[k for k in CONDITIONS if k.startswith('rnn300')])
 
 

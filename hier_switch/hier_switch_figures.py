@@ -34,7 +34,9 @@ import matplotlib.pyplot as plt
 import plot_style
 from plot_style import FigSize, get_model_color, outcome_color, outcome_line
 
-from hier_switch_group import EXPORTS, RNN_BASE, collect, session_report
+from hier_switch_group import EXPORTS, NOISE, OUT_DIR, RNN_BASE, collect, session_report
+from hier_switch_observer import CEILING, SELECTION_FRAC
+from hier_switch_perturb import level_tags
 
 plot_style.set_plot_style()
 
@@ -703,7 +705,15 @@ def spec_clamp_gain(cells, d=1.0, measure='cue_velocity', ylabel='Cue velocity')
 #: A baseline seed counts as having learned the task if its steady-state accuracy clears
 #: this. The v17 RNN is bimodal — 7 of 10 seeds reach 0.76-0.88 and 3 sit at 0.50 with an
 #: undecided rate of 1.00 — so a mean over all ten describes no actual network.
-LEARNED = 0.6
+#:
+#: Relative to the level's ceiling, and to the same fraction NeuraGEM's discovery rule
+#: uses, so the two groups are not selected by rules of different severity once the noise
+#: changes. At noise 0.5 that is 0.729 and it reclassifies none of the ten v17 seeds
+#: (checked), but note the margin is asymmetric: the RNN's empty band is 0.507-0.760,
+#: narrower than NeuraGEM's, so the bar clears the lowest learner by only 0.031. A
+#: noise-0.6 RNN seed landing between about 0.72 and 0.78 of ceiling is a case to look at
+#: rather than to let the rule decide.
+LEARNED = SELECTION_FRAC * CEILING[NOISE]
 
 
 def learners(reports, thresh=LEARNED):
@@ -1153,7 +1163,7 @@ def figure(panels, path, ncol=None, panel=None, letters=False):
 
 def group_figures(out_dir=None):
     data = collect()
-    out_dir = out_dir or os.path.join(EXPORTS, 'group', 'figures')
+    out_dir = out_dir or os.path.join(OUT_DIR, 'figures')
     ng = [data[('NG', 'softmax_rc_none')][s] for s in sorted(data.get(('NG', 'softmax_rc_none'), {}))]
     rnn = learners([data[('RNN', RNN_BASE)][s] for s in sorted(data.get(('RNN', RNN_BASE), {}))])
     if not ng:
@@ -1272,7 +1282,7 @@ def story_figure(out_dir=None, gate='softmax'):
       6  the manipulations, against the paper's Fig 4h and 5d
     """
     data = collect()
-    out_dir = out_dir or os.path.join(EXPORTS, 'group', 'figures')
+    out_dir = out_dir or os.path.join(OUT_DIR, 'figures')
     pick = lambda key: [data[key][s] for s in sorted(data.get(key, {}))]
     ng, rnn = pick(('NG', 'softmax_rc_none')), pick(('RNN', RNN_BASE))
     sig = pick(('NG', 'sigmoid_zlr30000'))
@@ -1409,7 +1419,8 @@ def clamp_cells_on_disk(activation):
     cells = []
     if not os.path.isdir(root):
         return cells
-    for tag in sorted(os.listdir(root)):
+    # This level's selected seeds only — see hier_switch_perturb.level_tags.
+    for tag in level_tags(root):
         f = os.path.join(root, tag, f'clamp_grid_{activation}.json')
         if not os.path.exists(f):
             continue

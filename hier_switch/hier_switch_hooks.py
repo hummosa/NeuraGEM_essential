@@ -151,7 +151,9 @@ def _self_test():
     from hier_switch_analyses import extract_trials, recover_grad, session_arrays
     from hier_switch_train import load_model, run_test
 
-    path = os.path.join(_ROOT, 'exports', 'hier_switch', 'tune_v15', 'NG_s0', 'model.pt')
+    from hier_switch_group import NG_SEEDS, NG_TAG
+    path = os.path.join(_ROOT, 'exports', 'hier_switch', f'tune_{NG_TAG}',
+                        f'NG_s{NG_SEEDS[0]}', 'model.pt')
     if not os.path.exists(path):
         print(f'no model at {path}: skipping'); return
     model, cfg = load_model(path)

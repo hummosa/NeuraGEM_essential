@@ -11,12 +11,17 @@
 # Cost: ~15 sessions x 6 seeds x ~2 min recording, plus ~21 analyses x ~30 s per task, so
 # roughly 40-55 min per task inside a 3 h limit. Each session is ~6.4 MB, so this adds
 # ~0.6 GB under exports/hier_switch (git-ignored).
+#
+# HIER_SWITCH_LEVEL picks the cue-noise level; it is read here to size the array and
+# written into the submitted script so the two cannot disagree.
 set -e
 cd "$(dirname "$0")/.."
+LEVEL=${HIER_SWITCH_LEVEL:-n05}
 # models() lists the NG seeds first, then the RNN baselines; default to the NG block.
-NG=$(HIER_SWITCH_MANIP=1 .venv/bin/python hier_switch/hier_switch_group.py list \
-     | awk '$2 == "NG"' | wc -l)
+NG=$(HIER_SWITCH_MANIP=1 HIER_SWITCH_LEVEL=$LEVEL \
+     .venv/bin/python hier_switch/hier_switch_group.py list | awk '$2 == "NG"' | wc -l)
 RANGE=${1:-0-$((NG - 1))}
+echo "level $LEVEL: $NG manipulation tasks, array $RANGE"
 sbatch --parsable --array=$RANGE <<EOS
 #!/bin/bash
 #SBATCH --job-name=hsw_manip
@@ -27,6 +32,7 @@ sbatch --parsable --array=$RANGE <<EOS
 #SBATCH --time=0-03:00:00
 export OMP_NUM_THREADS=1
 export HIER_SWITCH_MANIP=1
+export HIER_SWITCH_LEVEL=$LEVEL
 source \$HOME/load_python_venv.sh
 cd $(pwd)
 python hier_switch/hier_switch_group.py task

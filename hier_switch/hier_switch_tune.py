@@ -226,6 +226,24 @@ GRIDS = {
                  tests=[dict(label='test', test_no_of_steps_in_latent_space=0, WU_lr=3e-3,
                              block_len_range=(250, 350))])
             for sd in range(10)],
+    # ── pulse_noise_std 0.6 (docs/hier_switch_noise.md) ──────────────────────
+    # v18: v13's screen and v15's save in one grid, at the higher cue noise. v13 and v15
+    # produced bit-identical summaries on all six seeds — the config defaults *are*
+    # v15's explicit 4000 / 5000, and save_model is popped before the config is built, so
+    # it consumes no RNG — which is why the screen can save its models and the retrain
+    # stage disappears. 20 seeds, because discovery is fragile and 6 of 10 found the
+    # contexts at noise 0.5.
+    'v18': [dict(name=f'NG_s{sd}', model='NG', seed=sd, save_model=True) for sd in range(20)],
+    # v19: v17 verbatim at the higher noise. Nothing but pulse_noise_std differs, because
+    # changing a second knob alongside the noise would confound the comparison. Its test
+    # WU_lr of 3e-3 and 250-350 blocks were tuned at noise 0.5, so check whether the
+    # baseline still commits before trusting its numbers (docs/hier_switch_noise.md).
+    'v19': [dict(name=f'RNN_s{sd}', model='RNN', seed=sd,
+                 train_block_schedule=[(10**9, (300, 300))],
+                 save_model=True,
+                 tests=[dict(label='test', test_no_of_steps_in_latent_space=0, WU_lr=3e-3,
+                             block_len_range=(250, 350))])
+            for sd in range(20)],
 }
 _CURRICULUM_1 = [(3000, (3000, 3000)), (6000, (200, 300))]
 _LONG_BLOCKS = [(3000, (3000, 3000)), (10**9, (1000, 1000))]
@@ -248,7 +266,17 @@ COMMON = {'v1': dict(n_test_trials=1500, n_train_trials=8000),
           'v14': dict(n_test_trials=1000),
           'v15': dict(n_test_trials=1000),
           'v16': dict(n_test_trials=1000),
-          'v17': dict(n_test_trials=3000)}       # ~10 of its 250-350-trial blocks
+          'v17': dict(n_test_trials=3000),       # ~10 of its 250-350-trial blocks
+          # The phase lengths are the config defaults, written out because that is what
+          # made v15 reproduce v13 exactly, and because a later change to the defaults
+          # should not silently move a recorded noise level. pulse_noise_std lives here
+          # rather than on each entry so no entry of the grid can miss it; run_entry
+          # records the merged entry into every summary.json, which is where `arms` and
+          # _meta_from_summary read the level back from.
+          'v18': dict(n_test_trials=1000, n_passive_trials=4000, n_train_trials=5000,
+                      pulse_noise_std=0.6),
+          'v19': dict(n_test_trials=3000, n_passive_trials=4000, n_train_trials=5000,
+                      pulse_noise_std=0.6)}
 
 
 def grid(tag):
@@ -348,18 +376,46 @@ def collect(tag):
               + f' | {str(te.get("cross_trial", "")):>5}')
 
 
-def arms(tag):
-    """Seeds grouped by setting (run name minus its _s<seed> suffix).
+#: Below this, the two populations are no longer cleanly separated and the threshold is
+#: doing real discrimination rather than telling learners from chance. `arms --save`
+#: refuses to pick a group in that case: at noise 0.5 the gap is 0.178, so a run that
+#: comes back with 0.06 is telling you something about the noise level, not about the rule.
+MIN_GAP = 0.10
 
-    discovered   test steady-state (trials 11+) >= 0.8 and Z separates the contexts (d' > 1.5)
-    passive_ok   the passive phase reached >= 0.75 in its last block, i.e. the task itself
-                 was learned; a seed that fails here never had a chance to discover anything
+
+def _tag_noise(tag):
+    """The pulse_noise_std every entry of a grid was run at, from what run_entry recorded."""
+    sigmas = {float(e.get('pulse_noise_std', 0.5)) for e in grid(tag)}
+    if len(sigmas) > 1:
+        raise SystemExit(f'grid {tag} mixes noise levels {sorted(sigmas)}')
+    return sigmas.pop()
+
+
+def arms(tag, save=False):
+    """Which seeds discovered the contexts, as a fraction of what the noise level allows.
+
+    discovered   test steady-state (trials 11+) >= SELECTION_FRAC x the ceiling, and Z
+                 separates the contexts (d' > 1.5). d' is a separation in Z units with no
+                 ceiling to scale by, so it stays absolute; its margin is a factor of five.
+    passive_ok   the passive phase reached PASSIVE_FRAC x the ceiling in its last block,
+                 i.e. the task itself was learned; a seed that fails here never had a
+                 chance to discover anything.
+
+    `save` writes selection.json beside the grid, which is what hier_switch_group reads —
+    the seed list is never transcribed by hand.
     """
     import re
     from collections import defaultdict
     from hier_switch_analyses import block_table
+    from hier_switch_observer import CEILING, PASSIVE_FRAC, SELECTION_FRAC
     root = os.path.join(os.path.dirname(_HERE), 'exports', 'hier_switch', f'tune_{tag}')
-    groups = defaultdict(list)
+    sigma = _tag_noise(tag)
+    if sigma not in CEILING:
+        raise SystemExit(f'no ceiling recorded for pulse_noise_std={sigma}; add one to '
+                         'hier_switch_observer.CEILING (see ceiling() beside it)')
+    ceil = CEILING[sigma]
+    bar, passive_bar = SELECTION_FRAC * ceil, PASSIVE_FRAC * ceil
+    groups, rows = defaultdict(list), []
     for e in grid(tag):
         p = os.path.join(root, e['name'], 'summary.json')
         if not os.path.exists(p):
@@ -369,11 +425,19 @@ def arms(tag):
         d = dict(np.load(os.path.join(root, e['name'], 'trials.npz'), allow_pickle=True))
         d['n'] = len(d['correct'])
         pb = block_table(d, 'no inference learning')
-        passive_ok = bool(pb) and pb[-1]['acc_late'] >= 0.75
-        found = te['acc_since'].get('11-1000', 0) >= 0.8 and te.get('z_dprime', 0) > 1.5
-        groups[re.sub(r'_s\d+$', '', e['name'])].append(
-            dict(found=found, passive_ok=passive_ok, acc=te['acc'],
-                 steady=te['acc_since'].get('11-1000'), cross=te.get('cross_trial')))
+        passive_ok = bool(pb) and pb[-1]['acc_late'] >= passive_bar
+        steady = te['acc_since'].get('11-1000', 0)
+        found = steady >= bar and te.get('z_dprime', 0) > 1.5
+        r = dict(name=e['name'], seed=int(e['seed']), found=found, passive_ok=passive_ok,
+                 acc=te['acc'], steady=steady, ratio=steady / ceil,
+                 z_dprime=te.get('z_dprime', float('nan')), cross=te.get('cross_trial'))
+        groups[re.sub(r'_s\d+$', '', e['name'])].append(r)
+        rows.append(r)
+    if not rows:
+        raise SystemExit(f'nothing on disk under {root}')
+
+    print(f'noise {sigma}, ceiling {ceil:.4f}; discovered = steady >= '
+          f'{SELECTION_FRAC} x ceiling = {bar:.4f}, and Z dprime > 1.5\n')
     print(f'{"arm":<26} {"discovered":>10} {"passive ok":>10} | among discovered: '
           f'{"test":>5} {"steady":>6} {"cross":>5}')
     for arm, rs in groups.items():
@@ -381,6 +445,43 @@ def arms(tag):
         m = lambda k: np.mean([r[k] for r in hit]) if hit else float('nan')
         print(f'{arm:<26} {len(hit):>4} / {len(rs):<3} {sum(r["passive_ok"] for r in rs):>4} / {len(rs):<3} | '
               f'{"":17}{m("acc"):5.2f} {m("steady"):6.2f} {m("cross"):5.1f}')
+
+    # The distribution the threshold sits in. If it is bimodal the exact coefficient does
+    # not matter; if it is not, no coefficient is defensible and that is the finding.
+    order = sorted(rows, key=lambda r: -r['ratio'])
+    print(f'\n{"seed":>5} {"steady":>7} {"ratio":>7} {"Z dp":>6}  selected')
+    prev = None
+    gaps = []
+    for r in order:
+        if prev is not None:
+            gaps.append((prev - r['ratio'], prev, r['ratio']))
+        prev = r['ratio']
+        print(f"{r['seed']:>5} {r['steady']:7.4f} {r['ratio']:7.4f} {r['z_dprime']:6.2f}  "
+              f"{'yes' if r['found'] else 'no'}{'' if r['passive_ok'] else '   (passive failed)'}")
+    gap, above, below = max(gaps, default=(float('nan'), float('nan'), float('nan')))
+    print(f'\nlargest gap in ratio: {gap:.3f} (between {above:.3f} and {below:.3f}); '
+          f'the rule sits at {SELECTION_FRAC:.3f}')
+
+    seeds = sorted(r['seed'] for r in rows if r['found'])
+    if not save:
+        print(f'\nwould select {tuple(seeds)} ({len(seeds)} of {len(rows)}); '
+              f'pass --save to write selection.json')
+        return seeds
+    if not np.isfinite(gap) or gap < MIN_GAP:
+        raise SystemExit(
+            f'\nlargest gap {gap:.3f} < {MIN_GAP}: the seeds do not separate into '
+            'discoverers and failures at this noise level, so no threshold picks a group '
+            'that means anything. Look at the distribution above before selecting.')
+    out = os.path.join(root, 'selection.json')
+    with open(out, 'w') as f:
+        json.dump(dict(ng_seeds=seeds, pulse_noise_std=sigma, ceiling=ceil,
+                       selection_frac=SELECTION_FRAC, passive_frac=PASSIVE_FRAC,
+                       steady_threshold=bar, largest_gap=gap,
+                       table=[{k: r[k] for k in
+                               ('seed', 'steady', 'ratio', 'z_dprime', 'found', 'passive_ok')}
+                              for r in order]), f, indent=1, default=float)
+    print(f'\nselected {tuple(seeds)} ({len(seeds)} of {len(rows)})  ->  {out}')
+    return seeds
 
 
 if __name__ == '__main__':
@@ -396,6 +497,6 @@ if __name__ == '__main__':
     elif mode == 'collect':
         collect(tag)
     elif mode == 'arms':
-        arms(tag)
+        arms(tag, save='--save' in sys.argv[3:])
     else:
         raise SystemExit(f'unknown mode {mode!r}: list | run | collect')

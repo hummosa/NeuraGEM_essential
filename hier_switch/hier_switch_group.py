@@ -10,6 +10,8 @@ reported per seed, with **how many seeds carry the predicted sign** next to the 
     SLURM_ARRAY_TASK_ID=0 .venv/bin/python hier_switch/hier_switch_group.py task
     .venv/bin/python hier_switch/hier_switch_group.py analyse <session dir> ...
     .venv/bin/python hier_switch/hier_switch_group.py aggregate
+    HIER_SWITCH_PROBE=1 ./hier_switch/run_sessions.sh   # the noise-0.6 probe, then:
+    .venv/bin/python hier_switch/hier_switch_group.py probe
 
 `task` records one model's conditions (hier_switch_test_inference) and writes a
 results.json beside each session. `analyse` does the second half alone, for sessions that
@@ -43,8 +45,52 @@ from hier_switch_hidden import hidden_report, z_side_table
 from hier_switch_observer import ideal_observer
 
 EXPORTS = os.path.join(_ROOT, 'exports', 'hier_switch')
-NG_SEEDS = (0, 1, 3, 5, 6, 9)            # the v13 seeds that discovered the contexts
-RNN_SEEDS = tuple(range(10))
+
+#: One cue-noise level = a pair of tune tags, a seed range and an output directory.
+#:
+#: Nothing physical is namespaced by this table. The tune tag is what keeps the levels
+#: apart on disk, and it does so for free: it is derived from the model's own path
+#: (hier_switch_test_inference.main, hier_switch_perturb.clamp_grid), so tune_v18 models
+#: write to inference_tests/tune_v18_NG_s*/ and clamp/tune_v18_NG_s*/ without any of the
+#: writers knowing a level exists. That matters because the alternative — a root that a
+#: forgotten environment variable silently drops — would write real GPU-hours of sessions
+#: into the wrong tree and then skip them as already recorded.
+#:
+#: HIER_SWITCH_LEVEL therefore only chooses which tags to *read* and where the group table
+#: and figures land. Getting it wrong costs a few minutes of regeneration and is obvious
+#: on sight (a six-seed table with twelve seeds in it).
+LEVELS = {
+    'n05': dict(noise=0.5, ng_tag='v15', rnn_tag='v17', rnn_seeds=range(10), out=('group',)),
+    'n06': dict(noise=0.6, ng_tag='v18', rnn_tag='v19', rnn_seeds=range(20), out=('group', 'n06')),
+}
+LEVEL = os.environ.get('HIER_SWITCH_LEVEL') or 'n05'
+if LEVEL not in LEVELS:
+    raise SystemExit(f'HIER_SWITCH_LEVEL={LEVEL!r}; known levels: {sorted(LEVELS)}')
+NOISE = LEVELS[LEVEL]['noise']
+NG_TAG = LEVELS[LEVEL]['ng_tag']
+RNN_TAG = LEVELS[LEVEL]['rnn_tag']
+OUT_DIR = os.path.join(EXPORTS, *LEVELS[LEVEL]['out'])
+
+
+def ng_seeds():
+    """The seeds that discovered the contexts at this level, as `arms --save` recorded them.
+
+    Hand-transcribing the list off `arms` into the source is the single most likely thing
+    to go wrong once there is more than one level to do it for, so selection.json is the
+    record and this reads it. The noise-0.5 tuple is kept as a fallback because tune_v15
+    predates selection.json and its six seeds are quoted throughout the docs.
+    """
+    f = os.path.join(EXPORTS, f'tune_{NG_TAG}', 'selection.json')
+    if os.path.exists(f):
+        with open(f) as fh:
+            return tuple(json.load(fh)['ng_seeds'])
+    if NG_TAG == 'v15':
+        return (0, 1, 3, 5, 6, 9)
+    raise SystemExit(f'no {f}: run `hier_switch_tune.py arms {NG_TAG} --save` first')
+
+
+NG_SEEDS = ng_seeds()
+RNN_SEEDS = tuple(LEVELS[LEVEL]['rnn_seeds'])
 # Paired forced-conflict triplets are the backbone: same trials, only the first 5 trials of
 # each block differ. The sigmoid ladder is where gain is a live axis (B5's Δgain).
 NG_CONDITIONS = ['softmax_rc_none', 'softmax_rc_low', 'softmax_rc_high',
@@ -60,26 +106,36 @@ NG_MANIPULATIONS = ['sigmoid_rc_none', 'sigmoid_rc_low', 'sigmoid_rc_high',
                     'sigmoid_blast_rc_low', 'sigmoid_blast_rc_high']
 #: The RNN baseline: v17 models on their own blocks (hier_switch_test_inference.RNN300).
 #: The v16 sessions on the paper's blocks (`rnn_rc_*`) stay on disk as the record of the hedge.
-RNN_TAG = 'v17'
 RNN_CONDITIONS = ['rnn300_rc_none', 'rnn300_rc_low', 'rnn300_rc_high']
 RNN_BASE = RNN_CONDITIONS[0]
+#: The noise-0.6 probe: the forced triplet re-run on the *already trained* models with a
+#: noisier cue. It asks whether the inference mechanism survives higher sensory noise at
+#: fixed weights, which is not the question tune_v18 asks, so it is kept out of
+#: `all_conditions` and never reaches the group table or the figures. Set
+#: HIER_SWITCH_PROBE=1 to record it; read it back with `probe`.
+NG_PROBE = ['softmax_n06_rc_none', 'softmax_n06_rc_low', 'softmax_n06_rc_high']
 #: Off until the manipulation sessions have been recorded, so `list` and `task` keep
 #: describing what is on disk. Set HIER_SWITCH_MANIP=1 to include them.
 WITH_MANIPULATIONS = bool(os.environ.get('HIER_SWITCH_MANIP'))
+WITH_PROBE = bool(os.environ.get('HIER_SWITCH_PROBE'))
 
 
 def models():
     """[(model_type, seed, model.pt, conditions)] — the group, in array-task order."""
     conds = NG_CONDITIONS + (NG_MANIPULATIONS if WITH_MANIPULATIONS else [])
-    out = [('NG', s, os.path.join(EXPORTS, 'tune_v15', f'NG_s{s}', 'model.pt'), conds)
-           for s in NG_SEEDS]
+    # The probe replaces the list rather than extending it: it is a one-off diagnostic on
+    # models that already have their sessions, so re-recording those would only be skipped.
+    out = [('NG', s, os.path.join(EXPORTS, f'tune_{NG_TAG}', f'NG_s{s}', 'model.pt'),
+            NG_PROBE if WITH_PROBE else conds) for s in NG_SEEDS]
+    if WITH_PROBE:
+        return out                      # the RNN has no latent inference to probe
     out += [('RNN', s, os.path.join(EXPORTS, f'tune_{RNN_TAG}', f'RNN_s{s}', 'model.pt'),
              RNN_CONDITIONS) for s in RNN_SEEDS]
     return out
 
 
 def session_dirs(model_type, seed, conditions):
-    tag = f"tune_{'v15' if model_type == 'NG' else RNN_TAG}_{model_type}_s{seed}"
+    tag = f"tune_{NG_TAG if model_type == 'NG' else RNN_TAG}_{model_type}_s{seed}"
     return [os.path.join(EXPORTS, 'inference_tests', tag, c) for c in conditions]
 
 
@@ -505,7 +561,7 @@ def aggregate(out_dir=None):
     data = collect()
     rows = predictions(data)
     noise = noise_level(data)
-    out_dir = out_dir or os.path.join(EXPORTS, 'group')
+    out_dir = out_dir or OUT_DIR
     os.makedirs(out_dir, exist_ok=True)
     summary = dict(sessions={f'{k[0]}/{k[1]}': sorted(v) for k, v in data.items()},
                    predictions=rows)
@@ -529,6 +585,91 @@ def aggregate(out_dir=None):
     return summary
 
 
+#: The probe's measures: a label, and how to pull the number out of one seed's three
+#: reports (keyed 'none' / 'low' / 'high'). Conflict 0.286 and 0.5 are the paper's low and
+#: high levels; the switch cost is the story figure's panel d in one number.
+PROBE_MEASURES = [
+    ('accuracy, conflict 0.29', lambda d: d['none']['behaviour']['psychometric']['acc'][2]),
+    ('accuracy, conflict 0.50', lambda d: d['none']['behaviour']['psychometric']['acc'][3]),
+    ('steady accuracy', lambda d: d['none']['behaviour']['acc_steady']),
+    ('trials to switch, low early conflict', lambda d: d['low']['behaviour']['switch']['all']['switch']),
+    ('trials to switch, high early conflict', lambda d: d['high']['behaviour']['switch']['all']['switch']),
+    ('switch cost (high - low)', lambda d: (d['high']['behaviour']['switch']['all']['switch']
+                                            - d['low']['behaviour']['switch']['all']['switch'])),
+]
+
+
+#: The probe is *about* the noise-0.5 networks, so it names them rather than following
+#: HIER_SWITCH_LEVEL — reading it under n06 should still show the n05 models.
+PROBE_TAG = LEVELS['n05']['ng_tag']
+PROBE_SEEDS = (0, 1, 3, 5, 6, 9)
+
+
+def _probe_reports(seed, prefix):
+    """One seed's three forced sessions under a condition prefix, or None if incomplete."""
+    out = {}
+    for k in ('none', 'low', 'high'):
+        f = os.path.join(EXPORTS, 'inference_tests', f'tune_{PROBE_TAG}_NG_s{seed}',
+                         f'{prefix}_rc_{k}', 'results.json')
+        if not os.path.exists(f):
+            return None
+        with open(f) as fh:
+            out[k] = json.load(fh)
+    return out
+
+
+def probe():
+    """The noise-0.6 probe beside its noise-0.5 partner, on the same trained networks.
+
+    Same weights, same seeds, and a stimulus stream whose noise vector is the 0.5 one
+    scaled by 1.2, so every row is a within-network difference — a much tighter comparison
+    than the cross-level one the two tune tags support. What it does **not** answer is
+    whether a network *grown* under the higher noise behaves this way; that is tune_v18.
+    """
+    pairs = [(s, lo, hi) for s in PROBE_SEEDS
+             for lo, hi in [(_probe_reports(s, 'softmax'), _probe_reports(s, 'softmax_n06'))]
+             if lo and hi]
+    if not pairs:
+        raise SystemExit('no paired probe sessions: record them with '
+                         'HIER_SWITCH_PROBE=1 ./hier_switch/run_sessions.sh')
+    seeds = [s for s, _, _ in pairs]
+    print(f'noise-0.6 probe on the trained noise-0.5 networks: seeds {seeds}')
+    print('same weights, same stream; only the cue noise differs (paired within network)\n')
+    print(f'{"measure":<38} {"s=0.5":>8} {"s=0.6":>8} {"change":>8} {"sem":>7} {"seeds":>7}')
+    rows = []
+    for name, fn in PROBE_MEASURES:
+        a = np.array([fn(lo) for _, lo, _ in pairs], dtype=float)
+        b = np.array([fn(hi) for _, _, hi in pairs], dtype=float)
+        d = b - a
+        ok = np.isfinite(d)
+        sem = float(np.nanstd(d[ok], ddof=1) / np.sqrt(ok.sum())) if ok.sum() > 1 else np.nan
+        same = int(np.sum(np.sign(d[ok]) == np.sign(np.nanmean(d)))) if ok.any() else 0
+        print(f'{name:<38} {np.nanmean(a):8.3f} {np.nanmean(b):8.3f} {np.nanmean(d):+8.3f} '
+              f'{sem:7.3f} {f"{same} / {int(ok.sum())}":>7}')
+        rows.append(dict(name=name, mean_n05=float(np.nanmean(a)), mean_n06=float(np.nanmean(b)),
+                         change=float(np.nanmean(d)), sem=sem, n_seeds=int(ok.sum()),
+                         n_same_sign=same,
+                         per_seed=dict(zip(map(int, seeds), map(float, d)))))
+    return rows
+
+
+def check_level(path):
+    """Refuse a model trained at a different cue noise than this level claims.
+
+    The tune tag keeps the levels apart on disk, but a tag is a naming convention: one
+    wrong literal and a noise-0.5 model runs a whole session while sitting in the
+    noise-0.6 tree, with nothing to show for it afterwards. The model carries its own
+    training config, so the check is free. Skipped for the probe, whose whole point is to
+    run a noise-0.5 model at a different noise.
+    """
+    from hier_switch_train import load_model
+    sigma = float(load_model(path)[1].pulse_noise_std)
+    if not WITH_PROBE and abs(sigma - NOISE) > 1e-9:
+        raise SystemExit(f'level {LEVEL} wants pulse_noise_std {NOISE}, but {path} was '
+                         f'trained at {sigma}. Check HIER_SWITCH_LEVEL and the tune tag.')
+    return sigma
+
+
 def task(index=None):
     """One SLURM array task: record a model's conditions, then analyse them."""
     from hier_switch_test_inference import main as record
@@ -536,7 +677,10 @@ def task(index=None):
     model_type, seed, path, conditions = models()[index]
     if not os.path.exists(path):
         raise SystemExit(f'no model at {path}')
-    print(f'--- task {index}: {model_type} seed {seed}: {", ".join(conditions)}')
+    sigma = check_level(path)
+    print(f'--- task {index}: level {LEVEL} (noise {NOISE}), tags NG={NG_TAG} RNN={RNN_TAG}, '
+          f'NG seeds {tuple(NG_SEEDS)}')
+    print(f'--- {model_type} seed {seed}, trained at noise {sigma}: {", ".join(conditions)}')
     record(path, conditions)
     analyse(session_dirs(model_type, seed, conditions))
 
@@ -552,5 +696,7 @@ if __name__ == '__main__':
         analyse(sys.argv[2:])
     elif mode == 'aggregate':
         aggregate()
+    elif mode == 'probe':
+        probe()
     else:
         raise SystemExit(__doc__)

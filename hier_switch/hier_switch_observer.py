@@ -78,6 +78,21 @@ HAZARD = 1.0 / 45.0          # mean block length of the paper's 30-60 range
 #: Reproduce with `ceiling(sigma, n_trials=20000)` below; env_seed 0, data_stream 1.
 CEILING = {0.5: 0.9231, 0.6: 0.8944, 0.7: 0.8696, 0.8: 0.8461, 0.9: 0.8235}
 
+#: The fraction of the ceiling a seed's steady-state accuracy must clear to count as having
+#: learned the task (RNN) or discovered the contexts (NeuraGEM). Both groups use it, so the
+#: two are selected by the same rule rather than by two absolutes that drift apart as the
+#: noise rises.
+#:
+#: 0.79 is the midpoint of the empty band at sigma 0.5, where the v13 seeds separate into
+#: 0.880-1.003 of ceiling and 0.501-0.702 — a gap of 0.178, so anything in (0.702, 0.880)
+#: picks the same six. The threshold is not discriminating finely; it is telling
+#: "discovered the contexts" from "sat at chance", and the midpoint is simply where it has
+#: the most room on both sides. `arms` refuses to select at all if that gap ever closes.
+SELECTION_FRAC = 0.79
+#: The passive phase only has to show the task itself was learned, which is a weaker bar.
+#: 0.81 x 0.9231 = 0.748, i.e. the 0.75 absolute this replaces.
+PASSIVE_FRAC = 0.81
+
 
 def ceiling(sigma, n_trials=20000):
     """Measure the ceiling at one noise level: a fresh test stream, no model, no training.

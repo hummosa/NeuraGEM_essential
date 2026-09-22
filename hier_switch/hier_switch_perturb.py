@@ -164,10 +164,22 @@ def _reference_axis(reference):
                 m0=ref.get('m0').tolist(), m1=ref.get('m1').tolist())
 
 
+def level_tags(root):
+    """The clamp tags belonging to this level's selected seeds, in seed order.
+
+    `clamp/` accumulates: a re-selection that drops a seed leaves its cells on disk, and a
+    second noise level adds a whole set. Listing the directory and taking everything would
+    then pool dropped seeds, and eventually two noise levels, into one panel.
+    """
+    from hier_switch_group import NG_SEEDS, NG_TAG
+    want = [f'tune_{NG_TAG}_NG_s{s}' for s in NG_SEEDS]
+    return [t for t in want if os.path.isdir(os.path.join(root, t))]
+
+
 def recompute(tag=None, activation=None):
     """Rebuild clamp_grid_*.json from the saved sessions, without re-running any model."""
     root = os.path.join(_ROOT, 'exports', 'hier_switch', 'clamp')
-    for t in ([tag] if tag else sorted(os.listdir(root))):
+    for t in ([tag] if tag else level_tags(root)):
         for act in ([activation] if activation else ('softmax', 'sigmoid')):
             cells = [c for c in clamp_cells(act)]
             paths = [os.path.join(root, t, cell_name(act, m, d)) for m, d in cells]
@@ -196,11 +208,14 @@ def reference_for(tag, activation):
 
 
 def run_task(index=None, n_trials=1000):
+    from hier_switch_group import LEVEL, NG_TAG, check_level
     index = int(os.environ.get('SLURM_ARRAY_TASK_ID', 0) if index is None else index)
     seed, act = tasks()[index]
-    path = os.path.join(_ROOT, 'exports', 'hier_switch', 'tune_v15', f'NG_s{seed}', 'model.pt')
-    tag = f'tune_v15_NG_s{seed}'
-    print(f'--- clamp task {index}: seed {seed}, {act}')
+    path = os.path.join(_ROOT, 'exports', 'hier_switch', f'tune_{NG_TAG}', f'NG_s{seed}',
+                        'model.pt')
+    tag = f'tune_{NG_TAG}_NG_s{seed}'
+    sigma = check_level(path)
+    print(f'--- clamp task {index}: level {LEVEL}, {tag}, {act}, trained at noise {sigma}')
     clamp_grid(path, act, n_trials=n_trials, reference=reference_for(tag, act))
 
 
