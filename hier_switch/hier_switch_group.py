@@ -94,6 +94,10 @@ def session_report(path, with_hidden=True):
     rep = dict(path=path, condition=meta.get('condition'), model_type=meta['model_type'],
                seed=meta.get('seed'), activation=meta['latent_activation'],
                reversal_conflict=meta.get('reversal_conflict'),
+               # The noise level this session ran at. Recorded so `aggregate` can prove a
+               # group table is built from one level; the levels are otherwise kept apart
+               # by the tune tag alone, which is a naming convention and not a check.
+               pulse_noise_std=meta['pulse_noise_std'],
                Z_lr=meta['Z_lr'], Z_decay=meta['Z_decay'],
                z_lr_decay=float(meta['Z_lr'] * meta['Z_decay']))
     rep['behaviour'] = behaviour(sess)
@@ -482,15 +486,36 @@ def _manipulation_rows(data, criteria=(('dec_switch', 'decided'), ('z_switch', '
     return rows
 
 
+def noise_level(data):
+    """The one `pulse_noise_std` every collected session ran at, or None if none says.
+
+    Reports written before the field existed do not carry it; those are the noise-0.5
+    sessions and they are simply not counted. Two *recorded* levels in one table is a
+    mixed group and is refused here rather than averaged.
+    """
+    seen = sorted({r['pulse_noise_std'] for d in data.values() for r in d.values()
+                   if r.get('pulse_noise_std') is not None})
+    if len(seen) > 1:
+        raise SystemExit(f'sessions from more than one noise level in one group: {seen}. '
+                         'Set HIER_SWITCH_LEVEL, or check the tune tag in models().')
+    return seen[0] if seen else None
+
+
 def aggregate(out_dir=None):
     data = collect()
     rows = predictions(data)
+    noise = noise_level(data)
     out_dir = out_dir or os.path.join(EXPORTS, 'group')
     os.makedirs(out_dir, exist_ok=True)
     summary = dict(sessions={f'{k[0]}/{k[1]}': sorted(v) for k, v in data.items()},
                    predictions=rows)
+    # Only when some session recorded it, so a table built entirely from sessions that
+    # predate the field stays byte-identical to the one already on disk.
+    if noise is not None:
+        summary['pulse_noise_std'] = noise
     with open(os.path.join(out_dir, 'group.json'), 'w') as f:
         json.dump(summary, f, indent=1, default=_jsonable)
+    print(f'pulse noise: {noise if noise is not None else "not recorded (pre-0.6 sessions)"}')
     print(f'{"":<62} {"mean":>8} {"sem":>7} {"seeds w/ sign":>14}')
     for r in rows:
         if r.get('predicted') is None:

@@ -1156,8 +1156,6 @@ def group_figures(out_dir=None):
     out_dir = out_dir or os.path.join(EXPORTS, 'group', 'figures')
     ng = [data[('NG', 'softmax_rc_none')][s] for s in sorted(data.get(('NG', 'softmax_rc_none'), {}))]
     rnn = learners([data[('RNN', RNN_BASE)][s] for s in sorted(data.get(('RNN', RNN_BASE), {}))])
-    low = [data[('NG', 'softmax_rc_low')][s] for s in sorted(data.get(('NG', 'softmax_rc_low'), {}))]
-    high = [data[('NG', 'softmax_rc_high')][s] for s in sorted(data.get(('NG', 'softmax_rc_high'), {}))]
     if not ng:
         raise SystemExit('no NG reports on disk yet: run hier_switch_group.py task first')
     groups = {'NeuraGEM': ng}
@@ -1168,8 +1166,9 @@ def group_figures(out_dir=None):
         # and a mean over all ten runs below every network that works.
         groups['RNN'] = learners(rnn)
     # The rc_low / rc_high pair carries the split, so behaviour panels merge the two
-    # sessions' splits into the one NeuraGEM entry.
-    split = {'NeuraGEM': [merge_splits(a, b) for a, b in zip(low, high)]} if low and high else groups
+    # sessions' splits into the one NeuraGEM entry, seed by seed.
+    paired = paired_by_seed(data, ('NG', 'softmax_rc_low'), ('NG', 'softmax_rc_high'))
+    split = {'NeuraGEM': paired} if paired else groups
 
     # Every NG condition as {condition: [report per seed]}, for the gain figure.
     by_condition = {cond: [d[s] for s in sorted(d)]
@@ -1276,7 +1275,6 @@ def story_figure(out_dir=None, gate='softmax'):
     out_dir = out_dir or os.path.join(EXPORTS, 'group', 'figures')
     pick = lambda key: [data[key][s] for s in sorted(data.get(key, {}))]
     ng, rnn = pick(('NG', 'softmax_rc_none')), pick(('RNN', RNN_BASE))
-    low, high = pick(('NG', 'softmax_rc_low')), pick(('NG', 'softmax_rc_high'))
     sig = pick(('NG', 'sigmoid_zlr30000'))
     if not ng:
         raise SystemExit('no NG reports on disk yet: run hier_switch_group.py task first')
@@ -1287,8 +1285,8 @@ def story_figure(out_dir=None, gate='softmax'):
         # against an unselected one: 7 of its 10 seeds learn the task and 3 sit at chance,
         # and a mean over all ten runs below every network that works.
         groups['RNN'] = learners(rnn)
-    split = ({'NeuraGEM': [merge_splits(a, b) for a, b in zip(low, high)]}
-             if low and high else groups)
+    paired = paired_by_seed(data, ('NG', 'softmax_rc_low'), ('NG', 'softmax_rc_high'))
+    split = {'NeuraGEM': paired} if paired else groups
     cells = clamp_cells_on_disk('sigmoid')
     # The two manipulations the story commits to: silencing the latent update, and driving
     # the latent to (1, 1). Shown on the low-conflict reversals, each against its own
@@ -1366,6 +1364,18 @@ def story_figure(out_dir=None, gate='softmax'):
                letters=True)
     figure([p for _, ps in rows for p in ps],
            os.path.join(out_dir, f'story{gate_tag}.pdf'), ncol=4, panel=panel, letters=True)
+
+
+def paired_by_seed(data, low_key, high_key):
+    """merge_splits over the seeds that have **both** forced sessions, paired by seed.
+
+    Pairing two independently sorted lists by position is the same thing only while every
+    seed carries both conditions. One task that recorded rc_low and died before rc_high
+    then shifts the whole list, and seed 11's low-conflict session is merged with seed 13's
+    high-conflict one — silently, in every panel that takes a split.
+    """
+    low, high = data.get(low_key, {}), data.get(high_key, {})
+    return [merge_splits(low[s], high[s]) for s in sorted(set(low) & set(high))]
 
 
 def merge_splits(low_rep, high_rep):

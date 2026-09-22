@@ -67,6 +67,40 @@ from hier_switch_analyses import PRIMARY, load_session, trial_labels, _blocks, _
 
 HAZARD = 1.0 / 45.0          # mean block length of the paper's 30-60 range
 
+#: The accuracy ceiling per `pulse_noise_std`: how often the ideal observer reads the cue
+#: correctly. Selection criteria are expressed as a fraction of this (hier_switch_tune.arms,
+#: hier_switch_figures.LEARNED), so that a seed is judged against what the noise level
+#: allows rather than against a constant that silently gets stricter as the noise rises.
+#:
+#: These are **fixed, documented numbers, not recomputed per run** — the estimate moves by
+#: ~0.007 between sample sizes (σ=0.5 gives 0.930 / 0.927 / 0.923 at 2000 / 4000 / 20000
+#: trials), and a criterion that drifts between runs is worse than one that is slightly off.
+#: Reproduce with `ceiling(sigma, n_trials=20000)` below; env_seed 0, data_stream 1.
+CEILING = {0.5: 0.9231, 0.6: 0.8944, 0.7: 0.8696, 0.8: 0.8461, 0.9: 0.8235}
+
+
+def ceiling(sigma, n_trials=20000):
+    """Measure the ceiling at one noise level: a fresh test stream, no model, no training.
+
+    This is how the CEILING table above was produced. It is deliberately not called at
+    selection time — see the note there.
+    """
+    from hier_switch_config import HierSwitchConfig
+    from hier_switch_dataset import HierSwitchDataset
+
+    cfg = HierSwitchConfig()
+    cfg.no_of_blocks, cfg.data_stream, cfg.env_seed = int(n_trials), 1, 0
+    cfg.pulse_noise_std = float(sigma)
+    counts = [tuple(c) for c in cfg.conflict_counts]
+    x = np.asarray(HierSwitchDataset(cfg).data_sequence).reshape(-1, cfg.trial_len, cfg.input_size)
+    pulses, cue = x[:, :cfg.n_pulses, :3], x[:, 0, cfg.ch('cue')]
+    conf = np.round(x[:, 0, cfg.ch('conflict')], 3)
+    ll = cue_log_likelihood(pulses, counts, float(sigma), cfg.n_pulses)
+    q = 1.0 / (1.0 + np.exp(ll[:, 1] - ll[:, 0]))
+    ok = np.where(q >= 0.5, 1.0, -1.0) == cue
+    per = {float(v): float(ok[conf == v].mean()) for v in np.unique(conf)}
+    return float(ok.mean()), per
+
 
 def cue_log_likelihood(pulses, counts, sigma, n_pulses=None):
     """log P(pulse frames | cue = HP) and | cue = LP), marginalised over conflict level.
@@ -196,35 +230,35 @@ def _observer_switches(sess, correct, primary):
 
 
 def _self_check():
-    """σ = 0 makes the cue certain; at σ = 0.5 the ceiling is the 0.923 in the task doc."""
+    """σ = 0 makes the cue certain; every σ in CEILING reproduces its documented ceiling.
+
+    The ceilings are checked at 2000 trials against the 20000-trial table, so the 0.01
+    tolerance is doing real work: it is the sampling spread, not slack.
+    """
     from hier_switch_config import HierSwitchConfig
     from hier_switch_dataset import HierSwitchDataset
 
     cfg = HierSwitchConfig()
     cfg.no_of_blocks, cfg.data_stream = 2000, 1
     cfg.env_seed = 0
+    cfg.pulse_noise_std = 1e-3
     counts = [tuple(c) for c in cfg.conflict_counts]
-    for sigma, expect in ((1e-3, 1.0), (0.5, 0.923)):
-        cfg.pulse_noise_std = sigma
-        x = np.asarray(HierSwitchDataset(cfg).data_sequence).reshape(-1, cfg.trial_len, cfg.input_size)
-        pulses = x[:, :cfg.n_pulses, :3]
-        cue = x[:, 0, cfg.ch('cue')]
-        conf = np.round(x[:, 0, cfg.ch('conflict')], 3)
-        ll = cue_log_likelihood(pulses, counts, sigma, cfg.n_pulses)
-        q = 1.0 / (1.0 + np.exp(ll[:, 1] - ll[:, 0]))
-        read = np.where(q >= 0.5, 1.0, -1.0)
-        acc = float((read == cue).mean())
-        levels = np.unique(conf)
-        per = [float((read == cue)[conf == v].mean()) for v in levels]
-        if sigma < 0.01:
-            # Noiseless: the cue is always read correctly. The frame-wise likelihood is not
-            # certain about it at high conflict (see the module docstring), but it is right.
-            assert acc == 1.0, 'noiseless cue misread'
-            assert (q[conf == 0] > 0.99).all() or (q[conf == 0] < 0.01).any(), 'conflict 0 unsure'
-        else:
-            assert abs(acc - expect) < 0.01, f'ceiling {acc:.3f}, expected {expect}'
-        print(f'OK  sigma={sigma}: cue read correctly {acc:.3f}  by conflict '
-              f'{dict(zip(np.round(levels, 3), np.round(per, 3)))}')
+    x = np.asarray(HierSwitchDataset(cfg).data_sequence).reshape(-1, cfg.trial_len, cfg.input_size)
+    cue = x[:, 0, cfg.ch('cue')]
+    conf = np.round(x[:, 0, cfg.ch('conflict')], 3)
+    ll = cue_log_likelihood(x[:, :cfg.n_pulses, :3], counts, cfg.pulse_noise_std, cfg.n_pulses)
+    q = 1.0 / (1.0 + np.exp(ll[:, 1] - ll[:, 0]))
+    # Noiseless: the cue is always read correctly. The frame-wise likelihood is not certain
+    # about it at high conflict (see the module docstring), but it is right.
+    assert float((np.where(q >= 0.5, 1.0, -1.0) == cue).mean()) == 1.0, 'noiseless cue misread'
+    assert (q[conf == 0] > 0.99).all() or (q[conf == 0] < 0.01).any(), 'conflict 0 unsure'
+    print('OK  sigma=0.001: cue read correctly 1.000')
+
+    for sigma, expect in sorted(CEILING.items()):
+        acc, per = ceiling(sigma, n_trials=2000)
+        assert abs(acc - expect) < 0.01, f'ceiling at sigma={sigma}: {acc:.4f}, table says {expect}'
+        print(f'OK  sigma={sigma}: cue read correctly {acc:.3f} (table {expect})  by conflict '
+              f'{ {k: round(v, 3) for k, v in per.items()} }')
 
 
 if __name__ == '__main__':
