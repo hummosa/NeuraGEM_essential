@@ -50,7 +50,7 @@ from mean_prediction_analysis import (
 from rotation_decoding_analysis import _angular_error_deg
 from rotation_slips_perseveration_config import (
     ACTIVE_ENCODING, BELIEF_SOURCE, CONDITION_INFO, CONTEXT_OUTPUT_ENCODING, ConditionInfo,
-    EXPORT_ROOT, FIGURE_DIR,
+    EXPORT_ROOT, FIGURE_DIR, TRAIN_WINDOW,
     F1_CONDITIONS, F3_CONDITIONS, F3_CURVE_CONDITIONS,
     HEADLINE_CONDITIONS, NOISE_LEVELS, TRAIN_ROTATIONS,
 )
@@ -80,6 +80,8 @@ class AnalysisParams:
     frames:                   str   = 'outcome'  # 'outcome' | 'cue' | 'all'
     # What perseveration/slips are scored on: 'head' | 'behaviour'. See BELIEF_SOURCE.
     belief_source:            str   = BELIEF_SOURCE
+    # (start, end) fraction of the phase's blocks to analyse. See TRAIN_WINDOW.
+    train_window: Tuple[float, float] = TRAIN_WINDOW
     last_ts_in_a_block:       int   = 15     # tail judgements per block for the correct-rate
     aggregate_blocks:  int | None   = 3      # None = one point per block
     skip_first_blocks:        int   = 0
@@ -200,6 +202,18 @@ def _phase_window(logger, config, phases_to_include) -> np.ndarray:
     return mask if mask.any() else np.ones(n, dtype=bool)
 
 
+def _window_mask(block_id_full: np.ndarray, params: AnalysisParams) -> np.ndarray:
+    """Timesteps whose block falls inside params.train_window (fractions of the phase's blocks).
+
+    Blocks are whole units: a block is in or out, never cut. A window that starts after 0 opens
+    on a real switch, but block_criterion_metrics still skips the window's first block, so one
+    block is lost there.
+    """
+    n = int(block_id_full.max()) + 1
+    lo, hi = params.train_window
+    return (block_id_full >= int(round(lo * n))) & (block_id_full < int(round(hi * n)))
+
+
 def extract_belief_trials(logger, config, params: AnalysisParams) -> Dict[str, np.ndarray]:
     """One row per scored judgement, restricted to the requested phase and frame type.
 
@@ -267,13 +281,13 @@ def extract_belief_trials(logger, config, params: AnalysisParams) -> Dict[str, n
     else:
         raise ValueError(f"frames must be 'all', 'cue' or 'outcome'; got {params.frames!r}")
 
-    keep = phase_mask & frame_mask
     # Blocks are defined on the phase window (before the frame filter) so that a switch is not
     # missed when it lands on a frame type we are not scoring.
     ll_phase = ll[phase_mask]
     block_of_phase = np.concatenate([[0], np.cumsum(np.diff(ll_phase) != 0)])
     block_id_full = np.full(len(ll), -1)
     block_id_full[phase_mask] = block_of_phase
+    keep = phase_mask & frame_mask & _window_mask(block_id_full, params)
 
     rots_rad    = np.deg2rad(np.asarray(config.train_rotations, dtype=float))
     belief_slot = _nearest_slot(belief_rad[keep], rots_rad)
@@ -570,23 +584,25 @@ def ideal_observer_trials(logger, config, params: AnalysisParams) -> Dict[str, n
 
     phase_mask = _phase_window(logger, config, params.phases_to_include)
     is_cue = ii[:, :nc].sum(axis=1) > 0.5
-    # One update per trial, at the cue frame whose outcome frame carries the attack.
-    idx = np.flatnonzero(phase_mask & is_cue)
-    idx = idx[idx + 1 < len(ll)]
-
     ll_phase = ll[phase_mask]
     block_of_phase = np.concatenate([[0], np.cumsum(np.diff(ll_phase) != 0)])
     block_id_full = np.full(len(ll), -1)
     block_id_full[phase_mask] = block_of_phase
 
+    # One update per trial, at the cue frame whose outcome frame carries the attack. The filter
+    # runs over the whole phase regardless of the window, so it enters the window with the belief
+    # it would really have there; only the scoring is restricted to the window.
+    idx_all = np.flatnonzero(phase_mask & is_cue)
+    idx_all = idx_all[idx_all + 1 < len(ll)]
+
     # Hazard from the realised block structure: switches per trial in this phase.
-    n_trials = max(1, len(idx))
+    n_trials = max(1, len(idx_all))
     n_blocks = max(1, len(np.unique(block_of_phase)))
     hazard   = min(0.5, n_blocks / n_trials)
 
     log_post = np.full(K, -np.log(K))
     slots, beliefs = [], []
-    for t in idx:
+    for t in idx_all:
         colour = int(np.argmax(ii[t, :nc]))
         attack = ii[t + 1, -2:]
         # transition step
@@ -604,8 +620,10 @@ def ideal_observer_trials(logger, config, params: AnalysisParams) -> Dict[str, n
         d2 = np.sum((attack[None, :] - targets[:, colour, :]) ** 2, axis=1)
         log_post = np.log(post + 1e-300) - d2 / (2 * sigma ** 2)
 
-    slots     = np.asarray(slots)
-    beliefs   = np.asarray(beliefs)
+    win       = _window_mask(block_id_full, params)[idx_all]
+    idx       = idx_all[win]
+    slots     = np.asarray(slots)[win]
+    beliefs   = np.asarray(beliefs)[win]
     rots_rad  = np.deg2rad(rots)
     true_slot = _nearest_slot(ll[idx], rots_rad)
 
@@ -1150,9 +1168,10 @@ def plot_retrieval_vs_errors(cache, params: AnalysisParams, export_dir: Path,
     return fig
 
 
-def summarize_retrieval(pts: List[Dict[str, Any]]) -> None:
+def summarize_retrieval(pts: List[Dict[str, Any]], params: AnalysisParams) -> None:
     """Pooled and within-condition Spearman rho, retrieval vs each error measure."""
-    print('\n── Context retrieval (trials 2-3, xy) vs belief-head errors, one point per run ──')
+    print(f'\n── Context retrieval (trials 2-3, xy) vs errors on {params.belief_source}, '
+          f'blocks {params.train_window[0]:.0%}-{params.train_window[1]:.0%}, one point per run ──')
     for field, name in (('persev_late', 'perseveration from trial 4'), ('slips', 'context slips')):
         for within in (False, True):
             rho, pval, n = _spearman(pts, field, within=within)
@@ -1343,7 +1362,9 @@ def main() -> dict:
     params     = AnalysisParams()
     export_dir = FIGURE_DIR
     print(f"Runs: head {'on (' + ACTIVE_ENCODING + ')' if ACTIVE_ENCODING else 'off'}, "
-          f"perseveration/slips scored on {params.belief_source} -> {export_dir}")
+          f"perseveration/slips scored on {params.belief_source}, "
+          f"blocks {params.train_window[0]:.0%}-{params.train_window[1]:.0%} of training "
+          f"-> {export_dir}")
 
     # Reload when new runs have landed or conditions have been added, not just when the cache is
     # absent — otherwise re-running in the same session keeps reporting the sweep as incomplete.
@@ -1363,7 +1384,7 @@ def main() -> dict:
     pts = retrieval_points(runs_cache, params)
     plot_retrieval_vs_errors(runs_cache, params, export_dir, pts=pts)
     summarize(runs_cache, params)
-    summarize_retrieval(pts)
+    summarize_retrieval(pts, params)
     return runs_cache
 
 

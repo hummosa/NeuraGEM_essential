@@ -124,13 +124,14 @@ Two switches at the top of the config:
 |---|---|---|
 | `TRAIN_CONTEXT_OUTPUT` | `True` / `False` | whether models are trained with the context head. Head-off runs are saved to `context_encoding-None_*` cells beside the head-on ones, and the analysis loads whichever this selects |
 | `BELIEF_SOURCE` | `'head'` / `'behaviour'` | what perseveration and slips are scored on. `'behaviour'` uses the context implied by the predicted attack, on the outcome frame. It works with or without a head. `'head'` requires the head |
+| `TRAIN_WINDOW` | `(start, end)` fractions of the blocks | which part of training every figure and metric reads. `(0, 1)` is all of it; `(0, 0.5)` is the first half. The "asymptote" is then the last block groups *inside* the window. The ideal observer filters the whole phase and is scored only inside the window |
 
 Why train without the head: the head's loss teaches every model to report context, so on head
 readouts even the high-α_z models look settled. Without it, whatever context a model carries,
 it found from the task alone.
 
-- **Figures:** each (training, readout) variant writes to its own
-  `figures/head-<circular|off>_belief-<head|behaviour>/`. Figures written before the switches
+- **Figures:** each (training, readout, window) variant writes to its own
+  `figures/head-<circular|off>_belief-<head|behaviour>_blocks-<start>-<end>/`. Figures written before the switches
   existed stay in `figures/`.
 - **F6 retrieval:** always scored on behaviour.
 - **Belief–behaviour agreement:** always compares the head to behaviour, so it is `NaN` for
@@ -156,6 +157,33 @@ The head-readout table's U in perseveration mostly flattens under behaviour: it 
 up to α_z 0.6–0.7, and only 0.9 turns up. Slips rise steadily and are 3–5× the head's. So the
 head reports a steadier context than the predictions act on. That fits the head's loss
 smoothing the readout, but it is not yet tested.
+
+**Head-off, behaviour readout, first half of training** (noise 0.20, 10 seeds; asymptote = the
+last 3 block groups inside the window):
+
+| α_z | RNN | 0.05 | 0.1 | 0.2 | 0.3 | 0.5 | 0.7 | 0.9 |
+|---|---|---|---|---|---|---|---|---|
+| perseveration / block | 29.0 | 14.4 | 5.4 | 2.6 | 1.9 | 1.6 | 12.8 | 20.2 |
+| slips / block | 2.25 | 0.18 | 0.33 | 2.88 | 6.10 | 10.7 | 11.3 | 8.81 |
+
+Without the head, both measures are U-shaped in α_z, with minima at different places:
+
+- **Perseveration** is lowest around α_z 0.3–0.5.
+- **Slips** are lowest around α_z 0.05–0.1.
+- **The fastest latents (0.6–0.9)** perseverate nearly as much as the RNN.
+
+The F6 correlations over the same window:
+
+| retrieval vs | pooled ρ | within-condition ρ |
+|---|---|---|
+| perseveration from trial 4 | −0.55 | −0.42 |
+| context slips | **+0.82** | +0.14 (p = 0.08) |
+
+The slips correlation runs *against* the hypothesis. The models that retrieve best are the
+ones that slip most.
+
+Under this readout, retrieval and the error counts both come from the xy prediction. They are
+still scored on different trials: 2–3 versus 4 onward.
 
 ---
 
