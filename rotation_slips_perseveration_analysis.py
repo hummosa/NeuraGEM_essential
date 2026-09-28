@@ -1179,6 +1179,59 @@ def summarize_retrieval(pts: List[Dict[str, Any]], params: AnalysisParams) -> No
                   f"rho={rho:+.3f}  p={pval:.2g}  n={n}")
 
 
+INSPECT_PANELS = ('implied_context', 'corrects', 'latent_2d', 'loss')
+
+
+def window_timesteps(logger, config, params: AnalysisParams) -> Tuple[int, int]:
+    """[start, end) timesteps of params.train_window within the analysed phase."""
+    ll = np.concatenate([np.asarray(e).reshape(-1) for e in logger.context_ids])
+    phase = _phase_window(logger, config, params.phases_to_include)
+    bid = np.full(len(ll), -1)
+    bid[phase] = np.concatenate([[0], np.cumsum(np.diff(ll[phase]) != 0)])
+    ts = np.flatnonzero(_window_mask(bid, params))
+    return int(ts[0]), int(ts[-1]) + 1
+
+
+def inspect_runs(cond: str, seeds: Sequence[int] = (0, 1), noise: float | None = None,
+                 x1: int | None = None, x2: int | None = None,
+                 panels: Sequence[str] = INSPECT_PANELS, params: AnalysisParams | None = None,
+                 width: float = 7.0, show: bool = True) -> List[plt.Figure]:
+    """plot_logger_panels for a few seeds of one condition. An inspection view, not a figure.
+
+    x1/x2 are timesteps (2 per trial). Left as None they default to the TRAIN_WINDOW part of
+    training, so the first call shows what the analysis read; then pass x1/x2 to zoom.
+    Saved to FIGURE_DIR/inspect/.
+    """
+    from functions_and_utils import plot_logger_panels
+    params = params or AnalysisParams()
+    noise = params.headline_noise if noise is None else noise
+    runs = load_runs(cond, noise, max(seeds) + 1)
+    out_dir = FIGURE_DIR / 'inspect'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tag = cond.replace('$', '').replace('\\', '').replace(' ', '')
+    figs = []
+    for seed in seeds:
+        if seed >= len(runs):
+            print(f'  no seed {seed} for {cond} @ noise {noise}')
+            continue
+        logger, config = runs[seed]
+        w1, w2 = window_timesteps(logger, config, params)
+        a, b = (w1 if x1 is None else x1), (w2 if x2 is None else x2)
+        fig = plot_logger_panels(logger, config, list(panels), x1=a, x2=b, width=width,
+                                 subplot_height=1.1, dpi=params.dpi)
+        fig.suptitle(f'{_info(cond).label}, seed {seed}, noise {noise}: timesteps {a}-{b} '
+                     f'(trials {a // 2}-{b // 2})', fontsize=6)
+        out = out_dir / f'{tag}_seed{seed}_t{a}-{b}.png'
+        fig.savefig(out, bbox_inches='tight')
+        print(f'  Saved → {out}')
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+        figs.append(fig)
+    return figs
+
+
 # ---------------------------------------------------------------------------
 # Control: does the belief head change the primary task?
 # ---------------------------------------------------------------------------
