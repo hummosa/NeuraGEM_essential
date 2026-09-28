@@ -116,6 +116,47 @@ Two guards make that argument checkable rather than assumed:
   model reports one context while its predictions sit at another, that decoupling is itself a
   result.
 
+### Training without the head, and scoring on behaviour
+
+Two switches at the top of the config:
+
+| | Values | Effect |
+|---|---|---|
+| `TRAIN_CONTEXT_OUTPUT` | `True` / `False` | whether models are trained with the context head. Head-off runs are saved to `context_encoding-None_*` cells beside the head-on ones, and the analysis loads whichever this selects |
+| `BELIEF_SOURCE` | `'head'` / `'behaviour'` | what perseveration and slips are scored on. `'behaviour'` uses the context implied by the predicted attack, on the outcome frame. It works with or without a head. `'head'` requires the head |
+
+Why train without the head: the head's loss teaches every model to report context, so on head
+readouts even the high-α_z models look settled. Without it, whatever context a model carries,
+it found from the task alone.
+
+- **Figures:** each (training, readout) variant writes to its own
+  `figures/head-<circular|off>_belief-<head|behaviour>/`. Figures written before the switches
+  existed stay in `figures/`.
+- **F6 retrieval:** always scored on behaviour.
+- **Belief–behaviour agreement:** always compares the head to behaviour, so it is `NaN` for
+  head-off runs.
+
+To train the head-off arm on Slurm:
+
+```bash
+./submit_job.sh 759 rotation_slips_nohead
+```
+
+This passes the sweep a positional `no_head` mode, which overrides the config flag, so the
+array is fixed at submission. A queued task only reads the config when it starts.
+
+**First look, behaviour readout on the head-on runs** (noise 0.20, last 3 block groups):
+
+| α_z | 0.1 | 0.2 | 0.4 | 0.6 | 0.9 |
+|---|---|---|---|---|---|
+| perseveration / block | 4.23 | 1.81 | 0.88 | 0.63 | 1.58 |
+| slips / block | 0.00 | 0.36 | 2.26 | 3.84 | 7.68 |
+
+The head-readout table's U in perseveration mostly flattens under behaviour: it keeps falling
+up to α_z 0.6–0.7, and only 0.9 turns up. Slips rise steadily and are 3–5× the head's. So the
+head reports a steadier context than the predictions act on. That fits the head's loss
+smoothing the readout, but it is not yet tested.
+
 ---
 
 ## Making the context ambiguous
@@ -338,6 +379,7 @@ All paper-panel sized; see [figure_style.md](figure_style.md).
 | F4 | Asymptotic **slips per block** vs `noise_std`, with the ideal observer, and trials-to-criterion beneath. **The causal figure** |
 | F5 | Belief vs trial-within-block, on the 0/0.5/1 scale. **The mechanistic figure** |
 | D | Belief–behaviour agreement over training |
+| F6 | Context retrieval (trials 2–3) against perseveration from trial 4 (left) and context slips (right), one point per run. See [Context retrieval vs errors](#context-retrieval-vs-errors) |
 
 Counts per block, not rates: "2.9 slips per block" is a number you can hold; "a slip rate of
 0.054" is not. F4 drops the memoryless reference for the same reason — it is an error *rate*,
@@ -378,6 +420,58 @@ and no representational difference required.
 An untested prediction that would strengthen this: the **integration kernel**, regressing the
 belief at trial *t* on the implied angles of observations at *t−1, t−2, …*. The account above
 predicts a short, shallow kernel for the RNN and a long one for NeuraGEM. Not implemented.
+
+### Context retrieval vs errors
+
+The hypothesis: a model that has discovered the context structure makes fewer perseverative
+errors and fewer slips. Discovery is measured as **context retrieval**: whether the attack
+predictions on trials 2 and 3 of a new block land on the new rotation. Trial 1's outcome reveals
+the new rotation. Trials 2 and 3 are colours not yet seen under it (checked: the first 5 trials
+after every switch are 5 distinct colours), so they come out right only if one context mapping
+is applied to every colour.
+
+The two sides of each correlation come from different readouts. `retrieval_and_errors` defines
+them:
+
+| | Readout | Definition |
+|---|---|---|
+| **Retrieval** | xy attack (`behav_rad`) | fraction of trials 2–3 on the new rotation |
+| **Perseveration from trial 4** | belief head | errors before criterion, with the count *and* the criterion search both starting at trial 4 |
+| **Context slips** | belief head | unchanged F3 definition; post-criterion, so it never includes trials 2–3 |
+
+> **Why perseveration starts at trial 4.** Under the standard definition, errors on trials 2–3
+> are themselves perseverative errors, and they also complete or break the criterion run. The
+> correlation with retrieval would then be partly true by construction.
+
+One point is one run (condition × seed), at the headline noise level, averaged over every block
+in training. Spearman ρ is computed two ways:
+
+- **pooled** across all runs;
+- **within condition**: ranks taken inside each condition, so the α_z dose-response cannot
+  carry the correlation on its own.
+
+`summarize_retrieval()` prints both.
+
+Measured at `noise_std = 0.20`, 16 conditions × 10 seeds (n = 160):
+
+| | pooled ρ | within-condition ρ |
+|---|---|---|
+| perseveration from trial 4 | **−0.67** (p = 3e-22) | **−0.51** (p = 6e-12) |
+| context slips | +0.18 (p = 0.02) | −0.09 (p = 0.25) |
+
+**Perseveration supports the hypothesis, including among seeds of the same model.** Slips do
+not. Pooled, the sign is *reversed*, and within condition there is no effect. The per-condition
+means show why:
+
+- The high-α_z models retrieve best (0.86–0.94 at α_z 0.3–0.7).
+- They also slip more as α_z rises (0.10 → 0.97 slips per block).
+- A fast latent that follows a single observation also follows a single noisy one.
+
+The pooled scatter is not monotone either:
+
+- α_z 0.03–0.1 has retrieval ≈ 0 while its perseveration runs anywhere from 2 to 16.
+- That is, the slow latents are still on the old rotation at trials 2–3.
+- Trials 2–3 cannot separate those models from one another.
 
 ---
 

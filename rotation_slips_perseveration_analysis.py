@@ -49,7 +49,8 @@ from mean_prediction_analysis import (
 )
 from rotation_decoding_analysis import _angular_error_deg
 from rotation_slips_perseveration_config import (
-    CONDITION_INFO, CONTEXT_OUTPUT_ENCODING, ConditionInfo, EXPORT_ROOT,
+    ACTIVE_ENCODING, BELIEF_SOURCE, CONDITION_INFO, CONTEXT_OUTPUT_ENCODING, ConditionInfo,
+    EXPORT_ROOT, FIGURE_DIR,
     F1_CONDITIONS, F3_CONDITIONS, F3_CURVE_CONDITIONS,
     HEADLINE_CONDITIONS, NOISE_LEVELS, TRAIN_ROTATIONS,
 )
@@ -77,6 +78,8 @@ class AnalysisParams:
     headline_noise:           float = 0.20   # noise level used by F1/F2/F3/F5
     phases_to_include:        str   = 'Learning and inference'
     frames:                   str   = 'outcome'  # 'outcome' | 'cue' | 'all'
+    # What perseveration/slips are scored on: 'head' | 'behaviour'. See BELIEF_SOURCE.
+    belief_source:            str   = BELIEF_SOURCE
     last_ts_in_a_block:       int   = 15     # tail judgements per block for the correct-rate
     aggregate_blocks:  int | None   = 3      # None = one point per block
     skip_first_blocks:        int   = 0
@@ -101,13 +104,13 @@ class AnalysisParams:
 # Loading
 # ---------------------------------------------------------------------------
 
-def _cell_dir(noise_std: float, encoding: str | None = CONTEXT_OUTPUT_ENCODING) -> str:
+def _cell_dir(noise_std: float, encoding: str | None = ACTIVE_ENCODING) -> str:
     """Directory name the sweep's combo_key() produces for one (noise, encoding) cell."""
     return f"context_encoding-{encoding}_noise_std-{noise_std}"
 
 
 def load_runs(condition_name: str, noise_std: float, n_seeds: int,
-              encoding: str | None = CONTEXT_OUTPUT_ENCODING) -> List[Tuple[Any, Any]]:
+              encoding: str | None = ACTIVE_ENCODING) -> List[Tuple[Any, Any]]:
     """Load (logger, config) pairs for all seeds of one condition x noise cell."""
     folder = EXPORT_ROOT / condition_name / _cell_dir(noise_std, encoding)
     runs, missing = [], []
@@ -201,26 +204,35 @@ def extract_belief_trials(logger, config, params: AnalysisParams) -> Dict[str, n
     """One row per scored judgement, restricted to the requested phase and frame type.
 
     Returns arrays of equal length:
-        belief_rad   reported context belief, decoded from the network's context output
-        belief_mag   ||context output|| / target_radius — the guard against a collapsed readout
+        belief_rad   the context belief being scored: the context output under
+                     belief_source='head', behav_rad under 'behaviour'
+        belief_mag   ||readout|| / target_radius — the guard against a collapsed readout (the
+                     context output, or the predicted attack)
         true_rad     ground-truth rotation of the frame being predicted (logger.context_ids)
         belief_slot  index of the circularly nearest trained rotation to belief_rad
         true_slot    same for true_rad
         correct      belief_slot == true_slot
-        behav_rad    implicit belief read from the xy prediction (cue frames only, else NaN)
+        behav_rad    implicit belief read from the xy prediction (outcome frames only, else NaN)
+        head_rad     the context output's belief whatever belief_source is; NaN with no head
         block_id     contiguous block index within the selected phase
         t_index      flat timestep, for cross-referencing back into the logger
     """
     ii, oi, ll, _ = flatten_logger(logger, config)
     nc = config.n_colors
-    C  = getattr(config, 'context_output_dims', 0)
-    if not C:
-        raise ValueError('This run has no context output head; nothing to read a belief from. '
-                         'It is a no-head control — analyse its xy behaviour instead.')
+    C  = getattr(config, 'context_output_dims', 0) or 0
+    if params.belief_source == 'head' and not C:
+        raise ValueError("belief_source='head' but this run has no context output head. "
+                         "Use belief_source='behaviour' for head-off runs.")
+    if params.belief_source == 'behaviour' and params.frames != 'outcome':
+        raise ValueError("belief_source='behaviour' is defined on outcome frames only "
+                         "(that is where the predicted attack lands); set frames='outcome'.")
 
-    ctx_pred   = oi[:, nc:nc + C]
-    belief_rad = np.arctan2(ctx_pred[:, 1], ctx_pred[:, 0])
-    belief_mag = np.linalg.norm(ctx_pred, axis=1) / config.target_radius
+    if C:
+        ctx_pred = oi[:, nc:nc + C]
+        head_rad = np.arctan2(ctx_pred[:, 1], ctx_pred[:, 0])
+        head_mag = np.linalg.norm(ctx_pred, axis=1) / config.target_radius
+    else:
+        head_rad = head_mag = np.full(len(ll), np.nan)
 
     # Implicit readout, free from the same arrays. oi[t] is the prediction *of* frame ii[t], so
     # the predicted attack lives at the outcome frame; the colour that cued it is on the
@@ -234,6 +246,16 @@ def extract_belief_trials(logger, config, params: AnalysisParams) -> Dict[str, n
     pred_xy = oi[cue_idx + 1, -2:]
     behav_rad[cue_idx + 1] = _wrap(np.arctan2(pred_xy[:, 1], pred_xy[:, 0])
                                    - 2 * np.pi * colour / nc)
+    behav_mag = np.full(len(ll), np.nan)
+    behav_mag[cue_idx + 1] = np.linalg.norm(pred_xy, axis=1) / config.target_radius
+
+    if params.belief_source == 'head':
+        belief_rad, belief_mag = head_rad, head_mag
+    elif params.belief_source == 'behaviour':
+        belief_rad, belief_mag = behav_rad, behav_mag
+    else:
+        raise ValueError(f"belief_source must be 'head' or 'behaviour'; "
+                         f"got {params.belief_source!r}")
 
     phase_mask = _phase_window(logger, config, params.phases_to_include)
     if params.frames == 'cue':
@@ -293,6 +315,7 @@ def extract_belief_trials(logger, config, params: AnalysisParams) -> Dict[str, n
         true_slot    = true_slot,
         correct      = belief_slot == true_slot,
         behav_rad    = behav_rad[keep],
+        head_rad     = head_rad[keep],
         block_id     = bid,
         pos_in_block = pos_in_block,
         t_index      = np.flatnonzero(keep),
@@ -375,14 +398,16 @@ def block_criterion_metrics(trials: Dict[str, np.ndarray], params: AnalysisParam
         bn = trials['belief_norm'][sel][post]
         out['belief_norm'].append(float(np.nanmean(bn)) if len(bn) else np.nan)
 
-        # Belief-vs-behaviour agreement: do the reported belief and the xy prediction imply the
-        # same context? Only defined where behav_rad exists (cue frames).
+        # Head-vs-behaviour agreement: do the context output and the xy prediction imply the
+        # same context? Always the head, whatever belief_source is, so it stays a check on the
+        # head; NaN for head-off runs, and wherever behav_rad is undefined.
         bh = trials['behav_rad'][sel]
-        ok = ~np.isnan(bh)
+        hd = trials['head_rad'][sel]
+        ok = ~np.isnan(bh) & ~np.isnan(hd)
         if ok.any():
             rots_rad = np.deg2rad(np.asarray(TRAIN_ROTATIONS, dtype=float))
             agree = (_nearest_slot(bh[ok], rots_rad)
-                     == _nearest_slot(trials['belief_rad'][sel][ok], rots_rad))
+                     == _nearest_slot(hd[ok], rots_rad))
             out['agreement'].append(float(agree.mean()))
         else:
             out['agreement'].append(np.nan)
@@ -403,6 +428,77 @@ def metrics_for_runs(runs: Sequence[Tuple[Any, Any]], params: AnalysisParams,
             if len(m[k]) > 0:
                 per_seed[k].append(m[k])
     return per_seed
+
+
+def retrieval_and_errors(trials: Dict[str, np.ndarray], params: AnalysisParams,
+                         first_scored: int = 3) -> Dict[str, np.ndarray]:
+    """Per-block context retrieval, and perseveration counted only from trial `first_scored`+1.
+
+      retrieval  — fraction of trials 2-3 whose *attack prediction* (behav_rad) lands on the new
+        rotation. Trial 1's outcome reveals the new rotation; trials 2-3 are colours not yet seen
+        under it (blocks start on a mini-block boundary), so they are right only if the model
+        applies one context mapping to every colour.
+      persev_late — belief-head errors before criterion, with both the count and the criterion
+        search starting at trial 4. Without that, trials 2-3 would be counted as perseveration
+        and could complete or break the criterion run, making the correlation with retrieval
+        partly true by construction.
+
+    The two sides come from different readouts (xy vs belief head), so they share no
+    measurement. Slips are taken unchanged from block_criterion_metrics: they are post-criterion
+    and never include trials 2-3.
+    """
+    rots_rad = np.deg2rad(np.asarray(TRAIN_ROTATIONS, dtype=float))
+    out = {'retrieval': [], 'persev_late': []}
+    block_ids = np.unique(trials['block_id'])
+    for bi in block_ids[block_ids >= 0][1:]:
+        sel = trials['block_id'] == bi
+        correct = trials['correct'][sel]
+        behav = trials['behav_rad'][sel][1:first_scored]
+        if len(correct) <= first_scored or np.isnan(behav).any():
+            continue
+        out['retrieval'].append(float(np.mean(_nearest_slot(behav, rots_rad)
+                                              == trials['true_slot'][sel][1:first_scored])))
+        late = correct[first_scored:]
+        t_crit = _find_criterion(late, params.criterion_n)
+        out['persev_late'].append(float(np.sum(~late[:t_crit])))  # t_crit None -> whole tail
+    return {k: np.asarray(v, dtype=float) for k, v in out.items()}
+
+
+def retrieval_points(cache, params: AnalysisParams,
+                     conditions: Sequence[str] = tuple(F3_CONDITIONS)) -> List[Dict[str, Any]]:
+    """One point per run (condition x seed) at headline_noise: means over all blocks."""
+    pts = []
+    for cond in conditions:
+        for seed, (logger, config) in enumerate(cache.get((cond, params.headline_noise), [])):
+            trials = extract_belief_trials(logger, config, params)
+            r = retrieval_and_errors(trials, params)
+            m = block_criterion_metrics(trials, params)
+            pts.append(dict(cond=cond, seed=seed,
+                            retrieval=float(np.nanmean(r['retrieval'])),
+                            persev_late=float(np.nanmean(r['persev_late'])),
+                            slips=float(np.nanmean(m['slips']))))
+    return pts
+
+
+def _spearman(pts, field: str, within: bool = False) -> Tuple[float, float, int]:
+    """Spearman rho of retrieval vs `field`. `within` ranks inside each condition first, so the
+    alpha_z dose-response cannot carry the correlation on its own."""
+    from scipy.stats import rankdata, spearmanr
+    ok = [p for p in pts if np.isfinite(p['retrieval']) and np.isfinite(p[field])]
+    if within:
+        xs, ys = [], []
+        for cond in dict.fromkeys(p['cond'] for p in ok):
+            grp = [p for p in ok if p['cond'] == cond]
+            if len(grp) < 3:
+                continue
+            xs += list(rankdata([p['retrieval'] for p in grp]) - (len(grp) + 1) / 2)
+            ys += list(rankdata([p[field] for p in grp]) - (len(grp) + 1) / 2)
+    else:
+        xs, ys = [p['retrieval'] for p in ok], [p[field] for p in ok]
+    if len(xs) < 3:
+        return np.nan, np.nan, len(xs)
+    rho, pval = spearmanr(xs, ys)
+    return float(rho), float(pval), len(xs)
 
 
 def _curve(per_seed_arrays, params: AnalysisParams):
@@ -538,6 +634,7 @@ def ideal_observer_trials(logger, config, params: AnalysisParams) -> Dict[str, n
         true_slot    = true_slot,
         correct      = slots == true_slot,
         behav_rad    = np.full(len(idx), np.nan),
+        head_rad     = np.full(len(idx), np.nan),
         block_id     = bid,
         pos_in_block = np.concatenate([np.arange(int((bid == b).sum()))
                                        for b in np.unique(bid)]) if len(bid) else np.array([]),
@@ -593,9 +690,8 @@ def _dose_response_panel(ax, points, ylabel: str, params: AnalysisParams,
     Family ticks are the bare alpha_z values with the name in the axis label — spelling out
     "NG $\\alpha_z=0.15$" 15 times is what makes this panel unreadable at paper size.
 
-    `ylabel` is used verbatim: the panel sits beside a time course of the same quantity, which
-    already names it, so the caller passes what is new here ("mean over training") rather than
-    repeating the quantity.
+    `ylabel` is used verbatim, and should name the quantity: these panels are also used on
+    their own, away from the time course beside them.
 
     NOTE the family axis is *categorical*: conditions are evenly spaced in plot order, not
     positioned by alpha_z. It has to be, because _Z_LRS is denser at the top (0.5-0.9 spans only
@@ -710,7 +806,7 @@ def plot_belief_trajectory(cache, params: AnalysisParams, export_dir: Path,
         blocks = np.unique(trials['block_id'])
         blocks = blocks[blocks >= 0][-n_blocks:]
         sel    = np.isin(trials['block_id'], blocks)
-        x      = np.arange(int(sel.sum()))
+        x      = trials['t_index'][sel] // 2      # trial number since the start of the run
         belief = np.degrees(_wrap(trials['belief_rad'][sel]))
         true   = np.degrees(_wrap(trials['true_rad'][sel]))
         ok     = trials['correct'][sel]
@@ -726,7 +822,8 @@ def plot_belief_trajectory(cache, params: AnalysisParams, export_dir: Path,
         ax.set_xlabel('Trial')
         ax.set_title(_solo_info(cond).label)
 
-    axes[0].set_ylabel('Reported context (deg)')
+    axes[0].set_ylabel('Reported context (deg)' if params.belief_source == 'head'
+                       else 'Context implied by\nprediction (deg)')
     axes[0].set_ylim(rots.min() - 45, rots.max() + 45)
     _save(fig, export_dir, 'F1_belief_trajectory.pdf', params)
     return fig
@@ -846,10 +943,10 @@ def plot_perseveration_and_slips(cache, params: AnalysisParams, export_dir: Path
     # label_every=3 at the reduced width: the tick text stays 6 pt while the panel narrows, so
     # every-other-value labels start to touch.
     label_every = 2 if size_scale > 0.85 else 3
-    # The row's left-hand panel already names the quantity; these say only what is new.
-    _dose_response_panel(ax_ap, summ_p, 'Mean over\ntraining', params,
+    # Name the quantity again: the summary panels are used on their own, without the time course.
+    _dose_response_panel(ax_ap, summ_p, 'Perseveration\nerrors / block', params,
                          label_every=label_every, scale=size_scale)
-    _dose_response_panel(ax_as, summ_s, 'Mean over\ntraining', params,
+    _dose_response_panel(ax_as, summ_s, 'Context slips\n/ block', params,
                          label_every=label_every, scale=size_scale)
     ax_ap.set_xlabel('')                                           # shared with ax_as
 
@@ -1017,6 +1114,52 @@ def plot_diagnostics(cache, params: AnalysisParams, export_dir: Path) -> plt.Fig
     return fig
 
 
+def plot_retrieval_vs_errors(cache, params: AnalysisParams, export_dir: Path,
+                             pts: List[Dict[str, Any]] | None = None) -> plt.Figure:
+    """F6 - does context retrieval go with fewer perseverative errors and fewer slips?
+
+    One point per run (condition x seed) at headline_noise. x is retrieval (trials 2-3 of a new
+    block predicted on the new rotation, from the xy readout); y is belief-head perseveration
+    from trial 4 on (left) and context slips (right), both per block, averaged over training.
+    See retrieval_and_errors for why perseveration skips trials 1-3. The pooled Spearman rho
+    sits in the corner; summarize_retrieval() also prints the within-condition rho.
+    """
+    pts = retrieval_points(cache, params) if pts is None else pts
+    fig, axes = plt.subplots(1, 2, figsize=FigSize.row(2, FigSize.small), dpi=params.dpi,
+                             sharex=True, layout='constrained')
+    first_family = next((p['cond'] for p in pts if p['cond'].startswith('NG')), None)
+    for ax, field, ylab in ((axes[0], 'persev_late', 'Perseveration errors\n/ block (from trial 4)'),
+                            (axes[1], 'slips', 'Context slips\n/ block')):
+        for cond in dict.fromkeys(p['cond'] for p in pts):
+            grp = [p for p in pts if p['cond'] == cond]
+            ax.scatter([p['retrieval'] for p in grp], [p[field] for p in grp], s=4,
+                       color=_info(cond).color, alpha=0.8, linewidths=0,
+                       label=_curve_legend_label(cond, first_family))
+        rho, pval, n = _spearman(pts, field)
+        ax.text(0.97, 0.97, rf'$\rho$ = {rho:.2f}' + ('\n' + f'p = {pval:.1g}'),
+                transform=ax.transAxes, ha='right', va='top', fontsize='small')
+        ax.set_xlabel('Context retrieval\n(trials 2-3 correct)')
+        ax.set_ylabel(ylab)
+        ax.set_ylim(0, None)
+    handles, labels = axes[0].get_legend_handles_labels()
+    handles, labels = _prune_legend_handles(handles, labels)
+    fig.legend(handles, labels, loc='outside upper center', ncols=min(len(handles), 9),
+               fontsize='small', frameon=False, handlelength=0.6, columnspacing=0.6,
+               handletextpad=0.2)
+    _save(fig, export_dir, 'F6_retrieval_vs_errors.pdf', params)
+    return fig
+
+
+def summarize_retrieval(pts: List[Dict[str, Any]]) -> None:
+    """Pooled and within-condition Spearman rho, retrieval vs each error measure."""
+    print('\n── Context retrieval (trials 2-3, xy) vs belief-head errors, one point per run ──')
+    for field, name in (('persev_late', 'perseveration from trial 4'), ('slips', 'context slips')):
+        for within in (False, True):
+            rho, pval, n = _spearman(pts, field, within=within)
+            print(f"  {name:<28}{'within condition' if within else 'pooled':<18}"
+                  f"rho={rho:+.3f}  p={pval:.2g}  n={n}")
+
+
 # ---------------------------------------------------------------------------
 # Control: does the belief head change the primary task?
 # ---------------------------------------------------------------------------
@@ -1167,7 +1310,7 @@ def _self_test() -> None:
         true_rad=ll, prev_rot=prev,
         belief_slot=_nearest_slot(stale, rots_rad), true_slot=true_slot,
         correct=_nearest_slot(stale, rots_rad) == true_slot,
-        behav_rad=np.full(len(ll), np.nan), block_id=block_of,
+        behav_rad=np.full(len(ll), np.nan), head_rad=stale, block_id=block_of,
         pos_in_block=np.concatenate([np.arange(int((block_of == b).sum()))
                                      for b in np.unique(block_of)]),
         t_index=np.arange(len(ll)),
@@ -1175,6 +1318,14 @@ def _self_test() -> None:
     m = block_criterion_metrics(trials, params)
     assert np.all(m['persev'] > 0) and np.all(np.isnan(m['slips'])), m
     print('  stale belief -> all perseveration  : OK')
+
+    # Retrieval reads the xy readout, persev_late the belief: a correct attack with a stale belief
+    # must give retrieval 1 and count every belief judgement from trial 4 on as perseverative.
+    rt = retrieval_and_errors(dict(trials, behav_rad=ll.astype(float)), params)
+    blk_len = np.array([(block_of == b).sum() for b in np.unique(block_of)[1:]])
+    assert np.all(rt['retrieval'] == 1.0), rt['retrieval']
+    assert np.array_equal(rt['persev_late'], blk_len - 3), (rt['persev_late'], blk_len)
+    print('  retrieval / persev from trial 4    : OK')
 
     # A belief parked on the previous context must score exactly 1.0 on the 0/0.5/1 scale.
     bn = trials['belief_norm'][~np.isnan(trials['belief_norm'])]
@@ -1190,7 +1341,9 @@ def _self_test() -> None:
 def main() -> dict:
     global runs_cache
     params     = AnalysisParams()
-    export_dir = EXPORT_ROOT / 'figures'
+    export_dir = FIGURE_DIR
+    print(f"Runs: head {'on (' + ACTIVE_ENCODING + ')' if ACTIVE_ENCODING else 'off'}, "
+          f"perseveration/slips scored on {params.belief_source} -> {export_dir}")
 
     # Reload when new runs have landed or conditions have been added, not just when the cache is
     # absent — otherwise re-running in the same session keeps reporting the sweep as incomplete.
@@ -1207,7 +1360,10 @@ def main() -> dict:
     plot_slips_vs_noise(runs_cache, params, export_dir)
     plot_belief_dynamics(runs_cache, params, export_dir)
     plot_diagnostics(runs_cache, params, export_dir)
+    pts = retrieval_points(runs_cache, params)
+    plot_retrieval_vs_errors(runs_cache, params, export_dir, pts=pts)
     summarize(runs_cache, params)
+    summarize_retrieval(pts)
     return runs_cache
 
 
