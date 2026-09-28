@@ -407,7 +407,7 @@ All paper-panel sized; see [figure_style.md](figure_style.md).
 | F4 | Asymptotic **slips per block** vs `noise_std`, with the ideal observer, and trials-to-criterion beneath. **The causal figure** |
 | F5 | Belief vs trial-within-block, on the 0/0.5/1 scale. **The mechanistic figure** |
 | D | Belief–behaviour agreement over training |
-| F6 | Context retrieval (trials 2–3) against perseveration from trial 4 (left) and context slips (right), one point per run. See [Context retrieval vs errors](#context-retrieval-vs-errors) |
+| F6 | Context retrieval (trials 2–N, default N = 5) against perseveration from trial N+1 (left) and context slips (right), one point per run. See [Context retrieval vs errors](#context-retrieval-vs-errors) |
 
 Counts per block, not rates: "2.9 slips per block" is a number you can hold; "a slip rate of
 0.054" is not. F4 drops the memoryless reference for the same reason — it is an error *rate*,
@@ -453,23 +453,24 @@ predicts a short, shallow kernel for the RNN and a long one for NeuraGEM. Not im
 
 The hypothesis: a model that has discovered the context structure makes fewer perseverative
 errors and fewer slips. Discovery is measured as **context retrieval**: whether the attack
-predictions on trials 2 and 3 of a new block land on the new rotation. Trial 1's outcome reveals
-the new rotation. Trials 2 and 3 are colours not yet seen under it (checked: the first 5 trials
-after every switch are 5 distinct colours), so they come out right only if one context mapping
-is applied to every colour.
+predictions on trials 2..N of a new block land on the new rotation, with N =
+`AnalysisParams.retrieval_last_trial`. The default is 5, the rest of the first mini-block; the
+first version used 2–3. Trial 1's outcome reveals the new rotation. Trials 2..N are colours not
+yet seen under it (checked: the first 5 trials after every switch are 5 distinct colours), so they
+come out right only if one context mapping is applied to every colour. An assert keeps
+N ≤ `n_colors`.
 
-The two sides of each correlation come from different readouts. `retrieval_and_errors` defines
-them:
+`retrieval_and_errors` defines the three measures:
 
 | | Readout | Definition |
 |---|---|---|
-| **Retrieval** | xy attack (`behav_rad`) | fraction of trials 2–3 on the new rotation |
-| **Perseveration from trial 4** | belief head | errors before criterion, with the count *and* the criterion search both starting at trial 4 |
-| **Context slips** | belief head | unchanged F3 definition; post-criterion, so it never includes trials 2–3 |
+| **Retrieval** | xy attack (`behav_rad`), always | fraction of trials 2..N on the new rotation |
+| **Perseveration from trial N+1** | `BELIEF_SOURCE` | errors before criterion, with the count *and* the criterion search both starting at trial N+1 |
+| **Context slips** | `BELIEF_SOURCE` | unchanged F3 definition, post-criterion |
 
-> **Why perseveration starts at trial 4.** Under the standard definition, errors on trials 2–3
-> are themselves perseverative errors, and they also complete or break the criterion run. The
-> correlation with retrieval would then be partly true by construction.
+> **Why perseveration starts after the retrieval trials.** Under the standard definition, errors
+> on the retrieval trials are themselves perseverative errors, and they also complete or break
+> the criterion run. The correlation with retrieval would then be partly true by construction.
 
 One point is one run (condition × seed), at the headline noise level, averaged over every block
 in training. Spearman ρ is computed two ways:
