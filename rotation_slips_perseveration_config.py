@@ -54,6 +54,39 @@ NOISE_LEVELS = [0.04, 0.12, 0.20, 0.30]
 CONTEXT_OUTPUT_ENCODING = 'circular'   # target_radius * [cos theta, sin theta]
 CONTEXT_LOSS_WEIGHT     = 1.0          # output_loss_mask entry for the context dims
 
+# ── The two switches: train on context, and where the analysis reads context from ──
+#
+# TRAIN_CONTEXT_OUTPUT — whether the model is trained with the context output head. The head is
+#   a supervised gradient, not an inert readout (see the no-head control in the doc), and with
+#   it on every model eventually learns to report context, so turning it off asks what each
+#   model discovers from the task alone. Head-off runs save to
+#   `context_encoding-None_*` cells beside the head-on ones, so neither overwrites the other,
+#   and the analysis loads whichever this flag selects.
+# BELIEF_SOURCE — what perseveration and slips are scored on:
+#   'head'      the context output (needs TRAIN_CONTEXT_OUTPUT)
+#   'behaviour' the context implied by the predicted attack, atan2(pred_xy) - 2*pi*c/n_colors,
+#               on the outcome frame. Works with or without a head.
+#   Context retrieval (F6) is always scored on behaviour.
+TRAIN_CONTEXT_OUTPUT: bool = True
+BELIEF_SOURCE: str = 'head'           # 'head' | 'behaviour'
+
+# TRAIN_CONTEXT_OUTPUT = False
+# BELIEF_SOURCE = 'behaviour'
+
+ACTIVE_ENCODING = CONTEXT_OUTPUT_ENCODING if TRAIN_CONTEXT_OUTPUT else None
+assert BELIEF_SOURCE in ('head', 'behaviour'), BELIEF_SOURCE
+assert TRAIN_CONTEXT_OUTPUT or BELIEF_SOURCE == 'behaviour', \
+    "BELIEF_SOURCE='head' needs TRAIN_CONTEXT_OUTPUT=True: head-off runs have no head to read."
+
+# TRAIN_WINDOW — which part of training the analysis reads, as (start, end) fractions of the
+#   blocks in the 'Learning and inference' phase. (0, 1) is all of training, (0, 0.5) the
+#   first half. Applied once, where trials are extracted, so every figure and metric uses the
+#   same blocks — including the "asymptote" (the last block groups *inside* the window) and the
+#   ideal observer.
+TRAIN_WINDOW = (0.0, 0.5)
+# TRAIN_WINDOW = (0.0, 1)
+assert 0.0 <= TRAIN_WINDOW[0] < TRAIN_WINDOW[1] <= 1.0, TRAIN_WINDOW
+
 
 # ── Sweep conditions ──────────────────────────────────────────────────────────
 
@@ -230,6 +263,11 @@ def make_base_config(noise_std: float = 0.20,
 _SEP = int(round(max(TRAIN_ROTATIONS) - min(TRAIN_ROTATIONS)))
 RUN_NAME    = f"sep{_SEP}_blocked_{16800}_geometric"
 EXPORT_ROOT = Path(f"./exports/rotation_slips/{RUN_NAME}")
+# Figures go in one subdirectory per (training, readout, window) variant, so the variants never
+# overwrite each other's figures.
+FIGURE_DIR  = EXPORT_ROOT / 'figures' / (
+    f"head-{ACTIVE_ENCODING or 'off'}_belief-{BELIEF_SOURCE}"
+    f"_blocks-{round(100 * TRAIN_WINDOW[0])}-{round(100 * TRAIN_WINDOW[1])}")
 
 
 # ── Condition display metadata ────────────────────────────────────────────────

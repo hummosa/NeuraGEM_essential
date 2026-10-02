@@ -90,7 +90,7 @@ _ALPHAS = np.logspace(-3, 5, 17)
 # Logger extraction
 # ──────────────────────────────────────────────────────────────────────────────
 
-def flatten_hidden_states(logger, config):
+def flatten_hidden_states(logger, config, field='hidden_states'):
     """
     Return the logged RNN hidden states as a flat (T, hidden_size) array, or None.
 
@@ -106,13 +106,18 @@ def flatten_hidden_states(logger, config):
     Raises ValueError if the result cannot be aligned with the other logged arrays, which
     is what happens under `log_initial_burn_in_timesteps=True` (the burn-in branch of
     `_log_batch` logs seq_len input entries but only one hidden state).
+
+    `field` selects which logged channel to read: 'hidden_states' is the post-gate h the
+    readout consumes, 'hidden_pregate' the same timesteps *before* the post gate is applied.
+    Under `post_gating` the recurrence never sees Z, so only the first carries the context
+    gate — which is the whole reason both are recorded.
     """
-    if not getattr(logger, 'hidden_states', None):
+    if not getattr(logger, field, None):
         return None
 
     stride = config.stride
     chunks = []
-    for entry in logger.hidden_states:
+    for entry in getattr(logger, field):
         entry = np.asarray(entry)
         if entry.ndim == 3:          # (batch, seq, hidden)
             entry = entry[:, -stride:, :]
@@ -120,7 +125,7 @@ def flatten_hidden_states(logger, config):
             entry = entry[:, np.newaxis, :]
         else:
             raise ValueError(
-                f'Unexpected hidden-state entry with shape {entry.shape}; '
+                f'Unexpected {field} entry with shape {entry.shape}; '
                 'expected (batch, hidden) or (batch, seq, hidden).'
             )
         chunks.append(entry)
@@ -131,7 +136,7 @@ def flatten_hidden_states(logger, config):
     n_expected = len(np.concatenate(logger.inputs, axis=0).reshape(-1, config.input_size))
     if len(hh) != n_expected:
         raise ValueError(
-            f'Hidden states ({len(hh)} timesteps) do not align with inputs '
+            f'{field} ({len(hh)} timesteps) does not align with inputs '
             f'({n_expected} timesteps). This happens with '
             'log_initial_burn_in_timesteps=True, which logs seq_len input entries but '
             'only one hidden state for the first batch. Re-run with it disabled.'
@@ -198,7 +203,8 @@ def _phase_range_and_rotations(logger, config, phase):
     return int(t_start), int(t_end), rotations
 
 
-def extract_decode_samples(logger, config, phase='phase3a', frames='all', z_lag=0):
+def extract_decode_samples(logger, config, phase='phase3a', frames='all', z_lag=0,
+                           t_range=None, require_hidden=True):
     """
     Collect aligned (Z, hidden, rotation) samples over one phase of one run.
 
@@ -214,21 +220,39 @@ def extract_decode_samples(logger, config, phase='phase3a', frames='all', z_lag=
         batch t, while `hidden_states[t]` comes from the weight-update forward pass, which
         ran with the Z carried over from batch t-1.  z_lag=0 reads both at the logged
         timestep; z_lag=-1 pairs each hidden state with the Z that actually drove it.
+    t_range : (start, end) | None
+        Explicit timestep range, which overrides `phase`.  The named phases describe the
+        Phase-2/3 structure of a single `train_model` call; a curriculum stage is its own
+        call whose blocked-learning span is neither 'phase2' nor the whole logger ('all'
+        would swallow the passive warm-up, a different learning regime).  Read the span
+        from `logger.others['timestep_passive_learning_ended' / 'timestep_learning_ended']`
+        — `len(logger.inputs)` is 1 after `compact_logger` and cannot be used for this.
+        `rotations` falls back to `config.train_rotations`.
+    require_hidden : bool
+        Raise when the logger has no hidden states (the default, since decoding compares Z
+        against H).  Pass False for a Z-only analysis — 'H' is then simply absent from the
+        returned dict, so reaching for it raises a clean KeyError rather than reading zeros.
 
     Returns a dict of aligned arrays (or None if the phase is absent from the logger):
-        Z (N, Z_dim), H (N, hidden_size), theta_rad (N,), angle_deg (N,),
+        Z (N, Z_dim), H (N, hidden_size), H_pre (N, hidden_size) when the pre-gate channel
+        was logged, theta_rad (N,), angle_deg (N,),
         block_idx (N,), frame_type (N,) [0=cue, 1=outcome],
         miniblock_since_switch (N,), t_index (N,)
     """
-    t_start, t_end, rotations = _phase_range_and_rotations(logger, config, phase)
+    if t_range is not None:
+        t_start, t_end = int(t_range[0]), int(t_range[1])
+        rotations = list(config.train_rotations)
+    else:
+        t_start, t_end, rotations = _phase_range_and_rotations(logger, config, phase)
     if t_start is None:
         return None
 
     ii, _, ll, li = flatten_logger(logger, config)
     hh = flatten_hidden_states(logger, config)
+    hp = flatten_hidden_states(logger, config, field='hidden_pregate')
     if li is None:
         raise ValueError('No latent values logged.')
-    if hh is None:
+    if hh is None and require_hidden:
         raise ValueError('No hidden states logged; set config.log_hidden_states = True.')
 
     nc = config.n_colors
@@ -239,7 +263,7 @@ def extract_decode_samples(logger, config, phase='phase3a', frames='all', z_lag=
     boundaries = sorted(set(boundaries))
     mb_len = nc * 2  # timesteps per mini-block (cue + outcome per color)
 
-    Z, H, theta, angles, blocks, ftypes, mbs, tix = [], [], [], [], [], [], [], []
+    Z, H, Hp, theta, angles, blocks, ftypes, mbs, tix = [], [], [], [], [], [], [], [], []
 
     for bi, b_start in enumerate(boundaries):
         b_end = boundaries[bi + 1] if bi + 1 < len(boundaries) else t_end
@@ -257,7 +281,10 @@ def extract_decode_samples(logger, config, phase='phase3a', frames='all', z_lag=
                 continue
 
             Z.append(li[t_z])
-            H.append(hh[t])
+            if hh is not None:
+                H.append(hh[t])
+            if hp is not None:
+                Hp.append(hp[t])
             theta.append(float(ll[t]))
             angles.append(float(deg))
             blocks.append(bi)
@@ -268,9 +295,8 @@ def extract_decode_samples(logger, config, phase='phase3a', frames='all', z_lag=
     if not Z:
         return None
 
-    return dict(
+    out = dict(
         Z=np.asarray(Z, dtype=float),
-        H=np.asarray(H, dtype=float),
         theta_rad=np.asarray(theta, dtype=float),
         angle_deg=np.asarray(angles, dtype=float),
         block_idx=np.asarray(blocks, dtype=int),
@@ -281,6 +307,11 @@ def extract_decode_samples(logger, config, phase='phase3a', frames='all', z_lag=
         frames=frames,
         z_lag=z_lag,
     )
+    if hh is not None:
+        out['H'] = np.asarray(H, dtype=float)
+    if hp is not None:
+        out['H_pre'] = np.asarray(Hp, dtype=float)
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────────────

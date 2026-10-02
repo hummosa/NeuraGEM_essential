@@ -9,7 +9,7 @@
 #
 # Prints the SLURM job id on the last line so a caller can chain dependencies.
 
-VALID="learning | generalization_tests | mean_prediction | flanker_pretrain | flanker | rotation_slips | curriculum"
+VALID="learning | generalization_tests | mean_prediction | flanker_pretrain | flanker | rotation_slips | rotation_slips_nohead | curriculum"
 
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Usage: $0 <MAX_TASK_ID> <EXPERIMENT_NAME> [AFTER_JOBID]"
@@ -49,6 +49,9 @@ elif [ "$EXPERIMENT_NAME" = "flanker" ]; then
     PYTHON_FILE="flanker_sweep.py"
 elif [ "$EXPERIMENT_NAME" = "rotation_slips" ]; then
     PYTHON_FILE="rotation_slips_perseveration_sweep.py"
+elif [ "$EXPERIMENT_NAME" = "rotation_slips_nohead" ]; then
+    PYTHON_FILE="rotation_slips_perseveration_sweep.py"
+    PYTHON_ARGS="no_head"
 elif [ "$EXPERIMENT_NAME" = "curriculum" ]; then
     PYTHON_FILE="rotation_curriculum_sweep.py"
     # TIME_LIMIT="0-02:00:00"

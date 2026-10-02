@@ -589,6 +589,11 @@ class RNN_with_latent(nn.Module):
         for step in range(seq_len):
             h, c = self._apply_pre_gate(h, c, step, what_latent, taskID)
             h, c = self._rnn_step(processed_input[:, step, :], h, c)
+            # h BEFORE the post gate: under post_gating the recurrence never sees Z, so this is
+            # the state the network holds on its own, while the post-gate h below has the
+            # context gate multiplied into it. Distinguishing the two needs both recorded.
+            if getattr(self, "_pregate_trace", None) is not None:   # off unless a caller sets it
+                self._pregate_trace.append(h.detach())
             h, c = self._apply_post_gate(h, c, step, what_latent, taskID)
             outputs.append(self.output_layer(h))
             if getattr(self, "_hidden_trace", None) is not None:   # off unless a caller sets a list

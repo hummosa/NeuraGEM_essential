@@ -297,6 +297,48 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
         ax.set_ylabel('Latent effective LR')
         ax.set_ylim([0, 3000])
 
+    def _rotating_targets_implied(t_lo, t_hi):
+        """Outcome-frame timesteps in [t_lo, t_hi), the context their predicted attack implies,
+        the true context, and whether the two name the same trained rotation.
+
+        oi[t] is the prediction of frame ii[t]: the cue sits at t, the predicted attack at t+1,
+        and the attack for colour c under rotation theta is at polar angle 2*pi*c/n_colors+theta.
+        """
+        nc = config.n_colors
+        cue = np.flatnonzero(ii[:, :nc].sum(axis=1) > 0.5)
+        cue = cue[(cue + 1 >= t_lo) & (cue + 1 < t_hi) & (cue + 1 < len(oi))]
+        t = cue + 1
+        colour = np.argmax(ii[cue, :nc], axis=1)
+        implied = np.arctan2(oi[t, -1], oi[t, -2]) - 2 * np.pi * colour / nc
+        implied = np.arctan2(np.sin(implied), np.cos(implied))
+        true = ll.reshape(-1)[t]
+        rots = np.deg2rad(np.asarray(config.train_rotations, dtype=float))
+        near = lambda a: np.argmin(np.abs(np.arctan2(np.sin(a[:, None] - rots[None, :]),
+                                                     np.cos(a[:, None] - rots[None, :]))), axis=1)
+        return t, implied, true, near(implied) == near(true)
+
+    def plot_implied_context(ax):
+        """Context implied by the predicted attack vs. the true rotation, one dot per trial.
+
+        The behavioural counterpart of 'context_belief', for runs with or without a context
+        head. Red = the implied context is nearer the other trained rotation.
+        """
+        if config.dataset_name != 'rotating_targets' or not logger.predicted_outputs:
+            ax.set_ylabel('Implied context')
+            return
+        import plot_style
+        t, implied, true, ok = _rotating_targets_implied(x1, x2)
+        x = t - x1
+        ax.step(x, np.degrees(true), where='post', color='0.7', linewidth=0.8, zorder=1)
+        ax.scatter(x[ok], np.degrees(implied[ok]), s=1.5, linewidths=0, alpha=0.7, zorder=3,
+                   color=plot_style.get_model_color('NeuraGEM'), rasterized=rasterize)
+        ax.scatter(x[~ok], np.degrees(implied[~ok]), s=2.5, linewidths=0, alpha=0.9, zorder=4,
+                   color='tab:red', rasterized=rasterize)
+        rots = np.asarray(config.train_rotations, dtype=float)
+        ax.axhline(float(rots.mean()), color='k', linewidth=0.6, linestyle=':', alpha=0.4)
+        ax.set_ylim(rots.min() - 60, rots.max() + 60)
+        ax.set_ylabel('Implied\ncontext (deg)')
+
     def plot_corrects(ax):
         if config.dataset_name == 'seq_learn':
             corrects, states, transitions, A_starts, B_starts, both_starts = get_corrects_and_trial_starts(logger)
@@ -382,6 +424,28 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
             ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.3)
             ax.set_ylim(0.0, 1.1)
             ax.set_ylabel('P(target)')
+            ax.legend(loc='lower right', fontsize=6)
+
+        elif logger.predicted_outputs and config.dataset_name == 'rotating_targets':
+            # One dot per trial: does the predicted attack name the right rotation? Scored on
+            # behaviour (see plot_implied_context), with a causal MA(5) on the timestep axis.
+            import plot_style
+            t, _, _, ok = _rotating_targets_implied(x1, x2)
+            x = t - x1
+            y = ok.astype(float) + np.random.default_rng(42).uniform(-0.08, 0.08, len(ok))
+            ax.scatter(x[~ok], y[~ok], s=4, color='tab:gray', alpha=0.5, linewidths=0,
+                       rasterized=rasterize)
+            ax.scatter(x[ok], y[ok], s=4, color=plot_style.get_model_color('NeuraGEM'),
+                       alpha=0.5, linewidths=0, rasterized=rasterize)
+            ma_window = 5
+            ma = np.convolve(ok.astype(float), np.ones(ma_window) / ma_window,
+                             mode='full')[:len(ok)]
+            ax.plot(x, 0.15 + 0.70 * ma, color='k', linewidth=0.75, alpha=0.9,
+                    label=f'MA({ma_window})')
+            ax.axhline(0.5, color='k', linewidth=0.5, linestyle=':', alpha=0.3)
+            ax.set_yticks([0.0, 1.0])
+            ax.set_yticklabels(['Wrong', 'Correct'])
+            ax.set_ylim(-0.22, 1.22)
             ax.legend(loc='lower right', fontsize=6)
 
         elif logger.predicted_outputs and config.dataset_name == 'hier_switch':
@@ -497,6 +561,7 @@ def plot_logger_panels(logger, config, panel_order, x1=0,x2=None, dpi=100, subpl
         'latent_effective_lr': plot_effective_lr,
         'latent_2d': plot_latent_2d,
         'context_belief': plot_context_belief,
+        'implied_context': plot_implied_context,
         'latent_2D': plot_latent_2d,
         'latent2D': plot_latent_2d,
         'latent_chunk_1': plot_latent_chunk_1,
@@ -1329,6 +1394,7 @@ class Logger:
         self.hlcids = []
         self.hidden_states = []
         self.hidden_trace = []   # per-timestep h of the acting (WU) forward; config.record_hidden
+        self.hidden_pregate = []  # same timesteps, h BEFORE the post gate; config.record_pregate
         self.gradients_max_entropy = []
         self.gradients_corrections = []
         self.input_attention_weights = []

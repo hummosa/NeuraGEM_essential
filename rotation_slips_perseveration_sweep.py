@@ -11,7 +11,13 @@ Run locally (sequential):
     python rotation_slips_perseveration_sweep.py
 
 Run on SLURM (one job per array element):
-    ./submit_job.sh <N-1> rotation_slips
+    ./submit_job.sh <N-1> rotation_slips          # head as set by TRAIN_CONTEXT_OUTPUT
+    ./submit_job.sh <N-1> rotation_slips_nohead   # head off, whatever the config says
+
+Optional positional mode, `head` | `no_head`, overrides TRAIN_CONTEXT_OUTPUT for this
+process. The Slurm path uses it so the array is fixed at submission: a queued task imports the
+config only when it starts, so flipping the config flag while tasks are pending would change
+what they train.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ os.environ.setdefault('OMP_NUM_THREADS', '1')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 
 import pickle
+import sys
 from dataclasses import dataclass
 from itertools import product
 from typing import Any, Dict, List
@@ -34,7 +41,7 @@ import torch
 
 from train_and_infer_functions import train_model
 from rotation_slips_perseveration_config import (
-    CONTEXT_OUTPUT_ENCODING, EXPORT_ROOT, PILOT, PILOT_INCLUDE_NO_HEAD_CONTROL,
+    ACTIVE_ENCODING, CONTEXT_OUTPUT_ENCODING, EXPORT_ROOT, PILOT, PILOT_INCLUDE_NO_HEAD_CONTROL,
     NOISE_LEVELS, SKIP_EXISTING, active_conditions, active_seeds, make_base_config,
 )
 
@@ -42,10 +49,18 @@ from rotation_slips_perseveration_config import (
 CONDITIONS = active_conditions()
 N_SEEDS    = active_seeds()
 
-# 'context_encoding' is only a grid axis in pilot mode, where the no-head control arm answers
-# "does the belief head change the primary task?". In the full sweep every run has the head.
-_ENCODINGS = ([CONTEXT_OUTPUT_ENCODING, None]
-              if (PILOT and PILOT_INCLUDE_NO_HEAD_CONTROL) else [CONTEXT_OUTPUT_ENCODING])
+_MODES = {'head': CONTEXT_OUTPUT_ENCODING, 'no_head': None}
+_MODE  = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else None
+if _MODE is not None and _MODE not in _MODES:
+    raise SystemExit(f'Unknown mode {_MODE!r}; choose from {list(_MODES)}.')
+ENCODING = ACTIVE_ENCODING if _MODE is None else _MODES[_MODE]
+
+# ACTIVE_ENCODING follows TRAIN_CONTEXT_OUTPUT (None = no head). In pilot mode a head-on sweep
+# also runs the no-head control arm, which answers "does the belief head change the primary
+# task?".
+_ENCODINGS = ([ENCODING, None]
+              if (PILOT and PILOT_INCLUDE_NO_HEAD_CONTROL and ENCODING is not None)
+              else [ENCODING])
 
 PARAM_GRIDS: Dict[str, Any] = {
     name: {
@@ -93,10 +108,14 @@ def combo_key(params: Dict[str, Any]) -> str:
 # full sweep would be several GB. Collapsing each field to a single concatenated float32 array
 # wrapped in a one-element list keeps every consumer working unchanged — they all do
 # np.concatenate(field, axis=0).reshape(-1, D) (see rotating_targets_analysis.flatten_logger).
+# 'hidden_states' is KEPT rather than dropped: a run with config.log_hidden_states=True needs
+# it for the representational analyses (rotation_curriculum_rdm, rotation_decoding_analysis), and
+# the compaction below is guarded by `if entries`, so a run that does not log hidden states is
+# unaffected and its pickles stay exactly as small as before.
 _KEEP_FIELDS = ('inputs', 'predicted_outputs', 'context_ids', 'hlcids',
-                'latent_values', 'training_losses')
+                'latent_values', 'training_losses', 'hidden_states', 'hidden_pregate')
 _DROP_FIELDS = ('training_batches', 'training_losses_before_latent_optimization',
-                'hidden_states', 'gradients_corrections', 'latent_gradients',
+                'gradients_corrections', 'latent_gradients',
                 'latent_updating_losses', 'latent_updating_latents',
                 'latent_updating_combined_inputs', 'latent_updating_outputs',
                 'latent_updating_grad_model_outputs', 'input_attention_weights',

@@ -116,6 +116,14 @@ S2_BLOCK_SCALE = 1.0
 #   'zeros'     — leave Z at zeros; softmax makes that uniform anyway, but skips the rebuild.
 S3_Z_INIT = 'uniform' # 'last_cued' I think this is overblown I doubt it'll have impact. The model leaves the region quickly.
 
+# Whether S3 keeps training the weights. False is the original design: weights frozen, so Z is
+# the only adaptive variable and recovery speed is a readout of Z_lr alone. True lets the weights
+# keep learning (WU at the base WU_lr) so the RNN arm can adapt in S3 as well and is a fair
+# baseline rather than a network stuck at chance. S3_pinned follows the same setting, so with
+# True it becomes the weights-only-adaptation control for the same S2 checkpoint. Encoded in
+# RUN_NAME, so flipping it writes to a new directory and leaves the frozen-S3 results intact.
+S3_LEARN_WEIGHTS: bool = True
+
 # Each phase rebuilds its dataset with default_rng(config.env_seed), so without distinct offsets
 # S2 and S3 would replay S1's exact block and noise stream.
 STAGE_SEED_OFFSETS = {'S1': 0, 'S2': 1000, 'S3': 2000}
@@ -129,7 +137,7 @@ DEFAULT_NOISE: List[float] = [HEADLINE_NOISE]
 # slips-vs-noise causal figure's counterpart. Costs 4x the compute, so it is not the default.
 ALL_NOISE: List[float] = list(NOISE_LEVELS)
 
-PILOT: bool = True
+PILOT: bool = False
 PILOT_SEEDS: int = 1
 PILOT_NOISE: List[float] = [HEADLINE_NOISE]
 
@@ -194,8 +202,27 @@ _HEAD = 'head-off' if CONTEXT_OUTPUT_ENCODING is None else f'head-{CONTEXT_OUTPU
 # (keyed by (cue_mode, z_lr_test)) live at, silently clobbering them with an incompatible shape.
 GRID_VERSION = 'zgrid1'
 
+# Log the RNN hidden state at every timestep of every stage, which the representational analysis
+# (rotation_curriculum_rdm) needs and no earlier rotation run has on disk. At stride=1 the final h
+# that `forward` returns IS the post-gate h of the logged timestep, so `log_hidden_states` and
+# `record_hidden`/`hidden_trace` carry identical numbers here and the cheaper channel is used --
+# `flatten_hidden_states` and `extract_decode_samples` already read it with no new plumbing.
+#
+# It costs ~5.7 MB per tree (22k logged timesteps x 64 units x float32), so it goes in RUN_NAME:
+# a hidden-logging run writes to its own directory and leaves the existing behavioural results
+# untouched. Logging appends no randomness, so the behaviour of a '_hid' run must reproduce the
+# un-tagged one exactly -- which is the check to run before trusting anything downstream.
+#
+# Left OFF by default. Flipping it to True is what starts the hidden-logging run, and it
+# repoints RUN_NAME -- and so every reader, including the behavioural figures -- at the new
+# directory. Keep it False to work against the existing results; pass run_name= to read a
+# specific run regardless (rotation_curriculum_rdm.load_arm_runs, inspect_curriculum_run).
+RECORD_HIDDEN = True
+
 RUN_NAME    = (f"sep{_SEP}_{S1_LENGTH}-{S2_LENGTH}-{S3_LENGTH}"
-               f"_{_HEAD}_decay-{Z_DECAY_MODE}_{GRID_VERSION}")
+               f"_{_HEAD}_decay-{Z_DECAY_MODE}_{GRID_VERSION}"
+               f"{'_hid' if RECORD_HIDDEN else ''}"
+               f"{'_s3learn' if S3_LEARN_WEIGHTS else ''}")
 EXPORT_ROOT = Path(f"./exports/rotation_curriculum/{RUN_NAME}")
 
 

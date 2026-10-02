@@ -9,6 +9,7 @@ exports/
 __pycache__/
 *.log
 .claude/
+lab/
 slurm/
 exports/
 ./slurm/

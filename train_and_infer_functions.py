@@ -120,6 +120,11 @@ def _weight_update_step(model, config, combined_input, model_inputs, inputs, con
     # not recorded. Off unless config.record_hidden.
     record = bool(getattr(config, 'record_hidden', False))
     model._hidden_trace = [] if record else None
+    # Independent of record_hidden: the pre-gate state is a different quantity, not a finer
+    # sampling of the same one, and it is the only way to tell an intrinsic context
+    # representation from one the Z gate imposes on the readout.
+    record_pre = bool(getattr(config, 'record_pregate', False))
+    model._pregate_trace = [] if record_pre else None
     if config.use_add_gating:
         outputs, hidden_states = model(combined_input, taskID=context_ids,
                                        what_latent=config.what_latent_to_use)
@@ -131,6 +136,8 @@ def _weight_update_step(model, config, combined_input, model_inputs, inputs, con
     outputs = torch.stack(outputs, dim=1)  # (batch, seq_len-1, output_size)
     model.last_hidden_trace = torch.stack(model._hidden_trace, dim=1) if record else None
     model._hidden_trace = None
+    model.last_pregate_trace = (torch.stack(model._pregate_trace, dim=1) if record_pre else None)
+    model._pregate_trace = None
 
     # Compute the loss # (batch, seq_len-1, output_size), unreduced
     loss = criterion(outputs, inputs) if config.predict_first_frame else criterion(outputs, inputs[:, 1:, :])
@@ -243,6 +250,9 @@ def _log_batch(logger, config, inputs, outputs, full_loss, first_full_loss,
 
     if getattr(config, 'record_hidden', False):
         logger.hidden_trace.append(model.last_hidden_trace[:, -stride:, :].cpu().numpy())
+
+    if getattr(config, 'record_pregate', False):
+        logger.hidden_pregate.append(model.last_pregate_trace[:, -stride:, :].cpu().numpy())
 
     if config.log_weights:
         logger.log_weights(model)
