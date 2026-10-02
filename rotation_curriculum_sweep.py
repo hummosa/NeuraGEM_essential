@@ -51,8 +51,9 @@ import torch
 from train_and_infer_functions import train_model
 from rotation_slips_perseveration_sweep import compact_logger
 from rotation_curriculum_config import (
-    CUE_MODES, PASSIVE_LENGTH, PILOT, S1_LENGTH, S2_BLOCK_SCALE, S2_LENGTH, S3_LENGTH,
-    S3_PINNED_Z_SANITY, S3_Z_INIT, SKIP_EXISTING, STAGE_SEED_OFFSETS, Z_LR,
+    CUE_MODES, PASSIVE_LENGTH, PILOT, RECORD_HIDDEN,
+    S1_LENGTH, S2_BLOCK_SCALE, S2_LENGTH, S3_LENGTH,
+    S3_LEARN_WEIGHTS, S3_PINNED_Z_SANITY, S3_Z_INIT, SKIP_EXISTING, STAGE_SEED_OFFSETS, Z_LR,
     active_noise, active_seeds, make_base_config, result_path, z_decay_for,
 )
 
@@ -101,6 +102,11 @@ def make_stage_configs(z_lr: Any, noise_std: float) -> Dict[str, Any]:
     """Base config plus the S1 config. S2/S3 configs are derived per branch at run time."""
     base = make_base_config(noise_std=noise_std)
     _apply_zlr(base, z_lr)
+    # Set on `base`, not per stage: S2/S3/S3_pinned all deepcopy it, so one line covers the
+    # whole tree. The slips config turns this off explicitly ("behavioural analysis only"),
+    # which is why it has to be re-enabled here rather than inherited.
+    base.log_hidden_states = RECORD_HIDDEN   # post-gate h (what the readout sees)
+    base.record_pregate   = RECORD_HIDDEN   # pre-gate h (what the recurrence holds)
 
     cfg_s1 = copy.deepcopy(base)
     cfg_s1.blocked_phase_length      = S1_LENGTH
@@ -135,15 +141,17 @@ def make_s2_config(base, z_lr: Any, cue_mode: str):
 
 
 def make_s3_config(base, z_lr: Any, pin_z: bool = False):
-    """S3: uncued again, weights frozen. Carries the SAME z_lr the individual trained/was cued
-    with, unless `pin_z` — the one sanity-check exception, which pins Z instead (LU off)."""
+    """S3: uncued again, weights frozen unless S3_LEARN_WEIGHTS. Carries the SAME z_lr the
+    individual trained/was cued with, unless `pin_z` — the one sanity-check exception, which pins
+    Z instead (LU off)."""
     cfg = copy.deepcopy(base)
     cfg.blocked_phase_length       = S3_LENGTH
     cfg.add_passive_learning_phase = False
     cfg.what_latent_to_use         = 'self'
-    # The whole design: with the weights frozen, Z is the only adaptive variable, so recovery
-    # speed after a switch can only be a function of Z_lr.
-    cfg.no_of_steps_in_weight_space = 0
+    # Frozen (the original design): Z is the only adaptive variable, so recovery speed after a
+    # switch can only be a function of Z_lr. Learning: the weights keep adapting too, which is
+    # what gives the RNN arm a real S3 to be compared against.
+    cfg.no_of_steps_in_weight_space = 1 if S3_LEARN_WEIGHTS else 0
     if pin_z:
         cfg.no_of_steps_in_latent_space = 0     # sanity branch: Z pinned, not part of the Z_LR axis
     else:
@@ -242,7 +250,8 @@ def run_tree(job: CurriculumJob, job_index: int | None = None, total: int | None
         'meta': dict(z_lr=job.z_lr, noise_std=job.noise_std, seed=job.seed,
                      s1_length=S1_LENGTH, s2_length=S2_LENGTH, s3_length=S3_LENGTH,
                      s2_block_scale=S2_BLOCK_SCALE, s3_z_init=S3_Z_INIT,
-                     cue_modes=list(CUE_MODES), s3_pinned_z_sanity=S3_PINNED_Z_SANITY),
+                     cue_modes=list(CUE_MODES), s3_pinned_z_sanity=S3_PINNED_Z_SANITY,
+                     s3_learn_weights=S3_LEARN_WEIGHTS),
         'S1': logger_s1,
         'S2': {}, 'S3': {}, 'S3_pinned': {},
         'configs': {'S1': cfgs['S1'], 'S2': {}, 'S3': {}, 'S3_pinned': {}},
@@ -258,7 +267,7 @@ def run_tree(job: CurriculumJob, job_index: int | None = None, total: int | None
         payload['configs']['S2'][cue_mode] = cfg_s2
         last_rot = _last_block_rotation_rad(logger_s2)
 
-        # ── S3: uncued again, weights frozen, SAME Z_lr as S1/S2 ──────────────
+        # ── S3: uncued again, SAME Z_lr as S1/S2 (W per S3_LEARN_WEIGHTS) ────
         cfg_s3   = make_s3_config(cfgs['base'], job.z_lr)
         model_s3 = copy.deepcopy(model_s2)
         model_s3.config = cfg_s3            # set_Z reads it if it has to reallocate

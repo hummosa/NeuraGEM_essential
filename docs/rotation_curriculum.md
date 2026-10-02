@@ -32,6 +32,12 @@ trained or were cued under doesn't represent anyone real.
 | **S2** | **cued context** | `'context_ids'` | **off** | on |
 | **S3** | uncued again, **weights frozen** | `'self'` | on, at the same `Z_lr` carried from S1/S2 | **off** |
 
+> **`S3_LEARN_WEIGHTS`** (config, default `True` since 2026-09-29) keeps WU on in S3 at the base
+> `WU_lr`, so the RNN arm can adapt too and is a usable baseline rather than a network stuck at
+> chance. `S3_pinned` follows the same setting, so it becomes the weights-only-adaptation control.
+> It adds `_s3learn` to `RUN_NAME`; the frozen-S3 results stay under the un-tagged `..._hid` run.
+> The "weights frozen" reasoning below describes the `False` setting.
+
 **The cue is not in the observation.** It is the ground-truth rotation injected as a one-hot into
 Z, which multiplicatively gates the hidden state (`use_mul_gating`, `post_gating`). Nothing about
 the input changes between stages, which is what lets the same model be carried through all three.
@@ -419,6 +425,24 @@ Usable panels: `rotating_targets_behavior`, `latent_2d` / `latent`, `loss`, `wei
 | **(c)** | S3 pinned-Z (`S3_PINNED_Z_SANITY`) asymptote ≥ 0.4 | something other than Z carries context across blocks, and nothing downstream is interpretable |
 | **(d)** | S3 first-mini-block error spans ≥ 0.1 across `Z_LR` (excluding `'RNN'`) | the `Z_lr` dial does nothing — the thing that was finicky in the original |
 
+### S3 with learnable weights (`S3_LEARN_WEIGHTS = True`, 10 seeds, noise 0.20)
+
+Run 2026-09-29 (Slurm 6821431, 80/80 trees). Checks: (a) FAIL at the same 0.253 (S1 is
+unchanged), (b)-(d) PASS. S3 cued, against the frozen run above:
+
+| `Z_lr` | RNN | 0.01 | 0.05 | 0.1 | 0.2 | 0.4 | 0.6 | 0.9 |
+|---|---|---|---|---|---|---|---|---|
+| mb1, frozen | 0.500 | 0.829 | 0.780 | 0.651 | 0.472 | 0.375 | 0.376 | 0.414 |
+| mb1, learning | 0.820 | 0.865 | 0.815 | 0.707 | 0.503 | 0.392 | 0.417 | 0.522 |
+| asym, frozen | 0.499 | 0.717 | 0.242 | 0.168 | 0.204 | 0.253 | 0.299 | 0.362 |
+| asym, learning | 0.721 | 0.675 | 0.354 | 0.174 | 0.204 | 0.269 | 0.322 | 0.427 |
+
+The RNN no longer sits at chance: it tracks the current rotation within a block (pre 0.19) but
+stays on the old one through the 14-trial window, like its own S1. Pinned-Z now matches it
+(asym ~0.72 rather than 0.50), so weight learning alone does not recover inside the window.
+Mid-range `Z_lr` (0.1-0.4) is almost unchanged; 0.05 and 0.9 recover less well with the
+weights learning. Why is untested.
+
 ### What the full sweep showed under the unified `Z_LR` grid (10 seeds, noise 0.20)
 
 Run 2026-08-24, `submit_job.sh 79 curriculum` (80 array tasks = 8 `Z_lr` × 10 seeds, `PILOT =
@@ -704,6 +728,8 @@ Run with `.venv/bin/python` (system python has no torch).
 
 ## See Also
 
+- [rotation_curriculum_rdm.md](rotation_curriculum_rdm.md) — how the context representation
+  *develops* across S1, as an RDM over trials; the model-side companion to the fMRI study
 - [task_rotating_targets.md](task_rotating_targets.md) — the task, block structure, context IDs
 - [rotation_slips_perseveration.md](rotation_slips_perseveration.md) — the experiment this builds
   on; the belief head, the noise axis, and the measured `Z_lr` dose-response

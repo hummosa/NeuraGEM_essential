@@ -54,7 +54,18 @@ Shape convention per entry: `(batch_size, stride, var_dim)` — *except* the fir
 | Attribute | Shape per Entry | Description |
 |---|---|---|
 | `hidden_states` | `(B, hidden_size)` | Final RNN hidden state of the batch (if `log_hidden_states=True`) |
+| `hidden_trace` | `(B, stride, hidden_size)` | Post-gate `h` at every timestep of the acting (WU) forward (if `config.record_hidden=True`) |
 | `input_attention_weights` | `(B, stride, input_size)` | If `use_input_attention=True` |
+
+> **Two hidden channels, and at `stride=1` they are the same numbers.** `hidden_trace` records
+> the post-gate `h` of every timestep of the weight-update forward (the LU re-forwards are
+> deliberately not recorded); `hidden_states` records only the final `(h, c)` the forward
+> returns. At `stride=1` that final `h` *is* the post-gate `h` of the logged timestep, so the
+> two coincide and `log_hidden_states` is the cheaper channel — `flatten_hidden_states` and
+> `extract_decode_samples` read it with no extra plumbing. `record_hidden` earns its keep when
+> `stride > 1` and the whole window is wanted. `record_hidden` is declared on
+> `HierSwitchConfig` only; every read site uses `getattr(config, 'record_hidden', False)`, so
+> setting it on any config works.
 
 > **`hidden_states` is one state per batch, not per timestep.** `model.forward()` returns
 > only the final `(h, c)` of the sequence and `_log_batch` logs it without stride slicing.

@@ -77,7 +77,7 @@ from rotating_targets_analysis import (
     _nearest_rotation_deg, flatten_logger, get_block_switches, get_target_positions,
 )
 from rotation_curriculum_config import (
-    CUE_INFO, CUE_MODES, EXPORT_ROOT, HEADLINE_ZLR, PINNED_Z_INFO, ZLR_INFO,
+    CUE_INFO, CUE_MODES, EXPORT_ROOT, HEADLINE_ZLR, PINNED_Z_INFO, S3_LEARN_WEIGHTS, ZLR_INFO,
     Z_LR, active_noise, active_seeds, result_path, zlr_label,
 )
 
@@ -759,7 +759,10 @@ def check_acceptance(cache, params: AnalysisParams) -> bool:
     ok &= p
     print(f"  (c) S3 pinned-Z does not recover  min asym={lo:.3f} >= 0.4   "
           f"{'PASS' if p else 'FAIL'}")
-    if not p:
+    if not p and S3_LEARN_WEIGHTS:
+        print('      -> expected with S3_LEARN_WEIGHTS: pinned-Z S3 is now the weights-only '
+              'adaptation control, not a frozen check.')
+    elif not p:
         print('      -> something other than Z carries context across blocks; '
               'nothing downstream is interpretable.')
 

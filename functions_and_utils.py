@@ -1394,6 +1394,7 @@ class Logger:
         self.hlcids = []
         self.hidden_states = []
         self.hidden_trace = []   # per-timestep h of the acting (WU) forward; config.record_hidden
+        self.hidden_pregate = []  # same timesteps, h BEFORE the post gate; config.record_pregate
         self.gradients_max_entropy = []
         self.gradients_corrections = []
         self.input_attention_weights = []

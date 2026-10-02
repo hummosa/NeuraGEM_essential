@@ -108,10 +108,14 @@ def combo_key(params: Dict[str, Any]) -> str:
 # full sweep would be several GB. Collapsing each field to a single concatenated float32 array
 # wrapped in a one-element list keeps every consumer working unchanged — they all do
 # np.concatenate(field, axis=0).reshape(-1, D) (see rotating_targets_analysis.flatten_logger).
+# 'hidden_states' is KEPT rather than dropped: a run with config.log_hidden_states=True needs
+# it for the representational analyses (rotation_curriculum_rdm, rotation_decoding_analysis), and
+# the compaction below is guarded by `if entries`, so a run that does not log hidden states is
+# unaffected and its pickles stay exactly as small as before.
 _KEEP_FIELDS = ('inputs', 'predicted_outputs', 'context_ids', 'hlcids',
-                'latent_values', 'training_losses')
+                'latent_values', 'training_losses', 'hidden_states', 'hidden_pregate')
 _DROP_FIELDS = ('training_batches', 'training_losses_before_latent_optimization',
-                'hidden_states', 'gradients_corrections', 'latent_gradients',
+                'gradients_corrections', 'latent_gradients',
                 'latent_updating_losses', 'latent_updating_latents',
                 'latent_updating_combined_inputs', 'latent_updating_outputs',
                 'latent_updating_grad_model_outputs', 'input_attention_weights',
