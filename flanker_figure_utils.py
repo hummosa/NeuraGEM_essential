@@ -857,38 +857,61 @@ def spec_control_update(effects, measure='dfocus'):
 
 def spec_post_conflict(effects):
     """
-    Post-incongruent slowing and accuracy — the conflict twin of the post-error panels.
+    Post-incongruent adaptation — what a correct incongruent trial leaves behind, and what
+    that does to the next trial. Two rows, for `bar_grid`.
 
-    Trial A is post-correct throughout (`flanker_metrics.post_conflict_effects` enforces
-    it), so this is conflict adaptation rather than post-error adaptation; without that
-    restriction the two are the same measure, because incongruent trials error more.
+    Every bar is after-incongruent-A minus after-congruent-A, trial A restricted to
+    CORRECT responses (`flanker_metrics.post_conflict_effects` enforces it), so this is
+    conflict adaptation rather than post-error adaptation; without that restriction the
+    two are the same measure, because incongruent trials error more.
 
-    Trial B is split by congruency for the reason the post-error figure splits it: a
-    target-focused state helps incongruent B and hurts congruent B. The third bar in the
-    RT and accuracy panels is the lag-2 cell contrast (II->I against CC->I) — same unit,
-    so it sits with the lag-1 measure it should be read against rather than in a panel of
-    its own. Panel 2 is the decided-only RT companion; a large gap between it and panel 1
-    means the contrast is carrying non-responses rather than speed.
+    Row 1 is the story in order: the gate state A leaves (selectivity and gain), then B's
+    accuracy and RT. B is split by congruency for the reason the post-error figure splits
+    it — a target-focused state helps incongruent B and hurts congruent B.
+
+    Row 2 unpacks the RT panel and adds distance. The pooled RT contrast mixes the speed
+    of B's correct responses, the speed of its errors, and how many errors there are —
+    errors are fast, so a more accurate B is slower on average with no response getting
+    slower. Hence RT split by B's outcome (errors hollow, the house convention), then
+    accuracy and RT in each of B's four cells, for the near/far split. The change in
+    non-responses (`pund_B*`) is computed alongside but not drawn.
+
+    The gain bar is drawn only when the gate has a gain axis (`dgain_varies`): under a
+    softmaxed latent the gate is a simplex and its mean is a constant.
     """
     def g(key, label, color):
         return (_as_replicates(effects, key), label, color)
 
+    def b_split(stem):
+        return [g(f'{stem}_BI', 'B incong', COL['incong']),
+                g(f'{stem}_BC', 'B cong',   COL['cong'])]
+
+    def cells(stem):
+        return [g(f'{stem}_{k}', lbl, COL[k]) for k, lbl in CELLS]
+
+    state = [g('focus_in_diff_conflict', 'selectivity', COL['neutral'])]
+    if _flag(effects, 'dgain_varies'):
+        state.append(g('gain_in_diff_conflict', 'gain', COL['neutral']))
+
+    diff = 'after incong − after cong'
     return [
-        ([g('pcs_BI', 'B incong', COL['incong']),
-          g('pcs_BC', 'B cong', COL['cong']),
-          g('pcs_II_vs_CC', 'II→I\nvs CC→I', COL['neutral'])],
-         dict(ylabel='Post-incongruent slowing (RT)', baseline=0.0, title='PCS')),
-        ([g('pcs_BI_decided', 'B incong', COL['incong']),
-          g('pcs_BC_decided', 'B cong', COL['cong'])],
-         dict(ylabel='Post-incongruent slowing (RT)', baseline=0.0,
-              title='PCS, decided only')),
-        ([g('pca_BI', 'B incong', COL['incong']),
-          g('pca_BC', 'B cong', COL['cong']),
-          g('pca_II_vs_CC', 'II→I\nvs CC→I', COL['neutral'])],
-         dict(ylabel='Post-incongruent accuracy change', baseline=0.0, title='PCA')),
-        ([g('focus_in_diff_conflict_BI', 'B incong', COL['incong']),
-          g('focus_in_diff_conflict_BC', 'B cong', COL['cong'])],
-         dict(ylabel='Δ inherited Z focus', baseline=0.0, title='the state behind it')),
+        [(state, dict(ylabel=f'Inherited gate:\n{diff}', baseline=0.0,
+                      title='the state A leaves')),
+         (b_split('pca'), dict(ylabel=f'Accuracy: {diff}', baseline=0.0,
+                               title='+ = more accurate after conflict')),
+         (b_split('pcs'), dict(ylabel=f'RT: {diff}', baseline=0.0,
+                               title='+ = slower after conflict'))],
+        [([g('pcs_BI_corr', 'B incong', COL['incong']),
+           g('pcs_BC_corr', 'B cong',   COL['cong']),
+           g('pcs_BI_err',  'B incong', COL['incong']),
+           g('pcs_BC_err',  'B cong',   COL['cong'])],
+          dict(ylabel=f'RT: {diff}', baseline=0.0, title="by B's outcome",
+               hollow=[False, False, True, True], group_spacing=[2],
+               super_labels=[('Correct', 0, 1), ('Error', 2, 3)])),
+         (cells('pca'), dict(ylabel=f'Accuracy: {diff}', baseline=0.0,
+                             title="by B's distance")),
+         (cells('pcs'), dict(ylabel=f'RT: {diff}', baseline=0.0,
+                             title="by B's distance"))],
     ]
 
 

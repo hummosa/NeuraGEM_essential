@@ -20,7 +20,10 @@ The story, and the figure that carries each step:
    12  delay_series   every RT signature against the target-onset delay (spans variants)
    13  control_axes   the gate has two knobs — selectivity and gain — and they price
                       speed and accuracy differently, which is what reconciles PES and
-                      PIA both being positive with a single-axis exchange curve
+                      PIA both being positive with a single-axis exchange curve;
+                      group_13_control_axes_cong is the same on congruent trials
+   14  post_conflict  what a correct incongruent trial leaves in the gate, and what it
+                      does to the next trial — RT split by outcome, and by distance
 
 Numbers 10 and 11 are retired, and the gaps are deliberate: renumbering would make every
 figure already on disk ambiguous. 10 (post_conflict) reduced to one bar a contrast that
@@ -77,7 +80,8 @@ from flanker_figure_utils import (CELLS, CELLS_BY_DISTANCE, COL, band, bar_grid,
                                   dots_with_ci, exchange_panel,
                                   out_dir_for, plot_circularity, save,
                                   series, share_ylim, spec_control_update,
-                                  spec_post_error, spec_rt_by_outcome, sweep_root,
+                                  spec_post_conflict, spec_post_error,
+                                  spec_rt_by_outcome, sweep_root,
                                   _flag, _interactive_kernel, _stack, _stack_curve)
 from flanker_analyses import _timestep_ticks
 from flanker_metrics import SIGNATURES
@@ -643,7 +647,13 @@ def fig_z_update(effects, out_dir, variant):
 
 # ── 13. The two control axes ──────────────────────────────────────────────────
 
-def fig_control_axes(trials_list, out_dir, variant):
+#: Per trial set `control_axes` can price: the y-label noun and the filename suffix. The
+#: incongruent figure keeps its original name so every figure on disk stays addressable.
+CONTROL_AXES_TRIALS = {'incong': ('incongruent trials', ''),
+                       'cong':   ('congruent trials',   '_cong')}
+
+
+def fig_control_axes(trials_list, out_dir, variant, cell='incong'):
     """
     The gate has two independent knobs, and they price speed and accuracy differently.
 
@@ -678,13 +688,18 @@ def fig_control_axes(trials_list, out_dir, variant):
     Under a softmaxed latent the gain axis does not exist (the gate is a simplex, so gain
     is exactly 1/n_slots with zero variance). The figure says so and draws the focus row
     only, rather than plotting a constant.
+
+    `cell='cong'` draws the same figure on congruent trials (`group_13_control_axes_cong`),
+    where the flankers agree with the target: what each axis costs or buys when there is no
+    conflict to resolve.
     """
     from flanker_metrics import control_axes
 
-    per = [control_axes(tr) for tr in trials_list]
+    trial_noun, suffix = CONTROL_AXES_TRIALS[cell]
+    per = [control_axes(tr, cell=cell) for tr in trials_list]
     ok = [s for s in per if s.get('ok')]
     if not ok:
-        print(f'  [{variant}] control_axes: not enough incongruent trials — skipping.')
+        print(f'  [{variant}] control_axes: not enough {trial_noun} — skipping.')
         return None
     gain_varies = all(s['gain_varies'] for s in ok)
 
@@ -699,8 +714,8 @@ def fig_control_axes(trials_list, out_dir, variant):
 
     for r, (axis, row_label) in enumerate(rows):
         for c, (measure, ylabel) in enumerate(
-                [('acc', 'Accuracy, incongruent trials'),
-                 ('rt',  'RT (timesteps), incongruent trials')]):
+                [('acc', f'Accuracy, {trial_noun}'),
+                 ('rt',  f'RT (timesteps), {trial_noun}')]):
             exchange_panel(axes[r, c],
                            [s[f'curve_{axis}_x'] for s in ok],
                            [s[f'curve_{axis}_{measure}'] for s in ok],
@@ -721,10 +736,35 @@ def fig_control_axes(trials_list, out_dir, variant):
     # the premise of the whole figure — two axes are only separable if they are close to
     # independent — so it moves into the stamp rather than out of the figure.
     r_note = (f'  |  r(focus, gain) = {mean_b("r_focus_gain"):+.2f}' if gain_varies else '')
-    _stamp(fig, 'Two control axes — selectivity and gain price speed differently' + r_note,
-           variant, len(ok))
+    _stamp(fig, f'Two control axes, {trial_noun}' + r_note, variant, len(ok))
     fig.tight_layout()
-    return save(fig, f'{out_dir}/group_13_control_axes.pdf')
+    return save(fig, f'{out_dir}/group_13_control_axes{suffix}.pdf')
+
+
+# ── 14. Post-conflict adaptation ──────────────────────────────────────────────
+
+def fig_post_conflict(effects, out_dir, variant):
+    """
+    What a correct incongruent trial leaves in the gate, and what that does to the next
+    trial — the conflict twin of group_5.
+
+    Row 1: the inherited state (selectivity up, gain down), then the next trial's
+    accuracy and RT, each split by its congruency. Row 2: the RT
+    contrast split by the next trial's outcome, and accuracy and RT in each of its four
+    cells. All panels come from `spec_post_conflict`, which flanker_run_one_network.py
+    Result 3c also draws, so the two views cannot drift.
+
+    This is not the retired group_10, which reduced the question to one bar that group_4
+    draws cell by cell. What it adds is the state and the decomposition of RT, without
+    which the pooled post-incongruent slowing contrast cannot be read: the next trial's
+    correct responses can get faster while its mean RT rises, through fewer fast errors
+    and more non-responses.
+    """
+    fig, axes = bar_grid(spec_post_conflict(effects))
+    _stamp(fig, 'Post-conflict adaptation — trial A a correct incongruent vs. congruent '
+                'trial', variant, len(effects))
+    fig.tight_layout()
+    return save(fig, f'{out_dir}/group_14_post_conflict.pdf')
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -736,7 +776,7 @@ def _rt_threshold():
 
 
 def build_variant(variant, out_dir=None):
-    """The nine per-variant figures."""
+    """Every per-variant figure — groups 1-7, 9, 13 (incongruent and congruent) and 14."""
     from flanker_analyses import extract_trials
     from flanker_sweep import load_condition
 
@@ -757,6 +797,8 @@ def build_variant(variant, out_dir=None):
     fig_scorecard(effects, out_dir, variant)
     fig_z_update(effects, out_dir, variant)
     fig_control_axes(trials_list, out_dir, variant)
+    fig_control_axes(trials_list, out_dir, variant, cell='cong')
+    fig_post_conflict(effects, out_dir, variant)
 
 
 def main(variant=None, run=None, noise_series=None):

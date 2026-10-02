@@ -270,10 +270,23 @@ def post_conflict_effects(trials, m):
     B-congruent pair is computed and plotted because it is the control that separates a
     control setting from a general slowdown, but no directional prediction was committed
     to for it — the same treatment `pes_BC` / `pia_BC` already get.
+
+    The pooled RT contrast mixes three things, so it is also split three ways: RT on B's
+    correct responses (`pcs_B*_corr`), on its errors (`pcs_B*_err`), and the change in how
+    often B fails to respond at all (`pund_B*`). After conflict B is more accurate, and
+    errors are faster than correct responses, so the pooled mean can rise through the mix
+    alone while correct responses get faster; and a non-response sits at the trial end, so
+    a rise in non-responses also reads as slowing.
     """
     acc, rt, foc_in = (trials['correct_at_decision'].astype(float),
                        trials['rt_interp'], trials['focus_in'])
-    dec = m['decided']
+    # Gain — the gate's overall level — is the axis `focus` is blind to; see control_axes.
+    # z_in[0] is all-NaN by construction (the first trial inherited nothing).
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        gain_in = np.nanmean(trials['z_in'], axis=1)
+    dec, corr = m['decided'], m['corr']
+    undecided = (~dec).astype(float)
     e = {}
     for bn, bm in [('I', m['incong']), ('C', m['cong'])]:
         base       = m['valid'] & m['pc'] & bm
@@ -285,10 +298,29 @@ def post_conflict_effects(trials, m):
         # incongruent trial A is followed by a B that fails to decide at a different rate,
         # so the rt_interp version carries some of that rather than pure speed.
         e[f'pcs_B{bn}_decided'] = _mean(rt, after_inc & dec) - _mean(rt, after_cong & dec)
+        e[f'pcs_B{bn}_corr'] = (_mean(rt, after_inc & dec & corr)
+                                - _mean(rt, after_cong & dec & corr))
+        e[f'pcs_B{bn}_err']  = (_mean(rt, after_inc & dec & ~corr)
+                                - _mean(rt, after_cong & dec & ~corr))
+        e[f'pund_B{bn}'] = _mean(undecided, after_inc) - _mean(undecided, after_cong)
         # The inherited control state behind the behaviour. focus_in is what B started
         # from, so it already contains A's own update and nothing of B's.
         e[f'focus_in_diff_conflict_B{bn}'] = (_mean(foc_in, after_inc)
                                               - _mean(foc_in, after_cong))
+        e[f'gain_in_diff_conflict_B{bn}'] = (_mean(gain_in, after_inc)
+                                             - _mean(gain_in, after_cong))
+    # The same contrasts within each of B's four cells, for the distance split.
+    for cell, cm in _cells(m):
+        base       = m['valid'] & m['pc'] & cm
+        after_inc  = base & m['p_incong']
+        after_cong = base & m['p_cong']
+        e[f'pca_{cell}'] = _mean(acc, after_inc) - _mean(acc, after_cong)
+        e[f'pcs_{cell}'] = _mean(rt,  after_inc) - _mean(rt,  after_cong)
+    # The inherited state does not depend on what B turns out to be, so it is also pooled
+    # over B — one number per axis for "what a correct incongruent trial does to the gate".
+    base = m['valid'] & m['pc']
+    for key, v in (('focus_in_diff_conflict', foc_in), ('gain_in_diff_conflict', gain_in)):
+        e[key] = _mean(v, base & m['p_incong']) - _mean(v, base & m['p_cong'])
     return e
 
 
@@ -634,7 +666,13 @@ def event_locked(trials, lags=EVENT_LAGS, n_bins=8):
 
 # ── Block 9b: the two axes of the inherited gate ──────────────────────────────
 
-def control_axes(trials, n_bins=8):
+#: Which trials `control_axes` prices the two axes on. The default is incongruent, where
+#: selectivity has flankers to protect against; congruent is the control that shows what
+#: the same state does when the flankers agree with the target.
+CONTROL_AXES_TRIALS = ('incong', 'cong')
+
+
+def control_axes(trials, n_bins=8, cell='incong'):
     """
     Split the inherited gate into SELECTIVITY and GAIN, and price each separately.
 
@@ -661,10 +699,16 @@ def control_axes(trials, n_bins=8):
     session is in; a caller that draws the gain panels should check it rather than plot a
     constant.
 
-    Everything is measured on INCONGRUENT trials, matching the exchange panels in
-    `flanker_sweep_figures.fig_z_update` (group_9): on a congruent trial the flankers agree with the
-    target, so there is nothing for selectivity to protect against.
+    Everything is measured on the trials `cell` names — INCONGRUENT by default, matching
+    the exchange panels in `flanker_sweep_figures.fig_z_update` (group_9). `cell='cong'`
+    measures congruent trials instead, where the flankers agree with the target and there
+    is nothing for selectivity to protect against — the comparison that says which part of
+    each axis's price is about conflict. The curves, slopes and landing points all follow
+    `cell`; the landing points keep trial A incongruent either way, so they stay the
+    post-error states the incongruent figure marks.
     """
+    if cell not in CONTROL_AXES_TRIALS:
+        raise ValueError(f'cell must be one of {CONTROL_AXES_TRIALS}, got {cell!r}')
     m   = condition_masks(trials)
     zin = trials['z_in']
     focus = trials['focus_in']
@@ -676,16 +720,16 @@ def control_axes(trials, n_bins=8):
     acc = trials['correct_at_decision'].astype(float)
     rt  = trials['rt_interp']
 
-    inc = m['incong'] & ~np.isnan(focus) & ~np.isnan(gain)
+    in_cell = m[cell] & ~np.isnan(focus) & ~np.isnan(gain)
     # Is the gain axis real, or is this a simplex? See _axis_varies — the check is a ratio
     # against the focus axis's own spread, not an absolute threshold, because under softmax
     # gain's only spread is float residue.
-    out = {'gain_varies': _axis_varies(gain, focus, inc)}
-    if inc.sum() < 4 * n_bins:
+    out = {'gain_varies': _axis_varies(gain, focus, in_cell)}
+    if in_cell.sum() < 4 * n_bins:
         return {**out, 'ok': False}
     out['ok'] = True
 
-    fo, ga, ac, rr = focus[inc], gain[inc], acc[inc], rt[inc]
+    fo, ga, ac, rr = focus[in_cell], gain[in_cell], acc[in_cell], rt[in_cell]
     out['r_focus_gain'] = float(np.corrcoef(fo, ga)[0, 1]) if out['gain_varies'] else np.nan
 
     # Exchange curves: one per axis per measure, on that axis's own quantile bins.
@@ -706,7 +750,7 @@ def control_axes(trials, n_bins=8):
     # fixed. The marginal curves above cannot do this, and with two correlated axes the
     # marginal and partial answers need not agree — here they nearly do, because the two
     # are close to orthogonal.
-    X = np.column_stack([np.ones(inc.sum()), fo, ga])
+    X = np.column_stack([np.ones(in_cell.sum()), fo, ga])
     for key, y in (('acc', ac), ('rt', rr)):
         try:
             b, *_ = np.linalg.lstsq(X, y, rcond=None)
@@ -716,8 +760,8 @@ def control_axes(trials, n_bins=8):
 
     # Where the post-error and post-correct states actually sit in that plane — the
     # displacement whose two components the slopes above then price.
-    for tag, mk in (('err', m['valid'] & m['p_incong'] & m['perr'] & m['incong']),
-                    ('corr', m['valid'] & m['p_incong'] & m['pc']   & m['incong'])):
+    for tag, mk in (('err', m['valid'] & m['p_incong'] & m['perr'] & m[cell]),
+                    ('corr', m['valid'] & m['p_incong'] & m['pc']   & m[cell])):
         out[f'focus_{tag}'] = _mean(focus, mk)
         out[f'gain_{tag}']  = _mean(gain,  mk)
         out[f'acc_{tag}']   = _mean(acc,   mk)

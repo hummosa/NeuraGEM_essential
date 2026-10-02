@@ -253,7 +253,7 @@ follows is what each knob *does* and why it matters, which does not drift. For a
 | `p_corr_by_distance` | Companion correlation by slot distance in Stage 1. The gap between index 1 and 2 is the *only* thing that teaches the model near ≠ far, so it sets the ceiling on any distance effect |
 | `temporal_decay_factor` | Speed pressure; 0 = uniform. Must be rescaled with `arrows_duration` |
 | `latent_dims` | `[5]` — Z_dim matches the number of slots, one unit each |
-| `latent_activation` | `'softmax'`, applied across slots, so Z is a normalised attention gate |
+| `latent_activation` | `'none'`: the gate is raw Z, so it carries gain (overall magnitude) as well as selectivity. `'softmax'` normalises across slots and pins gain at 1/5 — the retired `factorial_*` setting. See "The gate has two axes" |
 | `oracle_gate_jitter` | `True` (default range), an explicit `(lo, hi)`, or `None`/`False`. Redraws the sharpness of the Stage-1 oracle gate every trial. Off by default; see "The oracle gate is a constant" below |
 | `Z_lr`, `Z_optimizer`, `Z_decay`, `Z_decay_mode` | The latent update. `Z_decay` sets *where* the control state settles (it pulls raw Z toward zero, and zero is a uniform softmax); `Z_lr` sets how fast it moves and how much it jitters, not its operating point. `Z_lr` is on a scale set by the optimizer — an SGD value and an Adam value are not comparable |
 | `hidden_size` | LSTM units |
@@ -713,7 +713,9 @@ seed; within-subject contrasts also get thin lines connecting each seed across c
 | `group_8_noise_series.pdf` | Each signature against `arrow_noise_std` — why the post-error failures happen |
 | `group_9_z_update.pdf` | What a trial teaches the gate: Δ focus (where it points) and Δ gain (how hard it gates), four cells × correct/error |
 | `group_12_delay_series.pdf` | Each RT-relevant signature against `target_delay` — does a later target mean a later response? |
-| `group_13_control_axes.pdf` | The gate's two knobs — selectivity and gain — and the different price each puts on speed and accuracy |
+| `group_13_control_axes.pdf` | The gate's two knobs — selectivity and gain — and the different price each puts on speed and accuracy, on incongruent trials |
+| `group_13_control_axes_cong.pdf` | The same on congruent trials, where the flankers agree with the target — the comparison that says which part of each knob's price is about conflict |
+| `group_14_post_conflict.pdf` | What a correct incongruent trial leaves in the gate (selectivity up, gain down) and what it does to the next trial: accuracy and RT, then RT split by the next trial's outcome and both measures by its distance. Shares `spec_post_conflict` with the workbench's Result 3c |
 
 **Numbers 10 and 11 are retired**, and the gaps are deliberate — renumbering would make
 every figure already on disk ambiguous. `group_10_post_conflict` reduced to a single
@@ -938,7 +940,9 @@ curve before treating a weak distance effect as a property of the model.
 **Error-gated inference learning rate.** Matt Nassar's proposal: raise the latent learning
 rate after a perceived error, and ask whether that produces post-error slowing, post-error
 accuracy gains, and better overall accuracy — the last being the normative rationale for
-making the adjustment at all. Not implemented; this is the costed design.
+making the adjustment at all. Not implemented; this is the costed design. It was first
+motivated as a repair for the post-error failure of the softmax model; the raw gate has
+since produced PES, PIA and PERI without it, so its remaining case is the normative one.
 
 *Step 0, free, do it first.* `event_locked` already returns `curve_rt` — RT on incongruent
 trials against the inherited control state — and `group_13_control_axes.pdf` row 1,

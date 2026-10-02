@@ -70,7 +70,7 @@ from flanker_analyses import (
 # trial-level spread is the point, use plot_scalar_bars with masks instead, as the older
 # Results do.
 from flanker_metrics import session_effects
-from flanker_figure_utils import (bar_grid, bar_row, share_ylim, spec_post_conflict,
+from flanker_figure_utils import (bar_grid, bar_row, spec_post_conflict,
                                   spec_rt_by_outcome, spec_z_slot_update, _has)
 
 fig_gaussian = False   # whether to overlay a Gaussian fit on RT PMFs
@@ -702,21 +702,17 @@ export_fig(fig4, 'flanker_sequential_by_repetition.pdf', test_config, caption=(
 
 sess_eff = session_effects(trials)
 
-fig3c, axes3c = bar_row(spec_post_conflict(sess_eff))
-share_ylim(axes3c[0], axes3c[1])        # PCS against its decided-only companion
+fig3c, axes3c = bar_grid(spec_post_conflict(sess_eff))
 fig3c.suptitle('Post-incongruent adaptation — post-correct trial A', fontsize=7)
 fig3c.tight_layout()
 export_fig(fig3c, 'flanker_post_conflict.pdf', test_config, caption=(
-    "Result 3c: post-incongruent slowing (PCS) and accuracy (PCA), trial A restricted to "
-    "correct responses so this is conflict adaptation rather than post-error adaptation. "
-    "Trial B split by congruency, since a target-focused state helps incongruent B and "
-    "hurts congruent B. The third bar in the PCS and PCA panels is the lag-2 cell "
-    "contrast II->I against CC->I, in the same unit as the lag-1 measure beside it. "
-    "Panel 2 is the decided-only RT companion: a large gap from panel 1 means the "
-    "contrast is carrying non-responses rather than speed. Panel 4 is the inherited "
-    "control state behind the behaviour. One session; there is no across-seed twin any "
-    "more — the group figure was retired because group_4 draws these same history cells "
-    "individually, and the scored measures (pcs_BI, pca_BI) are on the scorecard."))
+    "Result 3c: what a correct incongruent trial A leaves in the gate, and what that does "
+    "to trial B, against a correct congruent A. Row 1: the inherited selectivity and gain, "
+    "then B's accuracy and RT, split by B's congruency. Row 2: the RT "
+    "contrast split by B's outcome (errors hollow) — errors are fast, so a more accurate B "
+    "can be slower on average with no response getting slower — then accuracy and RT in "
+    "each of B's four cells. One session; the across-seed version is "
+    "flanker_sweep_figures group_14."))
 
 #%%
 # ── Result 4: post-error effects ──────────────────────────────────────────────
