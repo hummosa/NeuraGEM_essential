@@ -19,6 +19,15 @@ sweep variant, a figure function and a paragraph of docs behind in the main code
 A lab **extends** the main code without editing it: it imports the repo, overrides what
 it needs at runtime, and writes only into its own folders.
 
+**What is not a lab.** A lab is for exploratory changes that would otherwise leave a
+feature behind in main: changing the model or its training, or fundamentally changing an
+analysis convention that many figures depend on. Adding a figure, a few per-seed measures,
+or a re-read of results already on disk is not — put it straight into the task family (a
+`fig_*` in the figure script, drawn by default, with its `spec_*` panel shared by the
+workbench). Example: the post-conflict figure (`group_14_post_conflict`) and the
+congruent-trial control axes (`group_13_control_axes_cong`) were briefly a lab and should
+not have been.
+
 ## Structure
 
 One folder per **question**, prefixed by start date (dates sort, the slug is the
