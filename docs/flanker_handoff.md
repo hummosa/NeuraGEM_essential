@@ -34,10 +34,13 @@ Two stages, in `flanker_run_one_network.py`:
   prediction error, one update per trial, and is the only thing that adapts. Trials are
   drawn i.i.d. from four types: near/far x congruent/incongruent.
 
-Architecture: an LSTM with `Z` of dim 5 — one unit per arrow slot — softmaxed across slots
-and applied as a multiplicative gate on the hidden state. A trial is a handful of
-timesteps, the first of which is a zero frame, so the response window is everything after
-it. Session lengths, hidden size and trial length are in `flanker_sweep_config.py` and
+Architecture: an LSTM with `Z` of dim 5 — one unit per arrow slot — applied as a
+multiplicative gate on the hidden state. The gate is **raw** (`latent_activation =
+'none'`), not softmaxed, so Z sets both where attention points (selectivity) and how hard
+it gates overall (gain); that second axis is what produced the post-error signatures, see
+`flanker_metrics_status.md`. A trial is 10 timesteps, the first of which is a zero frame,
+so the response window is the 9 after it; the target can be delayed relative to the
+flankers (`target_delay`). Session lengths, hidden size and trial length are in `flanker_sweep_config.py` and
 `configs.py`; note the single-session script and the sweep do not have to agree on them.
 
 **Blocked designs were retired.** They confound condition with time-in-block and with
@@ -118,9 +121,9 @@ found.
 by re-runs, and a stale table is worse than no table. Regenerate instead:
 
 ```bash
-python flanker_sweep_analysis.py                    # across-seed tables
-python flanker_sweep_figures.py --variant noise10   # the group figure set
-python flanker_regression.py  --variant noise10     # the same signatures as GLM coefficients
+python flanker_sweep_analysis.py                    # across-seed tables (default variant delay1)
+python flanker_sweep_figures.py                     # the group figure set
+python flanker_regression.py  --variant delay1      # the same signatures as GLM coefficients
 ```
 
 `flanker_sweep.describe_runs()` reports every run on disk with the parameters read from
@@ -157,24 +160,35 @@ Two conclusions from earlier rounds are worth carrying forward because they are 
    weighting the distance prediction depends on may not have converged. Check the Stage-1
    learning curve before treating a weak distance effect as a property of the model.
 
-3. **Longer trials (retiming).** Only a handful of usable response timesteps means the
-   interpolated RT density is visibly bumpy. Lengthening needs three coupled changes:
-   rescale `temporal_decay_factor` to ≈2.1/n_response_steps, raise `arrow_noise_std` by
-   ≈√3 to avoid ceiling accuracy, and recalibrate `rt_threshold`. Would also allow
-   modelling the flanker-before-target onset asynchrony in the human task.
+3. **The RT distance effect on incongruent trials.** Near incongruent flankers cost
+   accuracy but not time at the default rung; the RT effect appears only at low noise and
+   reverses as the target delay grows. Untested guess: near flankers produce more fast
+   wrong commitments, which pull the near-trial mean down. Split near vs far RT by outcome
+   before believing it.
 
-4. **The post-error failure.** The model has a prediction-error minimiser, not an error
-   monitor, and no stimulus-noise level gives PES, PIA and PERI at once. The three
-   candidate fixes, in increasing order of theory imported: more/faster latent updates; an
-   error-gated learning rate; an explicit conflict representation feeding the latent.
-   `flanker_metrics_status.md` states the trade-off each one buys.
+4. **How post-incongruent slowing is scored.** The scored contrast (`pcs_BI`, incongruent
+   trial after a correct incongruent trial) matches only at delay 4 and noise 1.9, and
+   there through a mixture effect; correct responses get faster after conflict almost
+   everywhere, while congruent trials slow robustly. Which version the human analysis uses
+   decides the verdict. `group_14_post_conflict.pdf` draws the split.
 
-5. **Aim-3 / TUS analogue.** `Z_decay` is the right knob — it moves the operating point,
-   `Z_lr` does not. Beyond a moderate range the model is degenerate rather than merely
-   less controlled: with attention flat the model follows the flanker majority and
-   near-incongruent accuracy falls below chance. Its one use is as the "no control" limit.
-   Decay weakens control *uniformly* while the list manipulation *reallocates* it, so the
-   two have distinguishable behavioural fingerprints. That is useful, not a problem.
+5. **Oracle gate jitter under the raw gate.** Its case was built on the softmax gate,
+   where it fixed a constant training sharpness; with a raw one-hot it is a plain gain
+   knob, and the factorial that measured it predates the change.
+   `lab/2026-10-01_oracle-gate-jitter/`.
+
+6. **Aim-3 / TUS analogue.** `Z_decay` is the right knob — it moves the operating point,
+   `Z_lr` does not. Written for the softmax gate, where decay toward zero meant a *uniform*
+   gate; under the raw gate zero is a *closed* gate, so decay now lowers gain as well as
+   selectivity. Re-establish its range before using it. Under the softmax, decay weakened
+   control uniformly while the list manipulation reallocated it, which gave the two
+   distinguishable behavioural fingerprints.
+
+**Done since the last version of this list:** longer trials (5 → 10 timesteps, with the
+flankers-first target delay) and the post-error failure — the raw gate gives PES, PIA and
+PERI together at the default rung; see `flanker_metrics_status.md`. The error-gated
+learning rate (`flanker_task.md`, Deferred work) is no longer needed as a repair; it
+remains of interest for its normative prediction, better overall accuracy.
 
 ---
 

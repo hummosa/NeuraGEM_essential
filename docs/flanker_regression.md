@@ -7,11 +7,11 @@ Code: `flanker_regression.py`. Interactively:
 
     import flanker_regression as reg
     reg.describe_runs()               # every sweep on disk, with the params that differ
-    reg.RUN = 'sweep_noise'           # notes on each run are in reg.SWEEP_RUNS
-    summaries = reg.group_report(variant='noise10')   # signatures + M2 vs M3
+    reg.RUN = None                    # None follows flanker_sweep_config.RUN_NAME (ad10_delay)
+    summaries = reg.group_report(variant='delay1')    # signatures + M2 vs M3
     fig = reg.fig_group_coefficients(summaries)
 
-or `python flanker_regression.py --variant noise10 [--run sweep_noise]`.
+or `python flanker_regression.py --variant delay1 [--run <RUN_NAME>]`.
 Either way each session plays the role of one participant, as in the human analysis.
 `flanker_run_one_network.py` (Result 6 cell) fits a single session, which is one synthetic subject:
 useful for seeing shape and mechanism, not for evidence.
@@ -188,7 +188,7 @@ one synthetic subject.
 
 ---
 
-## 7. Why PIA and PERI fail — and what fixes them
+## 7. The post-error signatures across stimulus noise — then and now
 
 Figure: `group_8_noise_series.pdf`, built by `flanker_sweep_figures.fig_noise_series`.
 
@@ -199,11 +199,36 @@ two very different things cause an error: the target misled (bad luck) or the fl
 cannot tell them apart — on a bad-luck error, attending the target *less* genuinely does
 lower the error. Locally correct, globally anti-adaptive.
 
-The noise sweep is the test, everything else held fixed. The table below is a snapshot —
-**regenerate it before quoting it**, with `python flanker_sweep_figures.py` (which writes
-`group_8_noise_series.pdf`) or `flanker_sweep_analysis.py` per level. What matters is the
-*pattern*, which has been stable: every row moves monotonically with noise, and the
-mechanism row crosses zero where the behaviour does.
+### Current model (`ad10_delay`, raw gate, 10-timestep trials)
+
+Snapshot from the 20-seed sweep of 2026-09-08, delay 0. **Regenerate before quoting**
+(`flanker_sweep_analysis.py <variant>` per rung). Cells are the mean across seeds, with the
+number of seeds in the human direction; RT in timesteps, accuracy as a proportion.
+
+| measure | noise 1.9 | 1.35 | 1.0 | 0.6 |
+|---|---|---|---|---|
+| PES — RT after error − after correct | +1.81 (20/20) | +0.73 (19/20) | +0.11 (10/20, n.s.) | **−0.20 (5/20, wrong)** |
+| PIA — accuracy after error − after correct | +0.011 (16/20) | +0.028 (19/20) | +0.020 (17/20) | −0.001 (14/20, n.s.) |
+| PERI — drop in congruency effect after error | +0.34 (18/20) | +0.53 (18/20) | +0.62 (20/20) | +0.60 (18/20) |
+| selectivity shift after an error | −0.16 | −0.13 | −0.02 | +0.16 |
+| gain shift after an error | −0.16 | −0.16 | −0.12 | −0.05 |
+
+**All three signatures match together at noise 1.9 and 1.35** (and at delay 1, the default
+rung). What changed is the raw gate, Matt Nassar's suggestion: the latent now sets the
+gate's overall gain as well as where it points, and an error lowers both. Lower gain slows
+the next response and, on incongruent trials, makes it more accurate; lower selectivity
+slows it and makes it less accurate. The two add on RT and partly cancel on accuracy with
+gain winning — slower and more accurate at once. `flanker_task.md`, "The gate has two
+axes", has the decomposition.
+
+The bad-luck mechanism is still visible — at high noise an error still pulls selectivity
+*down*, and only at low noise does it push selectivity up — but with gain carrying the
+slowing, it no longer decides PIA. What remains of the old trade-off is at the clean end:
+at noise 0.6 the post-error gain drop is small, selectivity rises, and PES reverses.
+
+### Retired model (`factorial_*`, softmax gate, 5-timestep trials)
+
+Kept as the record of the failure the raw gate fixed. Not comparable with the table above.
 
 | measure | noise 1.3 | 1.0 | 0.7 | 0.4 |
 |---|---|---|---|---|
@@ -214,19 +239,13 @@ mechanism row crosses zero where the behaviour does.
 | conflict adaptation (lag 1) | 0.035 | 0.062 | 0.127 | 0.161 |
 | PES | +0.424 | +0.191 | −0.282 | **−0.833** |
 
-Everything moves monotonically, and the mechanism crosses zero where the behaviour does:
-below about noise 1.0 a bad-luck error stops loosening control, and PIA and PERI turn
-positive. Conflict adaptation quadruples over the same range.
+Below about noise 1.0 a bad-luck error stopped loosening control, and PIA and PERI turned
+positive — but PES inverted (0/20 seeds in the human direction at 0.4). With gain pinned
+by the softmax, selectivity was the only lever, and on that axis slower and less accurate
+go together, so no noise level gave all three. At the low-noise end the congruency effect
+also shrank (0.258 → 0.191) and the distance effect disappeared (−0.136 → −0.006).
 
-**But PES inverts.** At low noise the model responds *faster* after an error, 0/20 seeds in
-the human direction. No single noise level gives all three post-error signatures at once:
-high noise buys PES at the cost of PIA and PERI, low noise the reverse. That is a real
-limitation of this architecture rather than a parameter to tune — the model has no error
-monitor, only a prediction-error minimiser, and the two coincide only by accident.
-
-Two caveats on the low-noise end: the congruency effect shrinks (0.258 → 0.191) and the
-distance effect disappears (−0.136 → −0.006), so the fingerprint the model was built to
-reproduce weakens as the post-error signatures appear. And the accuracy regression stops
-converging in 3 of 20 sessions at noise 0.4 because the congruent cells approach ceiling —
+The accuracy regression can stop converging when the congruent cells approach ceiling (3 of
+20 sessions at noise 0.4 in the retired sweep; watch noise 0.6 in the current one) —
 `group_report` prints a warning when that happens, and those coefficients should not be
 read.
