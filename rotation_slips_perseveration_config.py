@@ -67,11 +67,11 @@ CONTEXT_LOSS_WEIGHT     = 1.0          # output_loss_mask entry for the context 
 #   'behaviour' the context implied by the predicted attack, atan2(pred_xy) - 2*pi*c/n_colors,
 #               on the outcome frame. Works with or without a head.
 #   Context retrieval (F6) is always scored on behaviour.
-# TRAIN_CONTEXT_OUTPUT: bool = True
-# BELIEF_SOURCE: str = 'head'           # 'head' | 'behaviour'
+TRAIN_CONTEXT_OUTPUT: bool = True
+BELIEF_SOURCE: str = 'head'           # 'head' | 'behaviour'
 
-TRAIN_CONTEXT_OUTPUT = False
-BELIEF_SOURCE = 'behaviour'
+# TRAIN_CONTEXT_OUTPUT = False
+# BELIEF_SOURCE = 'behaviour'
 
 ACTIVE_ENCODING = CONTEXT_OUTPUT_ENCODING if TRAIN_CONTEXT_OUTPUT else None
 assert BELIEF_SOURCE in ('head', 'behaviour'), BELIEF_SOURCE
@@ -84,6 +84,7 @@ assert TRAIN_CONTEXT_OUTPUT or BELIEF_SOURCE == 'behaviour', \
 #   same blocks — including the "asymptote" (the last block groups *inside* the window) and the
 #   ideal observer.
 TRAIN_WINDOW = (0.0, 0.5)
+# TRAIN_WINDOW = (0.0, 1)
 assert 0.0 <= TRAIN_WINDOW[0] < TRAIN_WINDOW[1] <= 1.0, TRAIN_WINDOW
 
 

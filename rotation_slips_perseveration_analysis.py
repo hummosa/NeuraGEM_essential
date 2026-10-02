@@ -82,17 +82,12 @@ class AnalysisParams:
     belief_source:            str   = BELIEF_SOURCE
     # (start, end) fraction of the phase's blocks to analyse. See TRAIN_WINDOW.
     train_window: Tuple[float, float] = TRAIN_WINDOW
-    # Context retrieval is scored on trials 2..retrieval_last_trial of a new block, and
-    # perseveration (F6) from the trial after it, so the two never share a trial. 5 = the rest
-    # of the first mini-block at n_colors=5: every trial after the first is a colour not yet
-    # seen under the new rotation.
-    retrieval_last_trial:     int   = 5
     last_ts_in_a_block:       int   = 15     # tail judgements per block for the correct-rate
     aggregate_blocks:  int | None   = 3      # None = one point per block
     skip_first_blocks:        int   = 0
     block_group_max:   int | None   = 40
     asymptotic_n_last_groups: int   = 3
-    criterion_n:              int   = 3      # consecutive correct to declare the context acquired
+    criterion_n:              int   = 4      # consecutive correct to declare the context acquired
     dpi:                      int   = 160
     show_plots:               bool  = True
     save_plots:               bool  = True
@@ -449,24 +444,23 @@ def metrics_for_runs(runs: Sequence[Tuple[Any, Any]], params: AnalysisParams,
     return per_seed
 
 
-def retrieval_and_errors(trials: Dict[str, np.ndarray], params: AnalysisParams
-                         ) -> Dict[str, np.ndarray]:
-    """Per-block context retrieval, and perseveration counted only after the retrieval trials.
+def retrieval_and_errors(trials: Dict[str, np.ndarray], params: AnalysisParams,
+                         first_scored: int = 3) -> Dict[str, np.ndarray]:
+    """Per-block context retrieval, and perseveration counted only from trial `first_scored`+1.
 
-    With N = params.retrieval_last_trial (default 5):
-      retrieval  — fraction of trials 2..N whose *attack prediction* (behav_rad) lands on the
-        new rotation. Trial 1's outcome reveals the new rotation; trials 2..N are colours not yet
-        seen under it (blocks start on a mini-block boundary, and N <= n_colors), so they are
-        right only if the model applies one context mapping to every colour.
-      persev_late — errors before criterion on params.belief_source, with both the count and
-        the criterion search starting at trial N+1. Without that, the retrieval trials would be
-        counted as perseveration and could complete or break the criterion run, making the
-        correlation with retrieval partly true by construction.
+      retrieval  — fraction of trials 2-3 whose *attack prediction* (behav_rad) lands on the new
+        rotation. Trial 1's outcome reveals the new rotation; trials 2-3 are colours not yet seen
+        under it (blocks start on a mini-block boundary), so they are right only if the model
+        applies one context mapping to every colour.
+      persev_late — belief-head errors before criterion, with both the count and the criterion
+        search starting at trial 4. Without that, trials 2-3 would be counted as perseveration
+        and could complete or break the criterion run, making the correlation with retrieval
+        partly true by construction.
 
-    Slips are taken unchanged from block_criterion_metrics: they are post-criterion, so they
-    include a retrieval trial only if the criterion run ends inside trials 2..N.
+    The two sides come from different readouts (xy vs belief head), so they share no
+    measurement. Slips are taken unchanged from block_criterion_metrics: they are post-criterion
+    and never include trials 2-3.
     """
-    first_scored = params.retrieval_last_trial
     rots_rad = np.deg2rad(np.asarray(TRAIN_ROTATIONS, dtype=float))
     out = {'retrieval': [], 'persev_late': []}
     block_ids = np.unique(trials['block_id'])
@@ -490,10 +484,6 @@ def retrieval_points(cache, params: AnalysisParams,
     pts = []
     for cond in conditions:
         for seed, (logger, config) in enumerate(cache.get((cond, params.headline_noise), [])):
-            # Past the first mini-block a trial can repeat a colour already seen under the new
-            # rotation, and it would stop measuring retrieval.
-            assert params.retrieval_last_trial <= config.n_colors, (
-                f'retrieval_last_trial={params.retrieval_last_trial} > n_colors={config.n_colors}')
             trials = extract_belief_trials(logger, config, params)
             r = retrieval_and_errors(trials, params)
             m = block_criterion_metrics(trials, params)
@@ -1146,30 +1136,27 @@ def plot_retrieval_vs_errors(cache, params: AnalysisParams, export_dir: Path,
                              pts: List[Dict[str, Any]] | None = None) -> plt.Figure:
     """F6 - does context retrieval go with fewer perseverative errors and fewer slips?
 
-    One point per run (condition x seed) at headline_noise. x is retrieval (trials
-    2..retrieval_last_trial of a new block predicted on the new rotation, from the xy readout);
-    y is perseveration from the trial after that (left) and context slips (right), both per
-    block, averaged over the training window. See retrieval_and_errors for why perseveration
-    skips the retrieval trials. The pooled Spearman rho
+    One point per run (condition x seed) at headline_noise. x is retrieval (trials 2-3 of a new
+    block predicted on the new rotation, from the xy readout); y is belief-head perseveration
+    from trial 4 on (left) and context slips (right), both per block, averaged over training.
+    See retrieval_and_errors for why perseveration skips trials 1-3. The pooled Spearman rho
     sits in the corner; summarize_retrieval() also prints the within-condition rho.
     """
     pts = retrieval_points(cache, params) if pts is None else pts
     fig, axes = plt.subplots(1, 2, figsize=FigSize.row(2, FigSize.small), dpi=params.dpi,
                              sharex=True, layout='constrained')
     first_family = next((p['cond'] for p in pts if p['cond'].startswith('NG')), None)
-    n = params.retrieval_last_trial
-    for ax, field, ylab in ((axes[0], 'persev_late',
-                             f'Perseveration errors\n/ block (from trial {n + 1})'),
+    for ax, field, ylab in ((axes[0], 'persev_late', 'Perseveration errors\n/ block (from trial 4)'),
                             (axes[1], 'slips', 'Context slips\n/ block')):
         for cond in dict.fromkeys(p['cond'] for p in pts):
             grp = [p for p in pts if p['cond'] == cond]
             ax.scatter([p['retrieval'] for p in grp], [p[field] for p in grp], s=4,
                        color=_info(cond).color, alpha=0.8, linewidths=0,
                        label=_curve_legend_label(cond, first_family))
-        rho, pval, _ = _spearman(pts, field)
+        rho, pval, n = _spearman(pts, field)
         ax.text(0.97, 0.97, rf'$\rho$ = {rho:.2f}' + ('\n' + f'p = {pval:.1g}'),
                 transform=ax.transAxes, ha='right', va='top', fontsize='small')
-        ax.set_xlabel(f'Context retrieval\n(trials 2-{n} correct)')
+        ax.set_xlabel('Context retrieval\n(trials 2-3 correct)')
         ax.set_ylabel(ylab)
         ax.set_ylim(0, None)
     handles, labels = axes[0].get_legend_handles_labels()
@@ -1183,11 +1170,9 @@ def plot_retrieval_vs_errors(cache, params: AnalysisParams, export_dir: Path,
 
 def summarize_retrieval(pts: List[Dict[str, Any]], params: AnalysisParams) -> None:
     """Pooled and within-condition Spearman rho, retrieval vs each error measure."""
-    n = params.retrieval_last_trial
-    print(f'\n── Context retrieval (trials 2-{n}, xy) vs errors on {params.belief_source}, '
+    print(f'\n── Context retrieval (trials 2-3, xy) vs errors on {params.belief_source}, '
           f'blocks {params.train_window[0]:.0%}-{params.train_window[1]:.0%}, one point per run ──')
-    for field, name in (('persev_late', f'perseveration from trial {n + 1}'),
-                        ('slips', 'context slips')):
+    for field, name in (('persev_late', 'perseveration from trial 4'), ('slips', 'context slips')):
         for within in (False, True):
             rho, pval, n = _spearman(pts, field, within=within)
             print(f"  {name:<28}{'within condition' if within else 'pooled':<18}"
@@ -1407,14 +1392,12 @@ def _self_test() -> None:
     print('  stale belief -> all perseveration  : OK')
 
     # Retrieval reads the xy readout, persev_late the belief: a correct attack with a stale belief
-    # must give retrieval 1 and count every belief judgement after the retrieval trials as
-    # perseverative.
+    # must give retrieval 1 and count every belief judgement from trial 4 on as perseverative.
     rt = retrieval_and_errors(dict(trials, behav_rad=ll.astype(float)), params)
     blk_len = np.array([(block_of == b).sum() for b in np.unique(block_of)[1:]])
     assert np.all(rt['retrieval'] == 1.0), rt['retrieval']
-    n = params.retrieval_last_trial
-    assert np.array_equal(rt['persev_late'], blk_len - n), (rt['persev_late'], blk_len)
-    print(f'  retrieval 2-{n} / persev from {n + 1}    : OK')
+    assert np.array_equal(rt['persev_late'], blk_len - 3), (rt['persev_late'], blk_len)
+    print('  retrieval / persev from trial 4    : OK')
 
     # A belief parked on the previous context must score exactly 1.0 on the 0/0.5/1 scale.
     bn = trials['belief_norm'][~np.isnan(trials['belief_norm'])]
