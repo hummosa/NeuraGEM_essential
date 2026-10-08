@@ -97,13 +97,14 @@ def stack(reports, path, default=np.nan):
 
 # ── Primitives ────────────────────────────────────────────────────────────────
 
-def band(ax, x, arr, label=None, color='k', ls='-'):
-    """Mean ± SEM across seeds, arr = (n_seeds, n_points)."""
+def band(ax, x, arr, label=None, color='k', ls='-', **kw):
+    """Mean ± SEM across seeds, arr = (n_seeds, n_points). Extra kwargs (marker, markevery,
+    …) go to the mean line."""
     arr = np.asarray(arr, dtype=float)
     n = np.sum(np.isfinite(arr), axis=0)
     mu = np.nanmean(arr, axis=0)
     se = np.nanstd(arr, axis=0, ddof=1) / np.sqrt(np.maximum(n, 1))
-    ax.plot(x, mu, color=color, linestyle=ls, linewidth=1.0, label=label)
+    ax.plot(x, mu, color=color, linestyle=ls, linewidth=1.0, label=label, **kw)
     if arr.shape[0] > 1:
         ax.fill_between(x, mu - se, mu + se, color=color, alpha=0.18, linewidth=0)
     return mu
@@ -209,22 +210,30 @@ def spec_psychometric(groups):
     return panel
 
 
-def spec_reversal(groups, key='acc', ylabel='Accuracy'):
+def spec_reversal(groups, key='acc', ylabel='Accuracy', log=False):
     """P2/P3: a measure from 5 trials before a reversal to 15 after, low vs high early
     conflict. `key` is any curve behaviour() returns: acc, z_side, z_evidence, rt,
-    undecided, abs_dec."""
+    undecided, abs_dec. `log` draws trials since the reversal (k ≥ 1) on a log axis instead,
+    for the RNN, whose window runs to trial 250."""
     def panel(ax):
+        longest = 0
         for label, reps in groups.items():
             k = np.asarray(_get(reps[0], 'behaviour.reversal.all.k'), dtype=float)
+            keep = k >= 1 if log else np.ones(len(k), bool)
+            longest = max(longest, int(keep.sum()))
             for split in ('low', 'high'):
-                arr = stack(reps, f'behaviour.reversal.{split}.{key}')
+                arr = np.atleast_2d(stack(reps, f'behaviour.reversal.{split}.{key}'))
                 if np.isfinite(arr).any():
                     col, ls = split_style(label, split)
-                    band(ax, k, arr, label=f'{split} early conflict', color=col, ls=ls)
-        ax.axvline(0.5, color='k', linewidth=0.5, alpha=0.4)
+                    band(ax, k[keep], arr[:, keep], label=f'{split} early conflict',
+                         color=col, ls=ls)
+        if log:
+            _log_since(ax, longest)
+        else:
+            ax.axvline(0.5, color='k', linewidth=0.5, alpha=0.4)
         if key == 'acc':
             ax.axhline(0.5, color='k', linewidth=0.5, alpha=0.3)
-        ax.set_xlabel('Trials from reversal')
+        ax.set_xlabel('Trials since reversal' if log else 'Trials from reversal')
         ax.set_ylabel(ylabel)
         legend(ax, loc='lower right', fontsize='x-small')
     return panel
@@ -299,7 +308,7 @@ def spec_switch_cost(groups, criteria=None):
     return panel
 
 
-def spec_z_belief(groups):
+def spec_z_belief(groups, ylabel='Evidence for the true context\n(±1 = a prototype)'):
     """B1: Z on the context axis around a reversal, against the observer's belief."""
     def panel(ax):
         for label, reps in groups.items():
@@ -311,7 +320,7 @@ def spec_z_belief(groups):
         ax.axvline(0.5, color='k', linewidth=0.5, alpha=0.4)
         ax.axhline(0, color='k', linewidth=0.5, alpha=0.3)
         ax.set_xlabel('Trials from reversal')
-        ax.set_ylabel('Evidence for the true context\n(±1 = a prototype)')
+        ax.set_ylabel(ylabel)
         legend(ax, loc='lower right')
     return panel
 
@@ -1009,13 +1018,21 @@ def spec_decoding_timecourse(reports, which=('cue', 'rule')):
     """Cue and rule decoding from the hidden state, per timestep, steady state against the
     first five trials after a reversal — the two codes and what a reversal does to each."""
     def panel(ax):
-        for name, ls in ((which[0], '-'), (which[1], '--')):
-            for cond, f, tag in (('steady_aligned', 1.0, 'steady'),
-                                 ('early', LOW_SHADE, 'first 5 after reversal')):
-                arr = stack(reports, f'hidden.decoding.{cond}.{name}.acc')
-                col = COL_NG if f == 1.0 else shade(COL_NG)
-                band(ax, np.arange(arr.shape[1]), arr, color=col, ls=ls,
-                     label=name if tag == 'steady' else f'{name}, early')
+        # Three of the four curves converge near 0.9, so line style and shade alone cannot
+        # tell them apart: the variable also gets a marker (circle = cue, triangle = rule),
+        # early trials are hollow and lighter, and each curve marks a different timestep so
+        # the markers interleave instead of stacking.
+        curves = [(name, ls, mk, cond, tag)
+                  for name, ls, mk in ((which[0], '-', 'o'), (which[1], '--', '^'))
+                  for cond, tag in (('steady_aligned', 'steady'), ('early', 'early'))]
+        for i, (name, ls, mk, cond, tag) in enumerate(curves):
+            arr = stack(reports, f'hidden.decoding.{cond}.{name}.acc')
+            col = COL_NG if tag == 'steady' else shade(COL_NG)
+            band(ax, np.arange(arr.shape[1]), arr, color=col, ls=ls,
+                 label=name if tag == 'steady' else f'{name}, early',
+                 marker=mk, markersize=2.8, markevery=(i, len(curves)),
+                 markerfacecolor=col if tag == 'steady' else 'white',
+                 markeredgecolor=col, markeredgewidth=0.6)
         ax.axhline(0.5, color='k', linewidth=0.5, alpha=0.3)
         ax.axvspan(1, 16, color='0.85', alpha=0.35, linewidth=0, zorder=0)
         ax.set_xlabel('Timestep (grey: the cue)')
@@ -1043,6 +1060,37 @@ def spec_integration_reversal(groups, measure='index',
         ax.set_ylabel(ylabel)
         if len(groups) > 1:
             legend(ax, loc='best', fontsize='small')
+    return panel
+
+
+def spec_integration_by_gain(reports, cells=None, measure='cue_velocity',
+                             ylabel='Cue velocity', label='sigmoid at test'):
+    """A cue-integration measure against each trial's own incoming gain, in a session where
+    Z moves (hier_switch_hidden.integration_by_gain), with the clamp grid's value at each
+    clamped gain as the reference: does the clamp's gain effect hold in a running network?
+
+    Points sit at the bin's mean gain across seeds. The clamp line averages each gain's
+    non-negative contrasts within a seed first — the measure is flat across contrast — so
+    both curves are means over the same six networks.
+    """
+    def panel(ax):
+        key = f'hidden.integration_by_gain.{measure}'
+        arr = np.atleast_2d(stack(reports, key))
+        if np.isfinite(arr).any():
+            x = np.nanmean(np.atleast_2d(stack(reports, 'hidden.integration_by_gain.gain')), axis=0)
+            series(ax, x, arr, label='free Z (trial binned)', color=get_model_color(label),
+                   dots=False)
+        if cells:
+            ms = sorted({c['m'] for c in cells})
+            tags = sorted({c['tag'] for c in cells})
+            per = np.array([[np.nanmean([clamp_value(c, measure) for c in cells
+                                         if c['tag'] == t and c['m'] == m and c['d'] >= 0])
+                             for m in ms] for t in tags])
+            series(ax, ms, per, label='clamped Z', color='0.45', ls='--', marker='s',
+                   dots=False)
+        ax.set_xlabel('Z gain on the trial')
+        ax.set_ylabel(ylabel)
+        legend(ax, loc='lower right')
     return panel
 
 
@@ -1172,7 +1220,7 @@ def figure(panels, path, ncol=None, panel=None, letters=False):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fig.savefig(path, bbox_inches='tight')
     plt.close(fig)
-    print(f'Exported: {path}  {np.round(fig.get_size_inches(), 2)} in')
+    print(f'Exported: {plot_style.link_path(path)}  {np.round(fig.get_size_inches(), 2)} in')
 
 
 def group_figures(out_dir=None):
@@ -1204,8 +1252,11 @@ def group_figures(out_dir=None):
     figure([spec_psychometric(groups), spec_rt(groups)],
            os.path.join(out_dir, 'behaviour.pdf'), ncol=2)
     # Four labelled clusters per panel need more width than the standard wide preset.
-    figure([spec_switch(split), spec_switch_cost(split)],
-           os.path.join(out_dir, 'switch_latency.pdf'), ncol=2,
+    # The uncontrolled version (latency against each reversal's own early conflict, all
+    # three criteria) left the story figure for the latent trace and lives here.
+    figure([spec_switch(split), spec_switch_cost(split),
+            spec_switch_vs_early_conflict({'NeuraGEM': ng})],
+           os.path.join(out_dir, 'switch_latency.pdf'), ncol=3,
            panel=FigSize.custom(2.6, 1.5))
     # The latent panels are NeuraGEM only: the RNN's Z never moves, so it has no belief,
     # no uncertainty and no gradient on Z to show.
@@ -1270,17 +1321,19 @@ def group_figures(out_dir=None):
 STORY_CRITERIA = (('dec_switch', 'decided'), ('z_switch', 'Z side'))
 
 
-#: Which recorded condition row 4's population measures are read from. The softmax is the
-#: trained gate and the main story; the sigmoid is the same weights with the gate swapped at
-#: test, where the gain is a live axis. 'both' overlays them, which is what answers whether
-#: the paper's exploration signature is missing because of the gate or because of the model.
+#: Which recorded condition the integration index and cue velocity around a reversal are
+#: read from. The softmax is the trained gate; the sigmoid is the same weights with the gate
+#: swapped at test, where the gain is a live axis. The story uses the sigmoid: under the
+#: softmax the gain cannot move, so the panels could not show a gain effect even in
+#: principle, and they sit beside the gain panel, which is sigmoid too. 'both' overlays them.
+STORY_GATE = 'sigmoid'
 REVERSAL_GATES = {'softmax': (('softmax_rc_none', 'softmax (trained)'),),
                   'sigmoid': (('sigmoid_rc_none', 'sigmoid at test'),),
                   'both': (('softmax_rc_none', 'softmax (trained)'),
                            ('sigmoid_rc_none', 'sigmoid at test'))}
 
 
-def story_figure(out_dir=None, gate='softmax'):
+def story_figure(out_dir=None, gate=STORY_GATE):
     """The whole result as one figure: five rows of four panels, a–t.
 
     Deliberately larger than a single panel preset (docs/figure_style.md allows it for a
@@ -1292,8 +1345,8 @@ def story_figure(out_dir=None, gate='softmax'):
       2  what each signal encodes — the hidden state against Z, its update and its gradient
       3  what the gate does when it is held still: gain against contrast
       4  the same measures trial by trial around a reversal (the paper's Fig 3c cut)
-      5  the three latent signals around a reversal: persistent, transient, and the error
-      6  the manipulations, against the paper's Fig 4h and 5d
+      5  the latent around a reversal — its state, what the two manipulations do to it
+         (Fig 4h, 5d), the error that drives it, and its gain
     """
     data = collect()
     out_dir = out_dir or os.path.join(OUT_DIR, 'figures')
@@ -1311,6 +1364,11 @@ def story_figure(out_dir=None, gate='softmax'):
         groups['RNN'] = learners(rnn)
     paired = paired_by_seed(data, ('NG', 'softmax_rc_low'), ('NG', 'softmax_rc_high'))
     split = {'NeuraGEM': paired} if paired else groups
+    # The RNN's own forced low/high pair, over the same seeds as its unforced group.
+    base = data.get(('RNN', RNN_BASE), {})
+    rnn_seeds = [s for s in sorted(base) if any(base[s] is r for r in groups.get('RNN', []))]
+    rnn_paired = paired_by_seed(data, ('RNN', 'rnn300_rc_low'), ('RNN', 'rnn300_rc_high'),
+                                seeds=rnn_seeds)
     cells = clamp_cells_on_disk('sigmoid')
     if not cells:
         # spec_clamp_grid draws an empty panel rather than failing, so row 3 would come out
@@ -1328,7 +1386,7 @@ def story_figure(out_dir=None, gate='softmax'):
     # Row 4's population measures, under whichever gate(s) the toggle names.
     gate_groups = {label: pick(('NG', cond)) for cond, label in REVERSAL_GATES[gate]}
     gate_groups = {k: v for k, v in gate_groups.items() if v} or {'NeuraGEM': ng}
-    gate_tag = '' if gate == 'softmax' else f'_{gate}'
+    gate_tag = '' if gate == STORY_GATE else f'_{gate}'
 
     # A legend is kept only where it carries something the caption cannot: which context,
     # which signal, which variable, correct against error, the gain ladder, which model.
@@ -1340,14 +1398,22 @@ def story_figure(out_dir=None, gate='softmax'):
             relegend(spec_psychometric_ctx(groups), loc='lower left', ncol=2,
                      bbox_to_anchor=(-0.02, 1.0), columnspacing=0.6, handlelength=1.0,
                      fontsize='xx-small'),
-            relegend(spec_switch_vs_early_conflict({'NeuraGEM': ng}), loc='upper left'),
+            # The latent's switch beside the behavioural one. Switch latency against the
+            # uncontrolled early conflict, with all three criteria, is in switch_latency.pdf;
+            # panel c is the controlled (forced) version of the same question.
+            # One line, the same label as panel s: the two-line one ran into panel a.
+            relegend(spec_z_belief({'NeuraGEM': ng}, 'Z on the context axis'),
+                     loc='lower right', fontsize='xx-small'),
             rotate_xticks(relegend(spec_switch(split, STORY_CRITERIA), loc='lower left',
                                    bbox_to_anchor=(-0.02, 1.0), ncol=2, fontsize='xx-small',
                                    columnspacing=0.6, handlelength=1.0)),
             spec_reversal(split, 'acc', 'Accuracy')]),
         ('story_2_encoding', [
             spec_decoding_matrix(ng, sources=STORY_SOURCES),
-            relegend(spec_decoding_timecourse(ng), loc='lower right', fontsize='xx-small'),
+            # Above the axes: inside, the key sat on the early-rule line.
+            relegend(spec_decoding_timecourse(ng), loc='lower left',
+                     bbox_to_anchor=(-0.02, 1.0), ncol=2, fontsize='xx-small',
+                     columnspacing=0.6, handlelength=1.8),
             # Errors only: the correct-trial line is flat and ten times smaller.
             nolegend(spec_eps_cw(ng, outcomes=((False, 'error'),))),
             spec_encoding_variance(ng)]),
@@ -1376,23 +1442,35 @@ def story_figure(out_dir=None, gate='softmax'):
             relegend(spec_clamp_grid(cells, 'cue_velocity', 'Cue velocity',
                                      drop_negative=True),
                      loc='center left', bbox_to_anchor=(1.0, 0.5), fontsize='xx-small')]),
+        # Around a reversal: the gain first, then RT split by early conflict once per model
+        # (each on its own trial range — the RNN's re-learning takes ~100 trials, so its
+        # axis is log), then the two population measures. The undecided rate that used to
+        # open the row leaned on the decision threshold and is in the supplementary figures.
         (f'story_4_reversal{gate_tag}', [
-            nolegend(spec_reversal(split, 'undecided', 'Undecided rate')),
-            relegend(spec_rt_reversal(groups), loc='upper right'),
-            nolegend(spec_integration_reversal(gate_groups, 'index', 'Integration index')),
-            relegend(spec_integration_reversal(gate_groups, 'cue_velocity', 'Cue velocity'),
-                     loc='best', fontsize='xx-small')]),
-        # The latent, what perturbing it does, and the error that drives it. The per-trial
-        # update |Δz| used to sit here beside the gradient; it was dropped because the two
-        # are the same curve up to a scale factor — the step *is* the gradient times the
-        # learning rate on an unperturbed trial — so one of them was decoration.
-        ('story_5_latent', [
-            relegend(spec_z_belief({'NeuraGEM': ng}), loc='lower right'),
-            relegend(spec_trace(mech, 'z_evidence', 'Z on the context axis'),
-                     loc='lower right', fontsize='xx-small') if mech else None,
-            nolegend(spec_trace({'NeuraGEM': ng}, 'grad', '|dL/dZ| (context axis)')),
             nolegend(spec_trace({'sigmoid at test': sig} if sig else {'NeuraGEM': ng}, 'gain',
-                                'Z gain (mean of the units)'))]),
+                                'Z gain (mean of the units)')),
+            relegend(spec_reversal(split, 'rt', 'RT (timesteps)'), loc='lower left',
+                     bbox_to_anchor=(-0.02, 0.98), fontsize='xx-small', handlelength=1.6),
+            relegend(spec_reversal({'RNN': rnn_paired}, 'rt', 'RT, RNN (timesteps)',
+                                   log=True), loc='lower left', bbox_to_anchor=(-0.02, 0.98),
+                     fontsize='xx-small', handlelength=1.6)
+            if rnn_paired else None,
+            nolegend(spec_integration_reversal(gate_groups, 'index', 'Integration index'))]),
+        # The per-trial update |Δz| used to sit beside the gradient; it was dropped because
+        # the two are the same curve up to a scale factor — the step *is* the gradient times
+        # the learning rate on an unperturbed trial — so one of them was decoration.
+        (f'story_5_latent{gate_tag}', [
+            relegend(spec_integration_reversal(gate_groups, 'cue_velocity', 'Cue velocity'),
+                     loc='best', fontsize='xx-small'),
+            # The same measure against each trial's own gain, with the clamp grid's value
+            # at each clamped gain: the gain sets cue speed in the running network too, but
+            # a reversal moves it far less than it wanders anyway, so the panel to its left
+            # stays flat.
+            relegend(spec_integration_by_gain(pick(('NG', 'sigmoid_rc_none')), cells),
+                     loc='lower right', fontsize='xx-small'),
+            nolegend(spec_trace({'NeuraGEM': ng}, 'grad', '|dL/dZ| (context axis)')),
+            relegend(spec_trace(mech, 'z_evidence', 'Z on the context axis'),
+                     loc='lower right', fontsize='xx-small') if mech else None]),
     ]
 
     panel = FigSize.custom(1.7, 1.35)
@@ -1403,16 +1481,19 @@ def story_figure(out_dir=None, gate='softmax'):
            os.path.join(out_dir, f'story{gate_tag}.pdf'), ncol=4, panel=panel, letters=True)
 
 
-def paired_by_seed(data, low_key, high_key):
+def paired_by_seed(data, low_key, high_key, seeds=None):
     """merge_splits over the seeds that have **both** forced sessions, paired by seed.
 
     Pairing two independently sorted lists by position is the same thing only while every
     seed carries both conditions. One task that recorded rc_low and died before rc_high
     then shifts the whole list, and seed 11's low-conflict session is merged with seed 13's
     high-conflict one — silently, in every panel that takes a split.
+
+    `seeds` restricts the pairs to a selected group (the RNN's learners).
     """
     low, high = data.get(low_key, {}), data.get(high_key, {})
-    return [merge_splits(low[s], high[s]) for s in sorted(set(low) & set(high))]
+    both = set(low) & set(high) & (set(seeds) if seeds is not None else set(low))
+    return [merge_splits(low[s], high[s]) for s in sorted(both)]
 
 
 def merge_splits(low_rep, high_rep):
@@ -1492,7 +1573,7 @@ def session_figures(path, out_dir=None):
 if __name__ == '__main__':
     args = [a for a in sys.argv[1:]]
     if args and args[0] == 'story':
-        story_figure(gate=args[1] if len(args) > 1 else 'softmax')
+        story_figure(gate=args[1] if len(args) > 1 else STORY_GATE)
     elif args:
         for p in args:
             session_figures(p)

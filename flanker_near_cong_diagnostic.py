@@ -1305,7 +1305,7 @@ def make_figure(model, trials, tcfg, path=None, n=3000, seed=29):
     fig.tight_layout()
     path = path or (tcfg.export_path + 'diag_near_cong_mechanism.pdf')
     fig.savefig(path, bbox_inches='tight')
-    print(f'\nExported: {path}')
+    print(f'\nExported: {plot_style.link_path(path)}')
     return fig
 
 

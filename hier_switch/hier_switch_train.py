@@ -236,7 +236,7 @@ def plot_panels(logger, cfg, x1=0, x2=None, filename=None):
     if filename:
         path = cfg.export_path + filename
         fig.savefig(path, bbox_inches='tight')
-        print(f'Exported: {path}')
+        print(f'Exported: {plot_style.link_path(path)}')
     return fig
 
 

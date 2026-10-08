@@ -28,7 +28,7 @@ import sys
 
 import numpy as np
 
-from plot_style import FLANKER_COLORS, flanker_color, outcome_style
+from plot_style import FLANKER_COLORS, flanker_color, link_path, outcome_style
 
 
 # ── Console output ────────────────────────────────────────────────────────────
@@ -1044,20 +1044,28 @@ def plot_trial(trials, config, trial=0, show_gate=True, show_loss_weights=True,
     for s in range(n_slots):
         ax = fig.add_subplot(gs[s, 0])
         active = s not in roles['empty']
+        # The target's arrow only exists from frame `target_delay`; before that the slot
+        # holds background noise, which is not drawn so the arrow visibly starts at onset.
+        onset = (int(getattr(config, 'target_delay', 0) or 0)
+                 if s == roles['target'] else 0)
         ax.axhline(0, color='k', linewidth=0.4, linestyle=':', alpha=0.5)
         if active:
-            # The noiseless level this slot's arrow was drawn from: the true direction on
-            # the target, and the flankers' own direction beside it. A trace that spends
-            # the trial on the wrong side of zero is a slot that misled the model, which
-            # is the single most useful thing to be able to see on one trial.
-            nominal = signal * (gt_dir if s == roles['target']
+            # The slot's true arrow direction: the target's own, and the flankers'
+            # direction beside it. A small arrow near the right end of the zero line, above
+            # it when pointing right and below it when pointing left, so a trace on the
+            # wrong side of zero reads as a slot that misled the model.
+            direction = np.sign(gt_dir if s == roles['target']
                                 else gt_dir * (1.0 if roles['congruent'] else -1.0))
-            ax.axhline(nominal, color=role_color[s], linewidth=0.5, linestyle='--',
-                       alpha=0.35)
+            x_end, length, offset = ad - 0.9, 0.6, 0.22 * lim
+            x_a, x_b = (x_end - length, x_end) if direction > 0 else (x_end, x_end - length)
+            ax.annotate('', xy=(x_b, direction * offset), xytext=(x_a, direction * offset),
+                        arrowprops=dict(arrowstyle='-|>', color=role_color[s], lw=0.8,
+                                        alpha=0.7, mutation_scale=6, shrinkA=0, shrinkB=0),
+                        zorder=4)
         # A slot holding no arrow is drawn, not omitted: at bg_noise_std = 0 its trace is
         # identically zero, so it has to sit ON TOP of the dotted zero reference (zorder)
         # or it reads as a missing line rather than a flat one.
-        ax.plot(t_axis, obs[:, s], color=role_color[s],
+        ax.plot(t_axis[onset:], obs[onset:, s], color=role_color[s],
                 linewidth=1.4 if active else 1.0, alpha=1.0 if active else 0.95,
                 solid_capstyle='round', zorder=3 if active else 2.5)
         role = ('target' if s == roles['target']
@@ -1168,7 +1176,7 @@ def export_trial_figure(trials, config, trial=0, path=None, **kwargs):
         os.makedirs(config.export_path, exist_ok=True)
         path = f'{config.export_path}flanker_trial_{trial}.pdf'
     fig.savefig(path, bbox_inches='tight')
-    print(f'Exported: {path}')
+    print(f'Exported: {link_path(path)}')
     plt.close(fig)
     return path
 

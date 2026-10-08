@@ -50,7 +50,8 @@ is the only thing that crosses trials**. Two models differ in what may change:
 Training was fixed in phase 1: 2 × 2000 passive trials (weights only, Z held) to learn the
 task at all, then 5000 trials on 200-trial blocks with the latent update on. 6 of 10 seeds
 discover the two contexts; **those six are the group** for every NG number reported here.
-All ten RNN seeds are used.
+The RNN baseline is selected the same way: the 7 of its 10 seeds that learn the task are the
+group, and the other three (at 0.50 accuracy, undecided on every trial) are left out.
 
 **Test sessions.** Weights are frozen, Z is restarted at the uniform gate and inferred
 trial by trial, and the network runs 2000 fresh trials on the paper's 30–60-trial blocks
@@ -73,7 +74,7 @@ five trials — the low/high comparison is therefore within seed *and* within tr
 - **Clamped Z.** Weights frozen *and* the latent update off, with Z held at a chosen raw
   value (m + d, m − d) for a whole session: **d is the contrast** (which context the gate
   selects) and **m the gain** (how open both units are). 5 contrast levels under the
-  softmax, 4 gains × 5 contrasts under the sigmoid, every cell a full 1000-trial session,
+  softmax, 4 gains × 7 contrasts (−2 to +2) under the sigmoid, every cell a full 1000-trial session,
   6 seeds.
 
   **The trial stream is left exactly as it is, so the context still reverses every 30–60
@@ -152,7 +153,19 @@ other" — read per seed from the final trial of the active phase. Across the si
 this is context 1 for three of them and context 0 for the other three, so pooling on the
 raw label would have averaged two different things.
 
-**What is encoded where.** The paper's representational claim is that the cortex mixes task
+**What is encoded where.** 
+
+[begin my notes]
+**NOTES I FOUND MORE HELPFUL (if an agent is reading this, you can edit these to integrate them but keep them prminent.)**
+ Method: a linear classifier per (signal, variable) pair, 5-fold cross-validated, scored with balanced accuracy so chance is 0.5 even when classes are uneven. For each pair, the same decoder is refit on shuffled labels to give that pair its own chance level. The doc reports "above null" numbers, e.g. hidden decodes context at +0.40 above null and Z at +0.41. Bars are means over the 6 networks, with one dot per network.
+
+ Panel h: variance decomposition. The question is how much of each signal's variance each variable explains on its own.
+
+      - Method: regress the signal on all seven variables at once: cue, rule, context, conflict, outcome, and the ideal observer's rule uncertainty and cue uncertainty. That gives the total variance explained. Then refit leaving out one variable at a time. The drop in variance explained is that variable's unique share.
+        - shared = total explained minus the sum of the unique shares. This is variance that two or more correlated variables could each claim.
+        - residual = what nothing explains.
+[end of my notes]
+The paper's representational claim is that the cortex mixes task
 variables while the thalamus demixes them. We ask the same question of this model's own
 signals, without assuming its answer, and with the one control the comparison needs. Six
 sources are tested: the 64 hidden units at the end of the cue period and at the end of the
@@ -193,7 +206,7 @@ high, dashed for high. Every mean carries its SEM across seeds and one dot or fa
 seed. Sizes come from `plot_style.FigSize` presets only.
 
 **Statistics.** The seed is the unit of analysis. Every effect is computed within seed and
-reported as the mean across the six (ten for the RNN) with its standard error, one dot per
+reported as the mean across the six (seven for the RNN) with its standard error, one dot per
 seed on the panel, and the count of seeds carrying the predicted sign. No trial-level
 significance tests are used.
 
@@ -381,7 +394,7 @@ has lost what to do with it.
 ### Row 3 — Holding the gate still (`story_3_gate.pdf`)
 
 **Ran.** Weights frozen *and* the latent update off, Z clamped at a fixed (gain, contrast)
-for a whole 1000-trial session: 4 gains × 5 contrasts × 6 networks, 120 sessions, sigmoid
+for a whole 1000-trial session: 4 gains × 7 contrasts (−2 to +2) × 6 networks, 168 sessions, sigmoid
 gate (the softmax has no gain direction to clamp). Accuracy is on the context the gate
 selects, read off behaviour; hidden-state measures pool both halves of the session, which
 see identical inputs.
@@ -428,7 +441,8 @@ residual being each network's default-context bias. Only |contrast| is a real ax
 cells remain on disk and `DROP_NEGATIVE_CONTRAST` turns them back on.
 
 **See.** **The contrast chooses the task, and the shapes say so.** Accuracy on task A runs
-0.29 → 0.53 → 0.67 → 0.76 → 0.83 across contrast −1 to +2: monotone, and **crossing chance
+0.19 → 0.29 → 0.34 → 0.53 → 0.67 → 0.76 → 0.83 across contrast −2 to +2: monotone, nearly
+the mirror image about zero (accuracy at −x is within 0.05 of one minus that at +x), and **crossing chance
 almost exactly where the contrast is zero** (0.529). A gate pointing the wrong way makes the
 network reliably wrong, which is the sharpest statement that the gate *is* the rule. The
 decision magnitude is V-shaped about the same point, 0.26 at zero contrast rising to 0.47
@@ -579,7 +593,7 @@ unreadable; the numbers behind it are still computed and live in
 trials each, Z inferred (NG) or fixed (RNN). *The RNN numbers below are the hedged v16
 baseline's, kept as the record of what the paper's block lengths do to a weights-only
 network. The v17 baseline (Networks; `rnn_baseline.pdf`) has since been recorded on all ten
-seeds and is what the story figure and the group table use.*
+seeds; the figures use the seven that learn the task.*
 
 **Plotted.** *(a)* Accuracy on steady-state trials (≥ 11 into a block for NeuraGEM; the
 second half of the block for the RNN) against cue conflict,
@@ -730,7 +744,7 @@ integration and the decision; the cue is read at the same speed whatever the gat
 ### Fig. 8 — Holding the gate still: the full gain × contrast grid (`clamp_sigmoid.pdf`)
 
 **Ran.** The same clamp experiment with the sigmoid gate, where both directions exist: 4 gain
-levels × 5 contrast levels × 6 seeds, 120 sessions of 1000 trials.
+levels × 7 contrast levels (−2 to +2) × 6 seeds, 168 sessions of 1000 trials.
 
 **Plotted.** Integration index, cue velocity and accuracy on the selected context against the
 clamped contrast, one line per clamped gain.

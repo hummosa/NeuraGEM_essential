@@ -131,7 +131,7 @@ def export_fig(fig, filename, cfg, caption=None):
     given, queue (fig, filename, caption) for the combined report PDF."""
     path = cfg.export_path + filename
     fig.savefig(path, bbox_inches='tight')
-    print(f'Exported: {path}')
+    print(f'Exported: {plot_style.link_path(path)}')
     if caption is not None:
         report_entries.append((fig, filename, caption))
 
@@ -429,6 +429,7 @@ for _label, _idx in example_trial_indices(trials, test_config, seed=test_config.
 # quantity — it is the config knob whose index-1-vs-2 gap sets the ceiling on any
 # distance effect, shown against the power-law family it was chosen from.
 fig_corr = plot_correlation_structure(config)
+
 export_fig(fig_corr, 'flanker_correlation_structure.pdf', test_config, caption=(
     "Stage-1 companion correlation against slot distance: the config's own "
     "p_corr_by_distance alongside the power-law family p(d) = 1 / (1 + d)^alpha it was "
@@ -1050,6 +1051,6 @@ with PdfPages(report_path) as pdf:
         cap_fig = _caption_page(filename, caption)
         pdf.savefig(cap_fig)
         plt.close(cap_fig)
-print(f'Exported combined report ({len(report_entries)} figures): {report_path}')
+print(f'Exported combined report ({len(report_entries)} figures): {plot_style.link_path(report_path)}')
 
 # %%

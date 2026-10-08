@@ -208,7 +208,7 @@ RUN_NAME      = 'ad10_delay'
 #: describe the same condition. Without this the two disagreed: the figure script had its
 #: own DEFAULT_VARIANT while the analysis script fell through to next(iter(VARIANTS)),
 #: which is whichever rung happens to be declared first.
-DEFAULT_VARIANT = 'delay1'
+DEFAULT_VARIANT = 'noise10'
 EXPORT_ROOT   = './exports/flanker_random/sweeps'
 SKIP_EXISTING = True        # resume: skip jobs whose result pickle already exists
 

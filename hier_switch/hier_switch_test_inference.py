@@ -269,7 +269,7 @@ def summary_figure(rows, path):
               va='bottom', fontsize=5.5, color='0.35')
     fig.tight_layout()
     fig.savefig(path, bbox_inches='tight')
-    print(f'Exported: {path}')
+    print(f'Exported: {plot_style.link_path(path)}')
     return fig
 
 

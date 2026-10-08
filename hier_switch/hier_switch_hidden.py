@@ -193,6 +193,38 @@ def integration_aligned(sess, axes, window=None, blocks=None, primary=PRIMARY,
     return out
 
 
+#: Edges of the gain bins for `integration_by_gain`, in raw Z units (the mean of the two
+#: units, the same axis the clamp grid holds fixed). Closed, spanning the clamp range: the
+#: gain's tails run to ±8, and open end bins would plot at their far-off means.
+GAIN_EDGES = (-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0)
+
+
+def integration_by_gain(sess, axes, mask, edges=GAIN_EDGES, min_trials=20):
+    """The integration index and cue velocity against each trial's own incoming gain.
+
+    The clamp grid says gain sets how fast the cue is integrated when Z is held still. In a
+    session where Z moves, the gain wanders from trial to trial far more than a reversal
+    moves it on average, so binning every trial by its own gain is the direct test of
+    whether the clamp relationship holds in a running network. Each bin is a population
+    measure over its trials, as everywhere else. None when the gain never moves (softmax).
+    """
+    g = sess['gain_in']
+    ok = mask & np.isfinite(g)
+    if not ok.any() or np.ptp(g[ok]) < 1e-6:
+        return None
+    lo, hi = edges[:-1], edges[1:]
+    out = dict(edges=list(edges), gain=[], index=[], cue_velocity=[], n=[],
+               n_outside=int((ok & ((g < edges[0]) | (g >= edges[-1]))).sum()))
+    for a, b in zip(lo, hi):
+        m = ok & (g >= a) & (g < b)
+        r = integration(sess, axes, m) if m.sum() >= min_trials else {}
+        out['gain'].append(float(g[m].mean()) if m.any() else np.nan)
+        out['index'].append(r.get('index', np.nan))
+        out['cue_velocity'].append(r.get('cue_velocity', np.nan))
+        out['n'].append(int(m.sum()))
+    return out
+
+
 def decode(sess, mask=None, targets=('cue', 'rule', 'context', 'conflict'), folds=5, seed=0):
     """Cross-validated logistic decoding of each target from the hidden state, per timestep.
 
@@ -644,6 +676,8 @@ def hidden_report(sess, primary=PRIMARY, n_perm=100, with_decoding=True, obs=Non
     res['unit_classes'] = unit_classes(sess, base, n_perm=n_perm)
     # The paper's Fig 3c cut: both population measures trial by trial around a reversal.
     res['integration_reversal'] = integration_aligned(sess, axes, primary=primary)
+    # Every trial binned by its own gain (None under the softmax, where it never moves).
+    res['integration_by_gain'] = integration_by_gain(sess, axes, m)
     if with_decoding:
         res['decoding'] = {k: decode(sess, mask=v) for k, v in
                            (('steady_aligned', base), ('early', conds['early']))}

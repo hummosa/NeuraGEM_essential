@@ -308,6 +308,14 @@ class Color_scheme:
     def get_model_color(self, model_name):
         """Resolve a model label to its colour — see the module-level MODEL_COLORS."""
         return get_model_color(model_name)
+def link_path(path):
+    """'/abs/repo/exports/x.pdf' → './exports/x.pdf', so VS Code's interactive window makes a
+    printed path clickable (it links relative paths that start with '.', not absolute ones)."""
+    import os
+    rel = os.path.relpath(path)
+    return rel if rel.startswith('.') else os.path.join('.', rel)
+
+
 def set_plot_style():
     # sns.set(font_scale=0.8)  # Adjust font scale
     # sns.set_style('white', {'axes.linewidth': 0.5})  # Remove grid

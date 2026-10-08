@@ -66,6 +66,7 @@ import numpy as np
 import pandas as pd
 
 from flanker_analyses import lagged_factors
+from plot_style import link_path
 
 # ── Which sweep to read ───────────────────────────────────────────────────────
 #
@@ -740,7 +741,7 @@ def fig_group_coefficients(summaries, terms=None, title=None, path=None):
     fig.tight_layout()
     if path:
         fig.savefig(path, bbox_inches='tight')
-        print(f'Exported: {path}')
+        print(f'Exported: {link_path(path)}')
     return fig
 
 

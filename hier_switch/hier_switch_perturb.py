@@ -43,6 +43,7 @@ from hier_switch_analyses import (PRIMARY, STEADY, load_session, save_session, s
 from hier_switch_hidden import decode, fit_axes, integration
 from hier_switch_train import load_model, run_test
 from hier_switch_analyses import extract_trials
+from plot_style import link_path
 
 # Raw Z = (m + d, m − d): m is the gain (unit mean), d the contrast. Under the softmax only
 # d matters; the sigmoid grid moves both.
@@ -51,7 +52,9 @@ from hier_switch_analyses import extract_trials
 # that symmetry rather than assuming it.
 GRIDS = {
     'softmax': dict(m=[0.0], d=[0.0, 0.25, 0.5, 1.0, -0.5]),
-    'sigmoid': dict(m=[-1.0, 0.0, 1.0, 2.0], d=[0.0, 0.5, 1.0, 2.0, -1.0]),
+    # The sigmoid's negative half is filled in (−0.5, −2) because story panel i plots
+    # accuracy on one named task, where a gate pointing the other way is its own level.
+    'sigmoid': dict(m=[-1.0, 0.0, 1.0, 2.0], d=[0.0, 0.5, 1.0, 2.0, -1.0, -0.5, -2.0]),
 }
 
 
@@ -136,7 +139,12 @@ def clamp_grid(model_path, activation='softmax', n_trials=1000, grid=None, refer
     ref_axis = _reference_axis(reference)
     rows = []
     for m, d in clamp_cells(activation, grid):
-        path = run_cell(model, cfg, tag, activation, m, d, n_trials=n_trials)
+        # A cell already on disk is re-scored, not re-run, so extending the grid runs only
+        # the new cells.
+        path = os.path.join(_ROOT, 'exports', 'hier_switch', 'clamp', tag,
+                            cell_name(activation, m, d)) + os.sep
+        if not os.path.exists(path + 'session.npz'):
+            path = run_cell(model, cfg, tag, activation, m, d, n_trials=n_trials)
         rows.append(cell_metrics(path, ref_axis))
         r = rows[-1]
         print(f"  {cell_name(activation, m, d):24s} acc {r['acc']:.3f} "
@@ -149,7 +157,7 @@ def clamp_grid(model_path, activation='softmax', n_trials=1000, grid=None, refer
     with open(out, 'w') as f:
         json.dump(dict(model=model_path, activation=activation, n_trials=n_trials,
                        reference=reference, cells=rows), f, indent=1, default=float)
-    print(f'Exported: {out}')
+    print(f'Exported: {link_path(out)}')
     return rows
 
 

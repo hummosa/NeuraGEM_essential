@@ -1030,7 +1030,7 @@ def save(fig, path, note=None):
     """
     fig.savefig(path, bbox_inches='tight')
     w, h = fig.get_size_inches()
-    print(f'Exported: {path}  [{w:.1f}x{h:.1f} in]' + (f'  — {note}' if note else ''))
+    print(f'Exported: {plot_style.link_path(path)}  [{w:.1f}x{h:.1f} in]' + (f'  — {note}' if note else ''))
     if _interactive_kernel():
         from IPython.display import display
         display(fig)
